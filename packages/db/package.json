@@ -1,0 +1,36 @@
+{
+  "name": "@grid-bot/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "prisma:generate": "prisma generate --schema=prisma/schema.prisma",
+    "prisma:migrate:dev": "prisma migrate dev --schema=prisma/schema.prisma",
+    "prisma:migrate:deploy": "prisma migrate deploy --schema=prisma/schema.prisma",
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@grid-bot/common": "workspace:*",
+    "@grid-bot/core": "workspace:*",
+    "@prisma/adapter-pg": "^7.6.0",
+    "@prisma/client": "^7.6.0"
+  },
+  "devDependencies": {
+    "dotenv": "^17.2.3",
+    "pg": "^8.16.3",
+    "prisma": "^7.6.0",
+    "tsx": "^4.20.6",
+    "vitest": "^4.0.8"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  }
+}

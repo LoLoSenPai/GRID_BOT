@@ -1,0 +1,598 @@
+import {
+  AlertType,
+  BotStatus,
+  ExecutionProvider,
+  ExecutionStatus,
+  LogLevel,
+  OrderStatus,
+  RecenterMode,
+  TradeSide
+} from "../domain/enums";
+import type {
+  AlertRepository,
+  BotStateRepository,
+  MarketPricePort,
+  PriceSnapshotRepository,
+  SystemLogRepository,
+  TradeRepository
+} from "../domain/contracts";
+import type { BotAggregate, BotRuntimeMetadata, GridCycle, PositionLot, TriggerSignal } from "../domain/types";
+import { AlertService } from "./alert-service";
+import { ExecutionService } from "./execution-service";
+import { GridStrategyService } from "./grid-strategy-service";
+import { RiskManagerService } from "./risk-manager-service";
+import { round } from "../utils/math";
+
+export class BotEngineService {
+  constructor(
+    private readonly botRepository: BotStateRepository,
+    private readonly tradeRepository: TradeRepository,
+    private readonly priceSnapshotRepository: PriceSnapshotRepository,
+    private readonly logRepository: SystemLogRepository,
+    private readonly marketPriceService: MarketPricePort,
+    private readonly executionService: ExecutionService,
+    private readonly gridStrategyService: GridStrategyService,
+    private readonly riskManagerService: RiskManagerService,
+    private readonly alertService: AlertService
+  ) {}
+
+  async runCycle(): Promise<void> {
+    const bots = await this.botRepository.listRunnableBots();
+    await Promise.all(bots.map((aggregate) => this.runBot(aggregate.bot.id)));
+  }
+
+  async runBot(botId: string, options?: { skipLock?: boolean }): Promise<void> {
+    const execute = async () => {
+      const aggregate = await this.botRepository.getBotAggregate(botId);
+      if (!aggregate) {
+        return;
+      }
+
+      const now = new Date();
+
+      try {
+        const marketPrice = await this.marketPriceService.getLatestPrice(aggregate.bot);
+        await this.botRepository.setBotHeartbeat(botId, marketPrice.price);
+        await this.priceSnapshotRepository.createPriceSnapshot({
+          botId,
+          symbol: marketPrice.pair,
+          source: marketPrice.source,
+          price: marketPrice.price,
+          confidence: marketPrice.confidence,
+          feedId: marketPrice.feedId,
+          status: "ok",
+          capturedAt: now
+        });
+
+        if (aggregate.bot.status === BotStatus.Error) {
+          await this.botRepository.updateBotStatus(botId, BotStatus.Running);
+          await this.logRepository.writeLog({
+            botId,
+            level: LogLevel.Info,
+            category: "engine",
+            message: "Recovered after successful market data fetch."
+          });
+        }
+
+        if (aggregate.bot.status === BotStatus.Paused || aggregate.bot.status === BotStatus.Stopped) {
+          await this.persistPassiveState(aggregate, marketPrice.price, now);
+          return;
+        }
+
+        if (this.isOutOfRange(aggregate, marketPrice.price)) {
+          await this.handleOutOfRange(aggregate, marketPrice.price, now);
+          return;
+        }
+
+        const signal = this.getConfirmedSignal(aggregate, marketPrice.price, now);
+        if (!signal) {
+          await this.persistPassiveState(aggregate, marketPrice.price, now);
+          return;
+        }
+
+        const orderIntent = this.gridStrategyService.buildOrderIntent(aggregate, signal);
+        if (!orderIntent) {
+          await this.logRepository.writeLog({
+            botId,
+            level: LogLevel.Info,
+            category: "engine",
+            message: `Signal ${signal.side} level ${signal.levelIndex} skipped: empty intent.`
+          });
+          await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null });
+          return;
+        }
+
+        const risk = this.riskManagerService.evaluate(aggregate, signal, orderIntent, marketPrice, now);
+        if (!risk.allowed) {
+          const blockedOrder = await this.tradeRepository.createOrder({
+            ...orderIntent,
+            status: OrderStatus.Blocked
+          });
+          await this.tradeRepository.markOrderStatus(blockedOrder.id, OrderStatus.Blocked, risk.reasons.join(", "));
+          if (risk.nextStatus) {
+            await this.botRepository.updateBotStatus(botId, risk.nextStatus);
+          }
+          if (risk.alertType) {
+            await this.alertService.emit({
+              botId,
+              type: risk.alertType,
+              severity: "warning",
+              title: "Risk rule triggered",
+              message: risk.reasons.join(", ")
+            });
+          }
+          await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null });
+          return;
+        }
+
+        const order = await this.tradeRepository.createOrder(orderIntent);
+        const execution = await this.tradeRepository.createExecution({
+          orderId: order.id,
+          botId,
+          provider: aggregate.bot.mode === "paper" ? ExecutionProvider.Paper : aggregate.bot.executionProvider,
+          mode: aggregate.bot.mode,
+          status: ExecutionStatus.Pending,
+          executionRef: orderIntent.orderKey,
+          txId: null,
+          quotePrice: signal.levelPrice,
+          expectedOutputAmount: null,
+          expectedFeeAmount: null,
+          executedInputAmount: null,
+          executedOutputAmount: null,
+          executedFeeAmount: null,
+          errorCode: null,
+          errorMessage: null,
+          rawReport: null,
+          completedAt: null
+        });
+
+        const report = await this.executionService.executeSwap(aggregate.bot, {
+          botId,
+          inputMint: signal.side === TradeSide.Buy ? aggregate.bot.quoteMint : aggregate.bot.baseMint,
+          outputMint: signal.side === TradeSide.Buy ? aggregate.bot.baseMint : aggregate.bot.quoteMint,
+          amount: signal.side === TradeSide.Buy ? orderIntent.requestedQuoteAmount : orderIntent.requestedBaseAmount,
+          tradeSide: signal.side,
+          inputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.quoteDecimals : aggregate.bot.baseDecimals,
+          outputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.baseDecimals : aggregate.bot.quoteDecimals,
+          slippageBps: aggregate.config.maxSlippageBps,
+          clientOrderId: orderIntent.orderKey,
+          referencePrice: orderIntent.targetPrice
+        });
+
+        await this.tradeRepository.finalizeExecution(execution.id, report, null);
+        await this.tradeRepository.markOrderStatus(
+          order.id,
+          report.status === ExecutionStatus.Failed
+            ? OrderStatus.Failed
+            : aggregate.bot.mode === "paper"
+              ? OrderStatus.Simulated
+              : OrderStatus.Submitted
+        );
+
+        if (report.status === ExecutionStatus.Failed) {
+          await this.botRepository.updateBotStatus(botId, BotStatus.Error);
+          await this.alertService.emit({
+            botId,
+            type: AlertType.ExecutionFailed,
+            severity: "critical",
+            title: `${aggregate.bot.name} execution failed`,
+            message: "Execution adapter returned a failed status."
+          });
+          await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null }, BotStatus.Error);
+          return;
+        }
+
+        const lotUpdate = this.applyExecutionToLots(aggregate.openLots, aggregate.bot.id, signal.side, report, orderIntent, orderIntent.targetPrice);
+        const nextState = this.computePortfolioState(aggregate, signal.side, report, marketPrice.price, lotUpdate.lots, lotUpdate.realizedPnlDelta);
+        const nextGridCycles = this.applyExecutionToGridCycles(aggregate, signal, lotUpdate.openedLotId, orderIntent);
+        await this.tradeRepository.replaceLots(botId, lotUpdate.lots);
+        await this.tradeRepository.upsertPosition({
+          botId,
+          baseAmount: nextState.availableBaseAmount,
+          quoteSpent: nextState.deployedQuoteAmount,
+          averageEntryPrice: nextState.averageEntryPrice ?? 0,
+          realizedPnlUsd: nextState.realizedPnlUsd,
+          unrealizedPnlUsd: nextState.unrealizedPnlUsd,
+          totalFeesQuote: round((aggregate.position?.totalFeesQuote ?? 0) + report.feeAmount, 8)
+        });
+        await this.tradeRepository.createInventorySnapshot({
+          botId,
+          baseAmount: nextState.availableBaseAmount,
+          quoteAmount: nextState.availableQuoteAmount,
+          reservedBaseAmount: 0,
+          reservedQuoteAmount: aggregate.config.reserveQuoteAmount,
+          averageCost: nextState.averageEntryPrice
+        });
+        await this.tradeRepository.createPnlSnapshot({
+          botId,
+          realizedPnlUsd: nextState.realizedPnlUsd,
+          unrealizedPnlUsd: nextState.unrealizedPnlUsd,
+          totalPnlUsd: nextState.realizedPnlUsd + nextState.unrealizedPnlUsd,
+          equityUsd: nextState.totalEquityUsd,
+          price: marketPrice.price
+        });
+        await this.botRepository.updateBotStatus(botId, BotStatus.Cooldown);
+        await this.botRepository.createStateSnapshot({
+          botId,
+          status: BotStatus.Cooldown,
+          currentPrice: marketPrice.price,
+          availableQuoteAmount: nextState.availableQuoteAmount,
+          availableBaseAmount: nextState.availableBaseAmount,
+          deployedQuoteAmount: nextState.deployedQuoteAmount,
+          averageEntryPrice: nextState.averageEntryPrice,
+          realizedPnlUsd: nextState.realizedPnlUsd,
+          unrealizedPnlUsd: nextState.unrealizedPnlUsd,
+          totalEquityUsd: nextState.totalEquityUsd,
+          consecutiveFailures: 0,
+          lastExecutionAt: now,
+          lastProcessedAt: now,
+          lastRecenterAt: aggregate.latestState?.lastRecenterAt ?? null,
+          metadata: {
+            levelLocks: {
+              ...(aggregate.latestState?.metadata.levelLocks ?? {}),
+              [String(signal.levelIndex)]: new Date(now.getTime() + aggregate.config.levelLockMs).toISOString()
+            },
+            pendingSignal: null,
+            gridCycles: nextGridCycles,
+            recenterHistory: aggregate.latestState?.metadata.recenterHistory ?? [],
+            recentExecutions: [...(aggregate.latestState?.metadata.recentExecutions ?? []), now.toISOString()].slice(-50)
+          }
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown bot engine error";
+        await this.logRepository.writeLog({
+          botId,
+          level: LogLevel.Error,
+          category: "engine",
+          message
+        });
+        await this.botRepository.updateBotStatus(botId, BotStatus.Error);
+        await this.alertService.emit({
+          botId,
+          type: AlertType.InfrastructureDegraded,
+          severity: "critical",
+          title: "Bot engine error",
+          message
+        });
+      }
+    };
+
+    if (options?.skipLock) {
+      await execute();
+      return;
+    }
+
+    await this.botRepository.withBotLock(botId, execute);
+  }
+
+  private isOutOfRange(aggregate: BotAggregate, price: number): boolean {
+    return price < aggregate.config.lowPrice || price > aggregate.config.highPrice;
+  }
+
+  private async handleOutOfRange(aggregate: BotAggregate, price: number, now: Date): Promise<void> {
+    const botId = aggregate.bot.id;
+    const history = aggregate.latestState?.metadata.recenterHistory ?? [];
+    const alreadyOutOfRange =
+      aggregate.bot.status === BotStatus.OutOfRange || aggregate.latestState?.status === BotStatus.OutOfRange;
+    if (aggregate.config.recenterMode === RecenterMode.Manual) {
+      await this.botRepository.updateBotStatus(botId, BotStatus.OutOfRange);
+      if (!alreadyOutOfRange) {
+        await this.alertService.emit({
+          botId,
+          type: AlertType.BotOutOfRange,
+          severity: "warning",
+          title: `${aggregate.bot.name} out of range`,
+          message: `Price ${price.toFixed(2)} is outside the configured range.`
+        });
+      }
+      await this.persistPassiveState(aggregate, price, now, {}, BotStatus.OutOfRange);
+      return;
+    }
+
+    const lastRecenterAt = aggregate.latestState?.lastRecenterAt;
+    const recenterCount24h = history.filter((entry) => now.getTime() - new Date(entry).getTime() < 86_400_000).length;
+    if (
+      (lastRecenterAt && now.getTime() - lastRecenterAt.getTime() < aggregate.config.autoRecenterMinIntervalMs) ||
+      recenterCount24h >= aggregate.config.autoRecenterMaxPerDay
+    ) {
+      await this.botRepository.updateBotStatus(botId, BotStatus.OutOfRange);
+      await this.persistPassiveState(aggregate, price, now, {}, BotStatus.OutOfRange);
+      return;
+    }
+
+    await this.alertService.emit({
+      botId,
+      type: AlertType.RecenterPerformed,
+      severity: "info",
+      title: `${aggregate.bot.name} recentered`,
+      message: `Auto-recenter executed at ${price.toFixed(2)}`
+    });
+    await this.persistPassiveState(
+      aggregate,
+      price,
+      now,
+      { recenterHistory: [...history, now.toISOString()].slice(-10) },
+      BotStatus.Running,
+      now
+    );
+  }
+
+  private getConfirmedSignal(aggregate: BotAggregate, currentPrice: number, now: Date): TriggerSignal | null {
+    const pending = aggregate.latestState?.metadata.pendingSignal;
+    if (!pending) {
+      return null;
+    }
+
+    const levels = this.gridStrategyService.calculateLevels(
+      aggregate.config.lowPrice,
+      aggregate.config.highPrice,
+      aggregate.config.levelCount,
+      aggregate.config.gridType
+    );
+    const pendingLevel = levels.find((level) => level.index === pending.levelIndex);
+    if (!pendingLevel) {
+      return null;
+    }
+
+    if (!this.priceStillConfirms(pending.side, pendingLevel.price, currentPrice)) {
+      return null;
+    }
+
+    if (now.getTime() - new Date(pending.firstObservedAt).getTime() < aggregate.config.priceConfirmationWindowMs) {
+      return null;
+    }
+
+    return {
+      levelIndex: pending.levelIndex,
+      side: pending.side,
+      levelPrice: pendingLevel.price,
+      observedPrice: currentPrice,
+      idempotencyKey: `${aggregate.bot.id}:${pending.side}:${pending.levelIndex}:${pending.firstObservedAt}`,
+      triggeredAt: now
+    };
+  }
+
+  private async persistPassiveState(
+    aggregate: BotAggregate,
+    currentPrice: number,
+    now: Date,
+    metadataPatch: Partial<BotRuntimeMetadata> = {},
+    status = this.getPassiveStatus(aggregate, now),
+    lastRecenterAt = aggregate.latestState?.lastRecenterAt ?? null
+  ): Promise<void> {
+    const latest = aggregate.latestState;
+    const levels = this.gridStrategyService.calculateLevels(
+      aggregate.config.lowPrice,
+      aggregate.config.highPrice,
+      aggregate.config.levelCount,
+      aggregate.config.gridType
+    );
+    const crossed = latest?.currentPrice ? this.gridStrategyService.detectCrossedLevels(levels, latest.currentPrice, currentPrice)[0] ?? null : null;
+    const pendingSignal = this.resolvePendingSignal(aggregate, crossed, levels, currentPrice, now);
+    const availableBaseAmount = latest?.availableBaseAmount ?? aggregate.position?.baseAmount ?? 0;
+    const availableQuoteAmount = latest?.availableQuoteAmount ?? aggregate.config.totalBudgetUsd;
+    const openCostBasis = round(aggregate.openLots.reduce((sum, lot) => sum + lot.costQuote, 0), 8);
+    const averageEntryPrice = availableBaseAmount > 0 && openCostBasis > 0 ? round(openCostBasis / availableBaseAmount, 8) : null;
+    const unrealizedPnlUsd = availableBaseAmount > 0 ? round(availableBaseAmount * currentPrice - openCostBasis, 8) : 0;
+    const totalEquityUsd = round(availableQuoteAmount + availableBaseAmount * currentPrice, 8);
+
+    await this.botRepository.createStateSnapshot({
+      botId: aggregate.bot.id,
+      status,
+      currentPrice,
+      availableQuoteAmount,
+      availableBaseAmount,
+      deployedQuoteAmount: openCostBasis,
+      averageEntryPrice,
+      realizedPnlUsd: latest?.realizedPnlUsd ?? aggregate.position?.realizedPnlUsd ?? 0,
+      unrealizedPnlUsd,
+      totalEquityUsd,
+      consecutiveFailures: latest?.consecutiveFailures ?? 0,
+      lastExecutionAt: latest?.lastExecutionAt ?? null,
+      lastProcessedAt: now,
+      lastRecenterAt,
+      metadata: {
+        levelLocks: latest?.metadata.levelLocks ?? {},
+        pendingSignal,
+        gridCycles: latest?.metadata.gridCycles ?? {},
+        recenterHistory: latest?.metadata.recenterHistory ?? [],
+        recentExecutions: latest?.metadata.recentExecutions ?? [],
+        ...metadataPatch
+      }
+    });
+  }
+
+  private resolvePendingSignal(
+    aggregate: BotAggregate,
+    crossed: TriggerSignal | null,
+    levels: Array<{ index: number; price: number }>,
+    currentPrice: number,
+    now: Date
+  ) {
+    const pending = aggregate.latestState?.metadata.pendingSignal;
+
+    if (crossed) {
+      return {
+        levelIndex: crossed.levelIndex,
+        side: crossed.side,
+        firstObservedAt:
+          pending?.levelIndex === crossed.levelIndex && pending.side === crossed.side ? pending.firstObservedAt : now.toISOString(),
+        lastObservedPrice: currentPrice
+      };
+    }
+
+    if (!pending) {
+      return null;
+    }
+
+    const pendingLevel = levels.find((level) => level.index === pending.levelIndex);
+    if (!pendingLevel) {
+      return null;
+    }
+
+    if (!this.priceStillConfirms(pending.side, pendingLevel.price, currentPrice)) {
+      return null;
+    }
+
+    return {
+      ...pending,
+      lastObservedPrice: currentPrice
+    };
+  }
+
+  private priceStillConfirms(side: TradeSide, levelPrice: number, currentPrice: number) {
+    return side === TradeSide.Buy ? currentPrice <= levelPrice : currentPrice >= levelPrice;
+  }
+
+  private getPassiveStatus(aggregate: BotAggregate, now: Date): BotStatus {
+    if (aggregate.bot.status === BotStatus.Error) {
+      return BotStatus.Running;
+    }
+
+    if (
+      aggregate.bot.status === BotStatus.Cooldown &&
+      aggregate.latestState?.lastExecutionAt &&
+      now.getTime() - aggregate.latestState.lastExecutionAt.getTime() > aggregate.config.cooldownMs
+    ) {
+      return BotStatus.Running;
+    }
+
+    return aggregate.bot.status;
+  }
+
+  private applyExecutionToLots(
+    currentLots: PositionLot[],
+    botId: string,
+    side: TradeSide,
+    report: { executionId: string; inputAmount: number; outputAmount: number; feeAmount: number },
+    orderIntent: { matchedLotIds?: string[] },
+    levelPrice: number
+  ): { lots: PositionLot[]; realizedPnlDelta: number; openedLotId: string | null } {
+    if (side === TradeSide.Buy) {
+      const entryPrice = report.outputAmount > 0 ? round(report.inputAmount / report.outputAmount, 8) : levelPrice;
+      const openedLotId = `lot-${report.executionId}`;
+      return {
+        lots: [
+          ...currentLots,
+          {
+            id: openedLotId,
+            botId,
+            originalBaseAmount: report.outputAmount,
+            remainingBaseAmount: report.outputAmount,
+            entryPrice,
+            costQuote: report.inputAmount,
+            openedByExecutionId: report.executionId,
+            closedByExecutionId: null,
+            openedAt: new Date(),
+            closedAt: null
+          }
+        ],
+        realizedPnlDelta: 0,
+        openedLotId
+      };
+    }
+
+    const matchedLotIds = new Set(orderIntent.matchedLotIds ?? currentLots.map((lot) => lot.id));
+    let remainingToSell = report.inputAmount;
+    let realizedPnlDelta = 0;
+    const quotePerBase = report.inputAmount > 0 ? report.outputAmount / report.inputAmount : levelPrice;
+    const feePerBase = report.inputAmount > 0 ? report.feeAmount / report.inputAmount : 0;
+
+    const lots = currentLots
+      .map((lot) => {
+        if (remainingToSell <= 0 || !matchedLotIds.has(lot.id)) {
+          return lot;
+        }
+
+        const sold = Math.min(lot.remainingBaseAmount, remainingToSell);
+        const costPerBase = lot.remainingBaseAmount > 0 ? lot.costQuote / lot.remainingBaseAmount : 0;
+        const soldCostQuote = round(costPerBase * sold, 8);
+        const soldQuoteOutput = round(quotePerBase * sold, 8);
+        const soldFeeQuote = round(feePerBase * sold, 8);
+        remainingToSell = round(remainingToSell - sold, 8);
+        const nextRemaining = round(lot.remainingBaseAmount - sold, 8);
+        const nextCostQuote = round(Math.max(lot.costQuote - soldCostQuote, 0), 8);
+        realizedPnlDelta = round(realizedPnlDelta + soldQuoteOutput - soldFeeQuote - soldCostQuote, 8);
+        return {
+          ...lot,
+          remainingBaseAmount: nextRemaining,
+          costQuote: nextCostQuote,
+          closedByExecutionId: nextRemaining === 0 ? report.executionId : lot.closedByExecutionId,
+          closedAt: nextRemaining === 0 ? new Date() : lot.closedAt
+        };
+      })
+      .filter((lot) => lot.remainingBaseAmount > 0);
+
+    return {
+      lots,
+      realizedPnlDelta,
+      openedLotId: null
+    };
+  }
+
+  private applyExecutionToGridCycles(
+    aggregate: BotAggregate,
+    signal: TriggerSignal,
+    openedLotId: string | null,
+    orderIntent: { matchedLotIds?: string[] }
+  ) {
+    const currentCycles = aggregate.latestState?.metadata.gridCycles ?? {};
+    const nextCycles: Record<string, GridCycle> = { ...currentCycles };
+
+    if (signal.side === TradeSide.Buy) {
+      if (!openedLotId) {
+        return nextCycles;
+      }
+
+      nextCycles[String(signal.levelIndex)] = {
+        buyLevelIndex: signal.levelIndex,
+        sellLevelIndex: signal.levelIndex + 1 < aggregate.config.levelCount ? signal.levelIndex + 1 : null,
+        lotId: openedLotId,
+        openedAt: signal.triggeredAt.toISOString()
+      };
+      return nextCycles;
+    }
+
+    const matchedLotIds = new Set(orderIntent.matchedLotIds ?? []);
+    for (const [key, cycle] of Object.entries(nextCycles)) {
+      if (cycle.sellLevelIndex === signal.levelIndex || matchedLotIds.has(cycle.lotId)) {
+        delete nextCycles[key];
+      }
+    }
+
+    return nextCycles;
+  }
+
+  private computePortfolioState(
+    aggregate: BotAggregate,
+    side: TradeSide,
+    report: { inputAmount: number; outputAmount: number; feeAmount: number },
+    currentPrice: number,
+    lots: PositionLot[],
+    realizedPnlDelta: number
+  ) {
+    const quoteAmount = aggregate.latestState?.availableQuoteAmount ?? aggregate.config.totalBudgetUsd;
+    const baseAmount = aggregate.latestState?.availableBaseAmount ?? 0;
+
+    const availableQuoteAmount =
+      side === TradeSide.Buy ? round(quoteAmount - report.inputAmount - report.feeAmount, 8) : round(quoteAmount + report.outputAmount - report.feeAmount, 8);
+    const availableBaseAmount =
+      side === TradeSide.Buy ? round(baseAmount + report.outputAmount, 8) : round(baseAmount - report.inputAmount, 8);
+    const totalBase = lots.reduce((sum, lot) => sum + lot.remainingBaseAmount, 0);
+    const totalCost = round(lots.reduce((sum, lot) => sum + lot.costQuote, 0), 8);
+    const averageEntryPrice = totalBase > 0 && totalCost > 0 ? round(totalCost / totalBase, 8) : null;
+    const realizedPnlUsd = round((aggregate.latestState?.realizedPnlUsd ?? aggregate.position?.realizedPnlUsd ?? 0) + realizedPnlDelta, 8);
+    const unrealizedPnlUsd = totalBase > 0 ? round(totalBase * currentPrice - totalCost, 8) : 0;
+    const totalEquityUsd = round(availableQuoteAmount + availableBaseAmount * currentPrice, 8);
+
+    return {
+      availableQuoteAmount,
+      availableBaseAmount,
+      deployedQuoteAmount: totalCost,
+      averageEntryPrice,
+      realizedPnlUsd,
+      unrealizedPnlUsd,
+      totalEquityUsd
+    };
+  }
+}

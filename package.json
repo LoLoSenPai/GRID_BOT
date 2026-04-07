@@ -1,0 +1,21 @@
+{
+  "name": "grid-bot-platform",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.26.2",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev:web": "pnpm --filter @grid-bot/web dev",
+    "dev:worker": "pnpm --filter @grid-bot/worker dev",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "db:generate": "pnpm --filter @grid-bot/db prisma:generate",
+    "db:migrate": "pnpm --filter @grid-bot/db prisma:migrate:dev",
+    "db:deploy": "pnpm --filter @grid-bot/db prisma:migrate:deploy",
+    "db:seed": "pnpm --filter @grid-bot/db seed"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3"
+  }
+}

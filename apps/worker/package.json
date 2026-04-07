@@ -1,0 +1,22 @@
+{
+  "name": "@grid-bot/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@grid-bot/common": "workspace:*",
+    "@grid-bot/core": "workspace:*",
+    "@grid-bot/db": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "vitest": "^4.0.8"
+  }
+}

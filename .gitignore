@@ -1,0 +1,11 @@
+.next
+.turbo
+.env
+.env.local
+.env.production
+node_modules
+coverage
+dist
+packages/db/src/generated
+*.log
+.vscode

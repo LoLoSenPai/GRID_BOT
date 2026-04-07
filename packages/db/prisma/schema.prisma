@@ -1,0 +1,327 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum BotStatus {
+  running
+  paused
+  stopped
+  out_of_range
+  cooldown
+  error
+}
+
+enum BotMode {
+  paper
+  live
+}
+
+enum StrategyMode {
+  accumulate_base
+  accumulate_usdc
+  balanced
+}
+
+enum GridType {
+  arithmetic
+  geometric
+}
+
+enum RecenterMode {
+  manual_recenter
+  auto_recenter
+}
+
+enum ExecutionProvider {
+  jupiter
+  paper
+  dflow
+}
+
+enum ExecutionStatus {
+  pending
+  submitted
+  filled
+  failed
+  simulated
+}
+
+enum AlertType {
+  bot_paused
+  bot_out_of_range
+  execution_failed
+  consecutive_failures
+  recenter_performed
+  budget_max_reached
+  drawdown_threshold
+  infrastructure_degraded
+}
+
+enum TradeSide {
+  buy
+  sell
+}
+
+enum OrderStatus {
+  created
+  blocked
+  submitted
+  filled
+  failed
+  cancelled
+  simulated
+}
+
+enum LogLevel {
+  debug
+  info
+  warn
+  error
+}
+
+model Bot {
+  id                String             @id @default(cuid())
+  key               String             @unique
+  name              String
+  baseMint          String
+  quoteMint         String
+  baseSymbol        String
+  quoteSymbol       String
+  baseDecimals      Int
+  quoteDecimals     Int
+  strategyMode      StrategyMode
+  mode              BotMode
+  status            BotStatus
+  executionProvider ExecutionProvider
+  currentPrice      Decimal?           @db.Decimal(30, 10)
+  lastHeartbeatAt   DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  config            BotConfig?
+  stateSnapshots    BotStateSnapshot[]
+  orders            Order[]
+  executions        Execution[]
+  position          Position?
+  positionLots      PositionLot[]
+  inventorySnapshots InventorySnapshot[]
+  pnlSnapshots      PnlSnapshot[]
+  alerts            Alert[]
+  systemLogs        SystemLog[]
+  priceSnapshots    PriceSnapshot[]
+
+  @@map("bots")
+}
+
+model BotConfig {
+  id                       String       @id @default(cuid())
+  botId                    String       @unique
+  totalBudgetUsd           Decimal      @db.Decimal(30, 10)
+  maxDeployableUsd         Decimal      @db.Decimal(30, 10)
+  reserveQuoteAmount       Decimal      @db.Decimal(30, 10)
+  lowPrice                 Decimal      @db.Decimal(30, 10)
+  highPrice                Decimal      @db.Decimal(30, 10)
+  levelCount               Int
+  gridType                 GridType
+  minOrderQuoteAmount      Decimal      @db.Decimal(30, 10)
+  maxSlippageBps           Int
+  cooldownMs               Int
+  maxOrdersPerHour         Int
+  maxDrawdownPct           Decimal      @db.Decimal(10, 4)
+  maxConsecutiveFailures   Int
+  levelLockMs              Int
+  priceConfirmationWindowMs Int
+  recenterMode             RecenterMode
+  autoRecenterMinIntervalMs Int
+  autoRecenterMaxPerDay    Int
+  outOfRangePause          Boolean      @default(true)
+  createdAt                DateTime     @default(now())
+  updatedAt                DateTime     @updatedAt
+  bot                      Bot          @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@map("bot_configs")
+}
+
+model BotStateSnapshot {
+  id                  String     @id @default(cuid())
+  botId               String
+  status              BotStatus
+  currentPrice        Decimal?   @db.Decimal(30, 10)
+  availableQuoteAmount Decimal   @db.Decimal(30, 10)
+  availableBaseAmount Decimal    @db.Decimal(30, 10)
+  deployedQuoteAmount Decimal    @db.Decimal(30, 10)
+  averageEntryPrice   Decimal?   @db.Decimal(30, 10)
+  realizedPnlUsd      Decimal    @db.Decimal(30, 10)
+  unrealizedPnlUsd    Decimal    @db.Decimal(30, 10)
+  totalEquityUsd      Decimal    @db.Decimal(30, 10)
+  consecutiveFailures Int        @default(0)
+  lastExecutionAt     DateTime?
+  lastProcessedAt     DateTime
+  lastRecenterAt      DateTime?
+  metadata            Json
+  createdAt           DateTime   @default(now())
+  bot                 Bot        @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@index([botId, createdAt(sort: Desc)])
+  @@map("bot_state_snapshots")
+}
+
+model Order {
+  id                  String      @id @default(cuid())
+  botId               String
+  orderKey            String      @unique
+  side                TradeSide
+  levelIndex          Int
+  targetPrice         Decimal     @db.Decimal(30, 10)
+  requestedBaseAmount Decimal     @db.Decimal(30, 10)
+  requestedQuoteAmount Decimal    @db.Decimal(30, 10)
+  status              OrderStatus
+  reason              String
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+  bot                 Bot         @relation(fields: [botId], references: [id], onDelete: Cascade)
+  executions          Execution[]
+
+  @@index([botId, createdAt(sort: Desc)])
+  @@map("orders")
+}
+
+model Execution {
+  id                   String            @id @default(cuid())
+  orderId              String
+  botId                String
+  provider             ExecutionProvider
+  mode                 BotMode
+  status               ExecutionStatus
+  executionRef         String
+  txId                 String?
+  quotePrice           Decimal?          @db.Decimal(30, 10)
+  expectedOutputAmount Decimal?          @db.Decimal(30, 10)
+  expectedFeeAmount    Decimal?          @db.Decimal(30, 10)
+  executedInputAmount  Decimal?          @db.Decimal(30, 10)
+  executedOutputAmount Decimal?          @db.Decimal(30, 10)
+  executedFeeAmount    Decimal?          @db.Decimal(30, 10)
+  errorCode            String?
+  errorMessage         String?
+  rawReport            Json?
+  completedAt          DateTime?
+  createdAt            DateTime          @default(now())
+  order                Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  bot                  Bot               @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@index([botId, createdAt(sort: Desc)])
+  @@map("executions")
+}
+
+model Position {
+  id             String    @id @default(cuid())
+  botId          String    @unique
+  baseAmount     Decimal   @db.Decimal(30, 10)
+  quoteSpent     Decimal   @db.Decimal(30, 10)
+  averageEntryPrice Decimal @db.Decimal(30, 10)
+  realizedPnlUsd Decimal   @db.Decimal(30, 10)
+  unrealizedPnlUsd Decimal @db.Decimal(30, 10)
+  totalFeesQuote Decimal   @db.Decimal(30, 10)
+  updatedAt      DateTime  @updatedAt
+  bot            Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@map("positions")
+}
+
+model PositionLot {
+  id                 String    @id
+  botId              String
+  originalBaseAmount Decimal   @db.Decimal(30, 10)
+  remainingBaseAmount Decimal  @db.Decimal(30, 10)
+  entryPrice         Decimal   @db.Decimal(30, 10)
+  costQuote          Decimal   @db.Decimal(30, 10)
+  openedByExecutionId String
+  closedByExecutionId String?
+  openedAt           DateTime
+  closedAt           DateTime?
+  bot                Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@index([botId, openedAt(sort: Asc)])
+  @@map("position_lots")
+}
+
+model InventorySnapshot {
+  id                 String    @id @default(cuid())
+  botId              String
+  baseAmount         Decimal   @db.Decimal(30, 10)
+  quoteAmount        Decimal   @db.Decimal(30, 10)
+  reservedBaseAmount Decimal   @db.Decimal(30, 10)
+  reservedQuoteAmount Decimal  @db.Decimal(30, 10)
+  averageCost        Decimal?  @db.Decimal(30, 10)
+  createdAt          DateTime  @default(now())
+  bot                Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@index([botId, createdAt(sort: Desc)])
+  @@map("inventory_snapshots")
+}
+
+model PnlSnapshot {
+  id              String    @id @default(cuid())
+  botId           String
+  realizedPnlUsd  Decimal   @db.Decimal(30, 10)
+  unrealizedPnlUsd Decimal  @db.Decimal(30, 10)
+  totalPnlUsd     Decimal   @db.Decimal(30, 10)
+  equityUsd       Decimal   @db.Decimal(30, 10)
+  price           Decimal   @db.Decimal(30, 10)
+  createdAt       DateTime  @default(now())
+  bot             Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@index([botId, createdAt(sort: Desc)])
+  @@map("pnl_snapshots")
+}
+
+model Alert {
+  id              String     @id @default(cuid())
+  botId           String?
+  type            AlertType
+  severity        String
+  title           String
+  message         String
+  metadata        Json?
+  acknowledgedAt  DateTime?
+  sentToDiscordAt DateTime?
+  createdAt       DateTime   @default(now())
+  bot             Bot?       @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt(sort: Desc)])
+  @@map("alerts")
+}
+
+model SystemLog {
+  id        String    @id @default(cuid())
+  botId     String?
+  level     LogLevel
+  category  String
+  message   String
+  metadata  Json?
+  createdAt DateTime  @default(now())
+  bot       Bot?      @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt(sort: Desc)])
+  @@map("system_logs")
+}
+
+model PriceSnapshot {
+  id         String    @id @default(cuid())
+  botId      String?
+  symbol     String
+  source     String
+  price      Decimal   @db.Decimal(30, 10)
+  confidence Decimal   @db.Decimal(30, 10)
+  feedId     String
+  status     String
+  capturedAt DateTime
+  createdAt  DateTime  @default(now())
+  bot        Bot?      @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@index([symbol, capturedAt(sort: Desc)])
+  @@map("price_snapshots")
+}
