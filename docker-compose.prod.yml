@@ -48,7 +48,7 @@ services:
       migrate:
         condition: service_completed_successfully
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - ${EXECUTION_WALLET_HOST_PATH}:/run/secrets/execution-wallet.json:ro
     healthcheck:
