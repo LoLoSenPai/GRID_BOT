@@ -6,7 +6,6 @@ import {
   BOT_BEHAVIOR_PRESET_IDS,
   BOT_PAIR_PRESETS,
   BOT_PAIR_PRESET_IDS,
-  BOT_MODE_OPTIONS,
   GRID_TYPE_OPTIONS,
   RECENTER_MODE_OPTIONS,
   STRATEGY_MODE_OPTIONS,
@@ -20,18 +19,22 @@ import { cn, formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 
 export function BotConfigFields({
   values,
+  botMode,
   liveTradingEnabled,
   onChange,
   onApplyBehaviorPreset,
   mode,
-  pairLabel
+  pairLabel,
+  availableUsd
 }: {
   values: BotFormDraft;
+  botMode: BotMode;
   liveTradingEnabled: boolean;
   onChange: <K extends keyof BotFormDraft>(key: K, value: BotFormDraft[K]) => void;
   onApplyBehaviorPreset: (presetId: BotBehaviorPresetId) => void;
   mode: "create" | "edit";
   pairLabel: string;
+  availableUsd?: number | null;
 }) {
   const activeBehaviorPreset = inferBehaviorPresetId(values);
   const activePreset = BOT_BEHAVIOR_PRESETS[activeBehaviorPreset];
@@ -60,26 +63,29 @@ export function BotConfigFields({
             </Field>
           ) : (
             <Field label="Pair">
-              <div className="mt-2 border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-sm text-white">{pairLabel}</div>
+              <div className="flex h-8 items-center rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white">{pairLabel}</div>
             </Field>
           )}
 
           <TextField label="Name" value={values.name} onChange={(value) => onChange("name", value)} />
+        </div>
 
-          <Field label="Mode" hint={!liveTradingEnabled ? "Live locked" : undefined}>
-            <select value={values.mode} onChange={(event) => onChange("mode", event.currentTarget.value as BotMode)} className={compactFormControlClass}>
-              {BOT_MODE_OPTIONS.map((value) => (
-                <option key={value} value={value} disabled={value === BotMode.Live && !liveTradingEnabled}>
-                  {value}
-                </option>
-              ))}
-            </select>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <Field label="Mode">
+            <div className="flex h-8 items-center rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white">
+              {botMode === BotMode.Live ? "live / jupiter" : "paper / paper"}
+            </div>
+          </Field>
+          <Field label="Execution">
+            <div className="flex h-8 items-center rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white">
+              {botMode === BotMode.Live ? "jupiter" : "paper"}
+            </div>
           </Field>
         </div>
 
         <div className="mt-3">
-          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">Preset</div>
-          <div className="mt-2 grid gap-2 sm:grid-cols-3">
+          <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">Preset</div>
+          <div className="mt-1.5 grid gap-2 sm:grid-cols-3">
             {BOT_BEHAVIOR_PRESET_IDS.map((presetId) => {
               const preset = BOT_BEHAVIOR_PRESETS[presetId];
               const active = activeBehaviorPreset === presetId;
@@ -90,14 +96,14 @@ export function BotConfigFields({
                   type="button"
                   onClick={() => onApplyBehaviorPreset(presetId)}
                   className={cn(
-                    "border px-3 py-2.5 text-left transition",
+                    "rounded-md border px-2.5 py-2 text-left transition",
                     active
-                      ? "border-[color:rgba(68,211,156,0.2)] bg-[color:rgba(68,211,156,0.08)]"
+                      ? "border-[color:rgba(68,211,156,0.25)] bg-[color:rgba(68,211,156,0.08)]"
                       : "border-[var(--line)] bg-[var(--bg)] hover:bg-white/[0.04]"
                   )}
                 >
-                  <div className={cn("text-sm font-medium", active ? "text-white" : "text-white/88")}>{preset.label}</div>
-                  <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">{preset.tags[0]}</div>
+                  <div className={cn("text-[13px] font-medium", active ? "text-white" : "text-white/80")}>{preset.label}</div>
+                  <div className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">{preset.tags[0]}</div>
                 </button>
               );
             })}
@@ -131,6 +137,17 @@ export function BotConfigFields({
       </ConfigSection>
 
       <ConfigSection title="Capital" defaultOpen>
+        {availableUsd != null && botMode === BotMode.Live ? (
+          <div className={cn(
+            "mb-3 flex items-center justify-between rounded-md border px-2.5 py-1.5 font-mono text-[10px]",
+            values.totalBudgetUsd > availableUsd
+              ? "border-[color:rgba(239,68,68,0.25)] bg-[color:rgba(239,68,68,0.06)] text-[var(--red)]"
+              : "border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.04)] text-[var(--green)]"
+          )}>
+            <span className="uppercase tracking-[0.14em]">Available USDC</span>
+            <span>{formatCurrency(availableUsd)}</span>
+          </div>
+        ) : null}
         <div className="grid gap-3 sm:grid-cols-2">
           <NumberField label="Budget" value={values.totalBudgetUsd} onChange={(value) => onChange("totalBudgetUsd", value)} min={1} step={10} />
           <NumberField label="Deployable" value={values.maxDeployableUsd} onChange={(value) => onChange("maxDeployableUsd", value)} min={1} step={10} />
@@ -141,7 +158,7 @@ export function BotConfigFields({
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
           <CompactMetric label="Per rail" value={formatCurrency(budgetPerRail)} hint="Deployable only" />
           <CompactMetric label="Range width" value={formatPercent(midPrice > 0 ? ((values.highPrice - values.lowPrice) / midPrice) * 100 : 0, 1)} hint="Low to high" />
-          <CompactMetric label="Provider" value={values.mode === BotMode.Paper ? "paper" : "jupiter"} hint="Execution" />
+          <CompactMetric label="Provider" value={botMode === BotMode.Paper ? "paper" : "jupiter"} hint="Execution" />
         </div>
       </ConfigSection>
 
@@ -203,10 +220,10 @@ function ConfigSection({
   defaultOpen?: boolean;
 }) {
   return (
-    <details open={defaultOpen} className="group border border-[var(--line)] bg-[var(--panel-soft)]">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-3 py-2.5">
-        <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">{title}</div>
-        <ChevronDown className="h-4 w-4 text-[var(--muted)] transition group-open:rotate-180" />
+    <details open={defaultOpen} className="group rounded-md border border-[var(--line)] bg-[var(--panel-soft)]">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-3 py-2">
+        <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">{title}</div>
+        <ChevronDown className="h-3.5 w-3.5 text-[var(--muted)] transition group-open:rotate-180" />
       </summary>
       <div className="border-t border-[var(--line)] px-3 py-3">{children}</div>
     </details>
@@ -214,17 +231,17 @@ function ConfigSection({
 }
 
 function CompactTag({ label }: { label: string }) {
-  return <span className="border border-[var(--line)] px-2 py-1">{label}</span>;
+  return <span className="rounded border border-[var(--line)] px-1.5 py-0.5 text-[11px]">{label}</span>;
 }
 
 function CompactMetric({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
-    <div className="border border-[var(--line)] bg-[var(--bg)] px-3 py-2.5">
-      <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">{label}</div>
-      <div className="mt-1.5 text-sm font-medium text-white">{value}</div>
-      <div className="mt-1 text-[11px] text-[var(--muted)]">{hint}</div>
+    <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
+      <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">{label}</div>
+      <div className="mt-1 text-[13px] font-medium text-white">{value}</div>
+      <div className="mt-0.5 text-[10px] text-[var(--muted)]">{hint}</div>
     </div>
   );
 }
 
-const compactFormControlClass = cn(formControlClass, "px-3 py-2");
+const compactFormControlClass = formControlClass;

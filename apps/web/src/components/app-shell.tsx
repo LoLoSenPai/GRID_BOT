@@ -1,7 +1,11 @@
 import Link from "next/link";
+import { BotMode } from "@grid-bot/core/enums";
 import { Activity, Bot, Gauge, LogOut } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { buildDeskHref } from "@/lib/desk-mode";
+import { DeskModeToggle } from "@/components/desk-mode-toggle";
+import { WalletBalancePanel } from "@/components/wallet-balance-panel";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: Gauge },
@@ -13,12 +17,14 @@ export function AppShell({
   title,
   subtitle,
   children,
-  pathname
+  pathname,
+  deskMode,
 }: {
   title: string;
   subtitle: string;
   children: React.ReactNode;
   pathname: string;
+  deskMode: BotMode;
 }) {
   return (
     <div className="min-h-screen px-3 py-3 lg:px-4">
@@ -27,9 +33,10 @@ export function AppShell({
           <div className="border-b border-[var(--line)] px-4 py-4">
             <div className="font-mono text-[10px] uppercase tracking-[0.32em] text-[var(--muted)]">Grid bot</div>
             <div className="mt-2 text-lg font-semibold tracking-[-0.03em] text-white">Solo desk</div>
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap items-center gap-2">
               <span className="border border-[var(--line)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--green)]">Spot</span>
               <span className="border border-[var(--line)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">Personal</span>
+              <DeskModeToggle initialMode={deskMode} />
             </div>
           </div>
           <nav className="px-3 py-3">
@@ -39,7 +46,7 @@ export function AppShell({
               return (
                 <Link
                   key={item.href}
-                  href={item.href}
+                  href={buildDeskHref(item.href, deskMode)}
                   className={cn(
                     "mb-1 flex items-center gap-3 border border-transparent px-3 py-3 text-sm text-[var(--muted)] transition hover:border-[var(--line)] hover:bg-white/[0.03] hover:text-white",
                     active && "border-[var(--line)] bg-white/[0.05] text-white shadow-[inset_2px_0_0_0_var(--green)]"
@@ -52,10 +59,7 @@ export function AppShell({
             })}
           </nav>
           <div className="mt-auto border-t border-[var(--line)] px-4 py-4">
-            <div className="mb-3 border border-[var(--line)] bg-[var(--panel-soft)] px-3 py-3">
-              <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--muted)]">Mode</div>
-              <div className="mt-2 text-sm text-white">Manual oversight</div>
-            </div>
+            <WalletBalancePanel deskMode={deskMode} />
             <form action="/api/auth/logout" method="post">
               <button className="flex w-full items-center gap-3 border border-[var(--line)] px-3 py-3 text-sm text-[var(--muted)] transition hover:bg-white/[0.03] hover:text-white">
                 <LogOut className="h-4 w-4" />

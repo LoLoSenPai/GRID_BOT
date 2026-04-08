@@ -1,3 +1,4 @@
+import { BotMode } from "@grid-bot/core/enums";
 import { prisma } from "@grid-bot/db";
 
 function isVisibleIncidentAlert(alert: { type: string; bot?: { status: string } | null }) {
@@ -12,9 +13,35 @@ function isVisibleIncidentAlert(alert: { type: string; bot?: { status: string } 
   return true;
 }
 
-export async function getDashboardData() {
+function buildScopedBotRelation(mode?: BotMode) {
+  if (!mode) {
+    return undefined;
+  }
+
+  return {
+    is: {
+      mode: mode as never,
+    },
+  };
+}
+
+function buildScopedOptionalBotRelation(mode?: BotMode) {
+  if (!mode) {
+    return undefined;
+  }
+
+  return {
+    OR: [
+      { bot: { is: null } },
+      { bot: buildScopedBotRelation(mode) },
+    ],
+  };
+}
+
+export async function getDashboardData(mode?: BotMode) {
   const [bots, rawAlerts, orders, executions, logs] = await Promise.all([
     prisma.bot.findMany({
+      where: mode ? { mode: mode as never } : undefined,
       include: {
         config: true,
         stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
@@ -23,18 +50,26 @@ export async function getDashboardData() {
       },
       orderBy: { createdAt: "asc" }
     }),
-    prisma.alert.findMany({ include: { bot: true }, orderBy: { createdAt: "desc" }, take: 24 }),
+    prisma.alert.findMany({
+      where: buildScopedOptionalBotRelation(mode),
+      include: { bot: true },
+      orderBy: { createdAt: "desc" },
+      take: 24,
+    }),
     prisma.order.findMany({
+      where: mode ? { bot: { mode: mode as never } } : undefined,
       include: { bot: true },
       orderBy: { createdAt: "desc" },
       take: 8
     }),
     prisma.execution.findMany({
+      where: mode ? { bot: { mode: mode as never } } : undefined,
       include: { bot: true, order: true },
       orderBy: { createdAt: "desc" },
       take: 8
     }),
     prisma.systemLog.findMany({
+      where: buildScopedOptionalBotRelation(mode),
       include: { bot: true },
       orderBy: { createdAt: "desc" },
       take: 8
@@ -136,8 +171,9 @@ export async function getDashboardData() {
   };
 }
 
-export async function getBotsOverview() {
+export async function getBotsOverview(mode?: BotMode) {
   return prisma.bot.findMany({
+    where: mode ? { mode: mode as never } : undefined,
     include: {
       config: true,
       stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
@@ -185,11 +221,26 @@ export async function getBotDetail(botId: string) {
   };
 }
 
-export async function getActivityFeed() {
+export async function getActivityFeed(mode?: BotMode) {
   const [rawAlerts, logs, executions] = await Promise.all([
-    prisma.alert.findMany({ include: { bot: true }, orderBy: { createdAt: "desc" }, take: 120 }),
-    prisma.systemLog.findMany({ include: { bot: true }, orderBy: { createdAt: "desc" }, take: 40 }),
-    prisma.execution.findMany({ include: { bot: true, order: true }, orderBy: { createdAt: "desc" }, take: 40 })
+    prisma.alert.findMany({
+      where: buildScopedOptionalBotRelation(mode),
+      include: { bot: true },
+      orderBy: { createdAt: "desc" },
+      take: 120,
+    }),
+    prisma.systemLog.findMany({
+      where: buildScopedOptionalBotRelation(mode),
+      include: { bot: true },
+      orderBy: { createdAt: "desc" },
+      take: 40,
+    }),
+    prisma.execution.findMany({
+      where: mode ? { bot: { mode: mode as never } } : undefined,
+      include: { bot: true, order: true },
+      orderBy: { createdAt: "desc" },
+      take: 40,
+    })
   ]);
 
   const alerts = rawAlerts.filter((alert) => isVisibleIncidentAlert(alert)).slice(0, 40);

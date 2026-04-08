@@ -1,3 +1,4 @@
+import { cookies } from "next/headers";
 import Link from "next/link";
 import { AlertTriangle, ArrowUpRight, Clock3, Zap } from "lucide-react";
 
@@ -6,6 +7,7 @@ import { AutoRefresh } from "@/components/auto-refresh";
 import { StatusBadge } from "@/components/status-badge";
 import { SurfaceCard } from "@/components/surface-card";
 import { requireSession } from "@/lib/auth";
+import { DESK_MODE_COOKIE, parseDeskMode } from "@/lib/desk-mode";
 import { getDashboardData } from "@/lib/data";
 import { formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/utils";
 
@@ -35,12 +37,19 @@ function ToneBadge({ label, tone = "default" }: { label: string; tone?: "default
   return <span className={`inline-flex border px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.16em] ${toneClass}`}>{label}</span>;
 }
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ deskMode?: string }>;
+}) {
   await requireSession();
-  const data = await getDashboardData();
+  const params = (await searchParams) ?? {};
+  const cookieStore = await cookies();
+  const deskMode = parseDeskMode(params.deskMode ?? cookieStore.get(DESK_MODE_COOKIE)?.value);
+  const data = await getDashboardData(deskMode);
 
   return (
-    <AppShell title="Dashboard" subtitle="Overview and routing" pathname="/dashboard">
+    <AppShell title="Dashboard" subtitle="Overview and routing" pathname="/dashboard" deskMode={deskMode}>
       <AutoRefresh />
 
       <section className="space-y-4">
@@ -91,8 +100,8 @@ export default async function DashboardPage() {
                       <td className="px-4 py-4 text-sm text-[var(--amber)]">{formatPercent(bot.deployableUsage, 1)}</td>
                       <td className="px-4 py-4 text-sm text-[var(--muted)]">{bot.latestTickAt ? formatDateTime(bot.latestTickAt) : "--"}</td>
                       <td className="px-4 py-4">
-                        <Link
-                          href={`/bots?botId=${bot.id}`}
+                      <Link
+                          href={`/bots?deskMode=${deskMode}&botId=${bot.id}`}
                           className="inline-flex items-center gap-2 border border-[var(--line)] px-3 py-2 font-mono text-[11px] uppercase tracking-[0.16em] text-white transition hover:bg-white/[0.04]"
                         >
                           Open terminal
@@ -141,7 +150,7 @@ export default async function DashboardPage() {
                 {data.executions.slice(0, 6).map((execution) => (
                   <div key={execution.id} className="border border-[var(--line)] bg-[var(--panel-soft)] p-4">
                     <div className="flex items-center justify-between gap-3">
-                      <Link href={`/bots?botId=${execution.bot.id}`} className="text-sm font-medium text-white transition hover:text-[var(--green)]">
+                      <Link href={`/bots?deskMode=${deskMode}&botId=${execution.bot.id}`} className="text-sm font-medium text-white transition hover:text-[var(--green)]">
                         {execution.bot.name}
                       </Link>
                       <ToneBadge

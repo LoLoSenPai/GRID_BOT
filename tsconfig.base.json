@@ -12,7 +12,6 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noUncheckedIndexedAccess": true,
-    "verbatimModuleSyntax": true,
-    "baseUrl": "."
+    "verbatimModuleSyntax": true
   }
 }

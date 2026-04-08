@@ -11,3 +11,4 @@ export * from "./services/execution-service";
 export * from "./services/grid-strategy-service";
 export * from "./services/market-price-service";
 export * from "./services/risk-manager-service";
+export * from "./services/wallet-service";

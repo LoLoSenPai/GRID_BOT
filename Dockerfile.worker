@@ -5,7 +5,7 @@ RUN corepack enable
 
 WORKDIR /app
 COPY . .
-RUN pnpm install --no-frozen-lockfile
+RUN pnpm install --frozen-lockfile
 RUN pnpm db:generate
 RUN pnpm --filter @grid-bot/worker build
 

@@ -1,10 +1,9 @@
-import { readFileSync } from "node:fs";
-
 import { getEnv } from "@grid-bot/common";
 import { Keypair, VersionedTransaction } from "@solana/web3.js";
 
 import { ExecutionProvider, ExecutionStatus } from "../domain/enums";
 import type { ExecuteSwapParams, ExecutionEstimate, ExecutionQuote, ExecutionReport } from "../domain/types";
+import { loadExecutionWallet } from "../services/wallet-service";
 import type { ExecutionAdapter } from "./execution-adapter";
 
 interface JupiterOrderResponse {
@@ -192,17 +191,6 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
   }
 
   private loadWallet(): Keypair {
-    const rawJson = this.env.EXECUTION_WALLET_SECRET_KEY_JSON
-      ? this.env.EXECUTION_WALLET_SECRET_KEY_JSON
-      : this.env.EXECUTION_WALLET_SECRET_KEY_PATH
-        ? readFileSync(this.env.EXECUTION_WALLET_SECRET_KEY_PATH, "utf8")
-        : null;
-
-    if (!rawJson) {
-      throw new Error("Execution wallet secret is not configured.");
-    }
-
-    const secret = JSON.parse(rawJson) as number[];
-    return Keypair.fromSecretKey(Uint8Array.from(secret));
+    return loadExecutionWallet(this.env.EXECUTION_WALLET_SECRET_KEY_PATH).keypair;
   }
 }

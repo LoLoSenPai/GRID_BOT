@@ -10,7 +10,7 @@ La V1 couvre:
 - execution spot via Jupiter
 - architecture d'abstraction pour DFlow plus tard
 - moteur de grid avec `accumulate_base`, `accumulate_usdc`, `balanced`
-- `paper` et `live`
+- bots `paper` et `live` separes
 - dashboard admin Next.js
 - worker Node dedie a l'automatisation
 - stockage PostgreSQL + Prisma
@@ -49,9 +49,11 @@ Le monorepo est organise comme suit:
 |       |   `-- seed.ts
 |       `-- src/repositories
 |-- docker-compose.yml
+|-- docker-compose.prod.yml
 |-- Dockerfile.web
 |-- Dockerfile.worker
 |-- .env.example
+|-- .env.production.example
 `-- README.md
 ```
 
@@ -175,8 +177,7 @@ Variables principales:
 | `RPC_WS_URL` | RPC Solana WebSocket |
 | `JUPITER_API_KEY` | cle API Jupiter |
 | `PYTH_HERMES_BASE_URL` | endpoint Hermes Pyth |
-| `EXECUTION_WALLET_SECRET_KEY_PATH` | chemin de la cle hot wallet, recommande |
-| `EXECUTION_WALLET_SECRET_KEY_JSON` | fallback local seulement |
+| `EXECUTION_WALLET_SECRET_KEY_PATH` | chemin du fichier keypair du wallet hot |
 | `DISCORD_WEBHOOK_URL` | webhook alertes Discord |
 | `BOT_TICK_INTERVAL_MS` | cadence du worker |
 | `PRICE_STALE_AFTER_MS` | garde-fou sur fraicheur du prix |
@@ -236,6 +237,115 @@ Acces local:
 - dashboard: [http://localhost:3000](http://localhost:3000)
 - login par defaut local: `admin / change-me`
 
+## Deploiement VPS
+
+Le chemin le plus simple en prod pour cet outil est:
+
+- `web` sur le VPS
+- `worker` sur le VPS
+- `postgres` sur le VPS
+- wallet hot en fichier local sur le VPS
+
+Fichiers utiles:
+
+- [docker-compose.prod.yml](/E:/CODE/PERSO/GRID_BOT/docker-compose.prod.yml)
+- [.env.production.example](/E:/CODE/PERSO/GRID_BOT/.env.production.example)
+- [.dockerignore](/E:/CODE/PERSO/GRID_BOT/.dockerignore)
+
+### 1. Prerequis VPS
+
+- Ubuntu ou Debian recent
+- Docker Engine + Docker Compose plugin
+- un domaine ou sous-domaine pointant vers le VPS
+- un wallet keypair stocke localement sur le serveur
+
+Exemple de chemin wallet sur le VPS:
+
+```bash
+/opt/grid-bot/wallets/execution-wallet.json
+```
+
+### 2. Cloner le repo sur le VPS
+
+```bash
+git clone <your-repo-url> /opt/grid-bot/app
+cd /opt/grid-bot/app
+```
+
+### 3. Creer l'env prod
+
+```bash
+cp .env.production.example .env.production
+```
+
+Points importants a adapter:
+
+- `APP_URL`
+- `POSTGRES_*`
+- `DATABASE_URL`
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
+- `SESSION_SECRET`
+- `RPC_HTTP_URL`
+- `RPC_WS_URL`
+- `JUPITER_API_KEY`
+- `DISCORD_WEBHOOK_URL`
+- `EXECUTION_WALLET_HOST_PATH`
+
+L'app dans les conteneurs lira toujours:
+
+```bash
+EXECUTION_WALLET_SECRET_KEY_PATH=/run/secrets/execution-wallet.json
+```
+
+et le fichier host sera monte en lecture seule a cet emplacement.
+
+### 4. Lancer la stack prod
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+```
+
+Ce compose:
+
+- demarre Postgres
+- attend que Postgres soit sain
+- execute `pnpm db:deploy`
+- demarre ensuite `web` et `worker`
+
+### 5. Verifier les services
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml ps
+docker compose --env-file .env.production -f docker-compose.prod.yml logs -f web
+docker compose --env-file .env.production -f docker-compose.prod.yml logs -f worker
+```
+
+### 6. Mise a jour applicative
+
+```bash
+git pull
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+```
+
+### 7. HTTPS / reverse proxy
+
+Le compose expose le `web` sur `3000`.
+
+En prod publique, mettre `Caddy` ou `Nginx` devant pour:
+
+- TLS / HTTPS
+- domaine
+- eventuel basic hardening reseau
+
+### 8. Recommandations d'exploitation
+
+- garder `LIVE_TRADING_ENABLED=false` tant que le flow live n'est pas verifie
+- ne jamais commiter `.env.production`
+- ne jamais commiter le fichier wallet
+- sauvegarder regulierement le volume Postgres
+- faire tourner le worker en permanence: c'est lui qui pilote les bots live
+
 ## Build et tests
 
 Build monorepo:
@@ -289,12 +399,19 @@ Tests principaux:
 
 ### Live
 
+Modele V1:
+
+- un bot = un mode fixe
+- un bot `paper` ne devient pas `live`
+- le passage en live se fait par creation directe ou via clone d'un bot paper
+- le clone live repart a zero: aucune position, aucun lot et aucune execution paper ne sont repris
+
 Preconditions:
 
 - `LIVE_TRADING_ENABLED=true`
 - bot en mode `live`
 - `JUPITER_API_KEY` configure
-- wallet hot configure via `EXECUTION_WALLET_SECRET_KEY_PATH` ou `EXECUTION_WALLET_SECRET_KEY_JSON`
+- wallet hot configure via `EXECUTION_WALLET_SECRET_KEY_PATH`
 
 ## Alerting
 

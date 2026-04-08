@@ -86,6 +86,7 @@ enum LogLevel {
 model Bot {
   id                String             @id @default(cuid())
   key               String             @unique
+  clonedFromBotId   String?             @map("cloned_from_bot_id")
   name              String
   baseMint          String
   quoteMint         String
@@ -113,6 +114,7 @@ model Bot {
   systemLogs        SystemLog[]
   priceSnapshots    PriceSnapshot[]
 
+  @@index([clonedFromBotId])
   @@map("bots")
 }
 

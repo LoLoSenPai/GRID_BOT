@@ -1,25 +1,127 @@
+import { cookies } from "next/headers";
 import { getEnv } from "@grid-bot/common";
+import { BotMode } from "@grid-bot/core/enums";
 
 import { AppShell } from "@/components/app-shell";
 import { BotManagementConsole } from "@/components/bot-management-console";
 import type { BotDetailViewData } from "@/components/bot-detail-view";
 import { requireSession } from "@/lib/auth";
-import { BOT_BEHAVIOR_PRESETS, inferBehaviorPresetId, inferPresetId, type BotFormDraft } from "@/lib/bot-management";
+import { BOT_BEHAVIOR_PRESETS, BOT_PAIR_PRESETS, inferBehaviorPresetId, inferPresetId, type BotFormDraft, type BotPairPresetId } from "@/lib/bot-management";
 import { buildCandlesFromSnapshots } from "@/lib/charting";
+import { DESK_MODE_COOKIE, parseDeskMode } from "@/lib/desk-mode";
 import { fetchMarketHistory } from "@/lib/market-history";
 import { getNextGridTriggers, parsePendingSignal } from "@/lib/bot-runtime";
 import { getBotsOverview } from "@/lib/data";
 
+const PREVIEW_SYMBOLS = ["SOL", "BTC"] as const;
+type PreviewSymbol = (typeof PREVIEW_SYMBOLS)[number];
+
+function buildGridLevels(lowPrice: number, highPrice: number, levelCount: number, gridType: BotFormDraft["gridType"]) {
+  if (levelCount <= 1) {
+    return [];
+  }
+
+  if (gridType === "arithmetic") {
+    const step = (highPrice - lowPrice) / (levelCount - 1);
+    return Array.from({ length: levelCount }, (_, index) => lowPrice + step * index);
+  }
+
+  const ratio = Math.pow(highPrice / lowPrice, 1 / (levelCount - 1));
+  return Array.from({ length: levelCount }, (_, index) => lowPrice * ratio ** index);
+}
+
+function getPairPresetIdFromSymbol(symbol: PreviewSymbol): BotPairPresetId {
+  return symbol === "SOL" ? "SOL_USDC" : "BTC_USDC";
+}
+
+function buildMarketPreviewBoard(
+  symbol: PreviewSymbol,
+  history: Awaited<ReturnType<typeof fetchMarketHistory>> | null,
+  mode: BotMode
+): BotDetailViewData {
+  const presetId = getPairPresetIdFromSymbol(symbol);
+  const pairPreset = BOT_PAIR_PRESETS[presetId];
+  const draft = {
+    presetId,
+    name: pairPreset.defaultName,
+    ...pairPreset.defaults,
+    mode
+  } satisfies BotFormDraft;
+  const behaviorPreset = BOT_BEHAVIOR_PRESETS[inferBehaviorPresetId(draft)];
+  const candles = history?.candles ?? [];
+  const currentPrice = candles.at(-1)?.close ?? Number(pairPreset.defaults.lowPrice);
+
+  return {
+    id: `preview-${symbol.toLowerCase()}-${mode}`,
+    name: pairPreset.defaultName,
+    baseSymbol: pairPreset.baseSymbol,
+    quoteSymbol: pairPreset.quoteSymbol,
+    strategyMode: draft.strategyMode,
+    mode,
+    status: "paused",
+    behavior: {
+      id: behaviorPreset.id,
+      label: behaviorPreset.label,
+      summary: behaviorPreset.summary,
+      operatorHint: behaviorPreset.operatorHint,
+      cycleRule: behaviorPreset.cycleRule,
+      exitRule: behaviorPreset.exitRule,
+      tags: [...behaviorPreset.tags]
+    },
+    currentPrice,
+    lastHeartbeatAt: null,
+    config: {
+      lowPrice: Number(draft.lowPrice),
+      highPrice: Number(draft.highPrice),
+      levelCount: draft.levelCount,
+      gridType: draft.gridType,
+      minOrderQuoteAmount: Number(draft.minOrderQuoteAmount),
+      maxDeployableUsd: Number(draft.maxDeployableUsd),
+      reserveQuoteAmount: Number(draft.reserveQuoteAmount),
+      cooldownMs: draft.cooldownMs,
+      maxOrdersPerHour: draft.maxOrdersPerHour,
+      maxDrawdownPct: Number(draft.maxDrawdownPct),
+      priceConfirmationWindowMs: draft.priceConfirmationWindowMs,
+      recenterMode: draft.recenterMode
+    },
+    levels: buildGridLevels(Number(draft.lowPrice), Number(draft.highPrice), draft.levelCount, draft.gridType),
+    position: null,
+    metrics: {
+      deployedQuoteAmount: 0,
+      inventoryValue: 0,
+      rangeProgress:
+        Number(draft.highPrice) > Number(draft.lowPrice)
+          ? Math.max(0, Math.min(100, ((currentPrice - Number(draft.lowPrice)) / (Number(draft.highPrice) - Number(draft.lowPrice))) * 100))
+          : 0,
+      deployableUsage: 0
+    },
+    priceSnapshots: candles.slice(-240).map((candle) => ({
+      time: candle.time,
+      value: candle.close
+    })),
+    initialCandles: candles,
+    initialHistorySourceLabel: history?.meta.source ?? "pyth-history",
+    orders: [],
+    positionLots: [],
+    openCycles: [],
+    alerts: [],
+    systemLogs: []
+  };
+}
+
 export default async function BotsPage({
   searchParams
 }: {
-  searchParams?: Promise<{ botId?: string }>;
+  searchParams?: Promise<{ botId?: string; deskMode?: string }>;
 }) {
   await requireSession();
   const params = (await searchParams) ?? {};
-  const bots = await getBotsOverview();
+  const cookieStore = await cookies();
+  const deskMode = parseDeskMode(params.deskMode ?? cookieStore.get(DESK_MODE_COOKIE)?.value);
+  const bots = await getBotsOverview(deskMode);
   const liveTradingEnabled = getEnv().LIVE_TRADING_ENABLED;
-  const symbols = Array.from(new Set(bots.map((bot) => bot.baseSymbol as "SOL" | "BTC")));
+  const botSymbols = new Set(bots.map((bot) => bot.baseSymbol as PreviewSymbol));
+  const symbols = Array.from(new Set<PreviewSymbol>([...botSymbols, ...PREVIEW_SYMBOLS]));
   const historyEntries = await Promise.all(
     symbols.map(async (symbol) => {
       try {
@@ -294,15 +396,24 @@ export default async function BotsPage({
     })
   );
 
+  const marketPreviewBoards = Object.fromEntries(
+    PREVIEW_SYMBOLS.filter((symbol) => !botSymbols.has(symbol)).map((symbol) => [
+      symbol,
+      buildMarketPreviewBoard(symbol, historyBySymbol.get(symbol) ?? null, deskMode)
+    ])
+  ) as Partial<Record<PreviewSymbol, BotDetailViewData>>;
+
   const initialSelectedBotId = params.botId && viewModel.some((bot) => bot.id === params.botId) ? params.botId : viewModel[0]?.id ?? null;
 
   return (
-    <AppShell title="Bots" subtitle="Grid terminal" pathname="/bots">
+    <AppShell title="Bots" subtitle="Grid terminal" pathname="/bots" deskMode={deskMode}>
       <BotManagementConsole
         bots={viewModel}
+        deskMode={deskMode}
         liveTradingEnabled={liveTradingEnabled}
         initialSelectedBotId={initialSelectedBotId}
         botBoards={botBoards}
+        marketPreviewBoards={marketPreviewBoards}
       />
     </AppShell>
   );

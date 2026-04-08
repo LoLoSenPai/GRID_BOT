@@ -35,7 +35,7 @@ async function upsertBot(input: {
       quoteDecimals: input.quoteDecimals,
       strategyMode: input.strategyMode as never,
       mode: input.mode as never,
-      status: BotStatus.Running as never,
+      status: BotStatus.Paused as never,
       executionProvider: (input.mode === BotMode.Paper ? ExecutionProvider.Paper : ExecutionProvider.Jupiter) as never
     },
     create: {
@@ -49,7 +49,7 @@ async function upsertBot(input: {
       quoteDecimals: input.quoteDecimals,
       strategyMode: input.strategyMode as never,
       mode: input.mode as never,
-      status: BotStatus.Running as never,
+      status: BotStatus.Paused as never,
       executionProvider: (input.mode === BotMode.Paper ? ExecutionProvider.Paper : ExecutionProvider.Jupiter) as never
     }
   });
@@ -131,7 +131,7 @@ async function upsertBot(input: {
     await prisma.botStateSnapshot.create({
       data: {
         botId: bot.id,
-        status: BotStatus.Running as never,
+        status: BotStatus.Paused as never,
         availableQuoteAmount: input.totalBudgetUsd,
         availableBaseAmount: 0,
         deployedQuoteAmount: 0,

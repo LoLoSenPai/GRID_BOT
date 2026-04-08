@@ -3,9 +3,16 @@ import { getEnv } from "@grid-bot/common";
 import { prisma } from "@grid-bot/db";
 
 import { readSession } from "@/lib/auth";
-import { BotManagementValidationError, parseUpdateBotPayload } from "@/lib/bot-management";
+import {
+  BotManagementValidationError,
+  parseUpdateBotPayload,
+} from "@/lib/bot-management";
+import { validateBudgetAllocation } from "@/lib/wallet-budget";
 
-export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const session = await readSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -15,7 +22,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     const { id } = await params;
     const bot = await prisma.bot.findUnique({
       where: { id },
-      include: { config: true }
+      include: { config: true },
     });
 
     if (!bot?.config) {
@@ -23,11 +30,33 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     }
 
     if (bot.status === "running" || bot.status === "cooldown") {
-      return NextResponse.json({ error: "Pause or stop the bot before editing config." }, { status: 409 });
+      return NextResponse.json(
+        { error: "Pause or stop the bot before editing config." },
+        { status: 409 },
+      );
     }
 
     const payload = await request.json();
-    const parsed = parseUpdateBotPayload(payload, getEnv().LIVE_TRADING_ENABLED);
+    const parsed = parseUpdateBotPayload(
+      payload,
+      getEnv().LIVE_TRADING_ENABLED,
+    );
+
+    const budgetCheck = await validateBudgetAllocation(
+      parsed.totalBudgetUsd,
+      parsed.mode,
+      id,
+    );
+    if (!budgetCheck.ok) {
+      return NextResponse.json({ error: budgetCheck.error }, { status: 422 });
+    }
+
+    if (parsed.mode !== bot.mode) {
+      return NextResponse.json(
+        { error: "Bot mode is immutable. Create or clone a new bot instead." },
+        { status: 409 },
+      );
+    }
 
     await prisma.$transaction([
       prisma.bot.update({
@@ -36,8 +65,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
           name: parsed.name,
           strategyMode: parsed.strategyMode as never,
           mode: parsed.mode as never,
-          executionProvider: parsed.executionProvider as never
-        }
+          executionProvider: parsed.executionProvider as never,
+        },
       }),
       prisma.botConfig.update({
         where: { botId: id },
@@ -60,8 +89,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
           recenterMode: parsed.recenterMode as never,
           autoRecenterMinIntervalMs: parsed.autoRecenterMinIntervalMs,
           autoRecenterMaxPerDay: parsed.autoRecenterMaxPerDay,
-          outOfRangePause: parsed.outOfRangePause
-        }
+          outOfRangePause: parsed.outOfRangePause,
+        },
       }),
       prisma.systemLog.create({
         data: {
@@ -72,24 +101,33 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
           metadata: {
             actor: session.username,
             mode: parsed.mode,
-            strategyMode: parsed.strategyMode
-          }
-        }
-      })
+            strategyMode: parsed.strategyMode,
+          },
+        },
+      }),
     ]);
 
     return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof BotManagementValidationError) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status },
+      );
     }
 
     console.error(error);
-    return NextResponse.json({ error: "Failed to update bot." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to update bot." },
+      { status: 500 },
+    );
   }
 }
 
-export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(
+  _: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const session = await readSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -98,7 +136,7 @@ export async function DELETE(_: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
   const bot = await prisma.bot.findUnique({
     where: { id },
-    select: { id: true, status: true, name: true }
+    select: { id: true, status: true, name: true },
   });
 
   if (!bot) {
@@ -106,7 +144,10 @@ export async function DELETE(_: Request, { params }: { params: Promise<{ id: str
   }
 
   if (bot.status !== "stopped") {
-    return NextResponse.json({ error: "Stop the bot before deleting it." }, { status: 409 });
+    return NextResponse.json(
+      { error: "Stop the bot before deleting it." },
+      { status: 409 },
+    );
   }
 
   try {
@@ -114,6 +155,9 @@ export async function DELETE(_: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ ok: true, deletedBotName: bot.name });
   } catch (error) {
     console.error(error);
-    return NextResponse.json({ error: "Failed to delete bot." }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to delete bot." },
+      { status: 500 },
+    );
   }
 }

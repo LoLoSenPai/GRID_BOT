@@ -1,9 +1,11 @@
+import { cookies } from "next/headers";
 import { Activity, AlertTriangle, Cpu, ShieldAlert, TerminalSquare } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { SurfaceCard } from "@/components/surface-card";
 import { requireSession } from "@/lib/auth";
+import { DESK_MODE_COOKIE, parseDeskMode } from "@/lib/desk-mode";
 import { getActivityFeed } from "@/lib/data";
 import { formatDateTime, formatNumber } from "@/lib/utils";
 
@@ -48,16 +50,23 @@ const kindIcons = {
   log: TerminalSquare
 } as const;
 
-export default async function ActivityPage() {
+export default async function ActivityPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ deskMode?: string }>;
+}) {
   await requireSession();
-  const activity = await getActivityFeed();
+  const params = (await searchParams) ?? {};
+  const cookieStore = await cookies();
+  const deskMode = parseDeskMode(params.deskMode ?? cookieStore.get(DESK_MODE_COOKIE)?.value);
+  const activity = await getActivityFeed(deskMode);
 
   const failedExecutions = activity.executions.filter((execution) => execution.status === "failed").slice(0, 6);
   const watchAlerts = activity.alerts.slice(0, 6);
   const latestEvent = activity.timeline[0] ?? null;
 
   return (
-    <AppShell title="Activity" subtitle="System, alerting and execution trail" pathname="/activity">
+    <AppShell title="Activity" subtitle="System, alerting and execution trail" pathname="/activity" deskMode={deskMode}>
       <AutoRefresh />
 
       <section className="space-y-4">

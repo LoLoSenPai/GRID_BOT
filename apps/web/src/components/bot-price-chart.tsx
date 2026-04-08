@@ -187,10 +187,10 @@ export function BotPriceChart({
       staticBaselinePrice === null
         ? -1
         : levels.reduce(
-            (closest, level, index) =>
-              closest === -1 || Math.abs(level - staticBaselinePrice) < Math.abs((levels[closest] ?? level) - staticBaselinePrice) ? index : closest,
-            -1
-          ),
+          (closest, level, index) =>
+            closest === -1 || Math.abs(level - staticBaselinePrice) < Math.abs((levels[closest] ?? level) - staticBaselinePrice) ? index : closest,
+          -1
+        ),
     [levels, staticBaselinePrice]
   );
   const labeledLevelIndexes = useMemo(
@@ -330,10 +330,9 @@ export function BotPriceChart({
           <span class="text-[var(--muted)]">L</span><span>${formatNumber(typedCandle.low, 2)}</span>
           <span class="text-[var(--muted)]">C</span><span>${formatNumber(typedCandle.close, 2)}</span>
         </div>
-        ${
-          marker
-            ? `<div class="${marker.side === "buy" ? "mt-3 border border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--green)]" : "mt-3 border border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.08)] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--red)]"}">${marker.label}</div>`
-            : ""
+        ${marker
+          ? `<div class="${marker.side === "buy" ? "mt-3 border border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--green)]" : "mt-3 border border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.08)] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--red)]"}">${marker.label}</div>`
+          : ""
         }
       `;
     };
@@ -574,9 +573,6 @@ export function BotPriceChart({
     });
   }, [currentPrice, currentToneColor]);
 
-  const priceDelta = latestDisplay ? latestDisplay.close - latestDisplay.open : 0;
-  const priceDeltaPct = latestDisplay && latestDisplay.open ? (priceDelta / latestDisplay.open) * 100 : 0;
-
   return (
     <div className="space-y-4">
       <div className="relative overflow-hidden border border-[var(--line)] bg-[radial-gradient(circle_at_top,rgba(127,245,196,0.05),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))]">
@@ -612,48 +608,6 @@ export function BotPriceChart({
         />
 
         <div ref={containerRef} className="h-[460px] w-full" />
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-3">
-        <div className="border border-[var(--line)] bg-[var(--panel-soft)] p-4">
-          <div className="font-mono text-[11px] uppercase tracking-[0.24em] text-[var(--muted)]">Last candle</div>
-          <div className="mt-2 flex items-center justify-between gap-3">
-            <div className="text-lg font-semibold">{latestDisplay ? formatNumber(latestDisplay.close, 2) : "--"}</div>
-            <div className={priceDeltaPct >= 0 ? "text-sm text-[var(--green)]" : "text-sm text-[var(--red)]"}>
-              {latestDisplay ? `${priceDeltaPct >= 0 ? "+" : ""}${formatNumber(priceDeltaPct, 2)}%` : "--"}
-            </div>
-          </div>
-          <div className="mt-2 text-sm text-[var(--muted)]">
-            {latestDisplay
-              ? formatDateTime(
-                  "time" in latestDisplay && typeof latestDisplay.time === "number"
-                    ? new Date(latestDisplay.time * 1000)
-                    : new Date((latestDisplay as CandlePoint).time)
-                )
-              : "No candle data"}
-          </div>
-        </div>
-
-        <div className="border border-[var(--line)] bg-[var(--panel-soft)] p-4">
-          <div className="font-mono text-[11px] uppercase tracking-[0.24em] text-[var(--muted)]">Order rails</div>
-          <div className="mt-2 text-sm text-white">{visibleOrderLines.length} visible levels on chart</div>
-          <div className="mt-2 text-sm text-[var(--muted)]">
-            {visibleOrderLines.length
-              ? visibleOrderLines
-                  .slice(-4)
-                  .map((line) => `${line.label} ${formatNumber(line.price, 2)}`)
-                  .join(" | ")
-              : "No active order rails projected"}
-          </div>
-        </div>
-
-        <div className="border border-[var(--line)] bg-[var(--panel-soft)] p-4">
-          <div className="font-mono text-[11px] uppercase tracking-[0.24em] text-[var(--muted)]">Market source</div>
-          <div className="mt-2 text-sm text-white">{sourceLabel}</div>
-          <div className="mt-2 text-sm text-[var(--muted)]">
-            {candles.length ? `${candles.length} candles loaded` : "No historical candles returned"}
-          </div>
-        </div>
       </div>
     </div>
   );

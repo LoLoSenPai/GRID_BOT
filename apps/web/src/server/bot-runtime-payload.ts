@@ -3,17 +3,18 @@ import { prisma } from "@grid-bot/db";
 export async function getBotRuntimeListPayload() {
   const bots = await prisma.bot.findMany({
     include: {
+      config: true,
       stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
       orders: { orderBy: { createdAt: "desc" }, take: 1 },
       executions: { orderBy: { createdAt: "desc" }, take: 1 },
       _count: {
         select: {
           orders: true,
-          executions: true
-        }
-      }
+          executions: true,
+        },
+      },
     },
-    orderBy: { createdAt: "asc" }
+    orderBy: { createdAt: "asc" },
   });
 
   return {
@@ -25,21 +26,30 @@ export async function getBotRuntimeListPayload() {
       return {
         id: bot.id,
         status: bot.status,
-        currentPrice: bot.currentPrice ? Number(bot.currentPrice) : latestState?.currentPrice ? Number(latestState.currentPrice) : null,
+        totalBudgetUsd: bot.config ? Number(bot.config.totalBudgetUsd) : 0,
+        currentPrice: bot.currentPrice
+          ? Number(bot.currentPrice)
+          : latestState?.currentPrice
+            ? Number(latestState.currentPrice)
+            : null,
         lastHeartbeatAt: bot.lastHeartbeatAt?.toISOString() ?? null,
         runtime: latestState
           ? {
               availableQuoteAmount: Number(latestState.availableQuoteAmount),
               availableBaseAmount: Number(latestState.availableBaseAmount),
               deployedQuoteAmount: Number(latestState.deployedQuoteAmount),
-              averageEntryPrice: latestState.averageEntryPrice ? Number(latestState.averageEntryPrice) : null,
+              averageEntryPrice: latestState.averageEntryPrice
+                ? Number(latestState.averageEntryPrice)
+                : null,
               realizedPnlUsd: Number(latestState.realizedPnlUsd),
               unrealizedPnlUsd: Number(latestState.unrealizedPnlUsd),
               totalEquityUsd: Number(latestState.totalEquityUsd),
               consecutiveFailures: latestState.consecutiveFailures,
-              lastProcessedAt: latestState.lastProcessedAt?.toISOString() ?? null,
-              lastExecutionAt: latestState.lastExecutionAt?.toISOString() ?? null,
-              pendingSignal: latestState.metadata
+              lastProcessedAt:
+                latestState.lastProcessedAt?.toISOString() ?? null,
+              lastExecutionAt:
+                latestState.lastExecutionAt?.toISOString() ?? null,
+              pendingSignal: latestState.metadata,
             }
           : null,
         paperSession: {
@@ -47,15 +57,21 @@ export async function getBotRuntimeListPayload() {
           executionsCount: bot._count.executions,
           latestExecutionAt: latestExecution?.createdAt.toISOString() ?? null,
           latestExecutionStatus: latestExecution?.status ?? null,
-          latestExecutionInputAmount: latestExecution?.executedInputAmount ? Number(latestExecution.executedInputAmount) : null,
-          latestExecutionOutputAmount: latestExecution?.executedOutputAmount ? Number(latestExecution.executedOutputAmount) : null,
-          latestExecutionPrice: latestExecution?.quotePrice ? Number(latestExecution.quotePrice) : null,
+          latestExecutionInputAmount: latestExecution?.executedInputAmount
+            ? Number(latestExecution.executedInputAmount)
+            : null,
+          latestExecutionOutputAmount: latestExecution?.executedOutputAmount
+            ? Number(latestExecution.executedOutputAmount)
+            : null,
+          latestExecutionPrice: latestExecution?.quotePrice
+            ? Number(latestExecution.quotePrice)
+            : null,
           latestOrderSide: latestOrder?.side ?? null,
           latestOrderStatus: latestOrder?.status ?? null,
-          latestOrderAt: latestOrder?.createdAt.toISOString() ?? null
-        }
+          latestOrderAt: latestOrder?.createdAt.toISOString() ?? null,
+        },
       };
-    })
+    }),
   };
 }
 
@@ -63,8 +79,8 @@ export async function getBotRuntimePayload(id: string) {
   const bot = await prisma.bot.findUnique({
     where: { id },
     include: {
-      stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 }
-    }
+      stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
+    },
   });
 
   if (!bot) {
@@ -76,17 +92,21 @@ export async function getBotRuntimePayload(id: string) {
   return {
     id: bot.id,
     status: bot.status,
-    currentPrice: bot.currentPrice ? Number(bot.currentPrice) : latestState?.currentPrice ? Number(latestState.currentPrice) : null,
+    currentPrice: bot.currentPrice
+      ? Number(bot.currentPrice)
+      : latestState?.currentPrice
+        ? Number(latestState.currentPrice)
+        : null,
     lastHeartbeatAt: bot.lastHeartbeatAt?.toISOString() ?? null,
     lastProcessedAt: latestState?.lastProcessedAt?.toISOString() ?? null,
-    lastExecutionAt: latestState?.lastExecutionAt?.toISOString() ?? null
+    lastExecutionAt: latestState?.lastExecutionAt?.toISOString() ?? null,
   };
 }
 
 export function createSseResponse<T>({
   request,
   getPayload,
-  intervalMs = 2000
+  intervalMs = 2000,
 }: {
   request: Request;
   getPayload: () => Promise<T>;
@@ -97,6 +117,17 @@ export function createSseResponse<T>({
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+      const safeEnqueue = (chunk: Uint8Array) => {
+        if (closed) {
+          return;
+        }
+
+        try {
+          controller.enqueue(chunk);
+        } catch {
+          closed = true;
+        }
+      };
 
       const pushEvent = async () => {
         if (closed) {
@@ -105,10 +136,19 @@ export function createSseResponse<T>({
 
         try {
           const payload = await getPayload();
-          controller.enqueue(encoder.encode(`event: runtime\ndata: ${JSON.stringify(payload)}\n\n`));
+          safeEnqueue(
+            encoder.encode(`event: runtime\ndata: ${JSON.stringify(payload)}\n\n`),
+          );
         } catch (error) {
-          const message = error instanceof Error ? error.message : "stream_error";
-          controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`));
+          if (closed) {
+            return;
+          }
+
+          const message =
+            error instanceof Error ? error.message : "stream_error";
+          safeEnqueue(
+            encoder.encode(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`),
+          );
         }
       };
 
@@ -124,18 +164,22 @@ export function createSseResponse<T>({
 
         closed = true;
         clearInterval(intervalId);
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          return;
+        }
       };
 
       request.signal.addEventListener("abort", close, { once: true });
-    }
+    },
   });
 
   return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-store, no-transform",
-      Connection: "keep-alive"
-    }
+      Connection: "keep-alive",
+    },
   });
 }

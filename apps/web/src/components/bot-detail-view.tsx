@@ -339,22 +339,6 @@ function EmbeddedInlineMetric({
   );
 }
 
-function EmbeddedTabButton({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "border px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] transition",
-        active
-          ? "border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)] text-[var(--green)]"
-          : "border-[var(--line)] text-[var(--muted)] hover:bg-white/[0.04] hover:text-white"
-      )}
-    >
-      {label}
-    </button>
-  );
-}
 
 function formatOrderTimestamp(value: string) {
   return new Intl.DateTimeFormat("en-US", {
@@ -369,12 +353,14 @@ export function BotDetailView({
   bot,
   embedded = false,
   previewDraft,
-  embeddedActions
+  embeddedActions,
+  runtimeStreamUrl
 }: {
   bot: BotDetailViewData;
   embedded?: boolean;
   previewDraft?: BotFormDraft | null;
   embeddedActions?: React.ReactNode;
+  runtimeStreamUrl?: string | null;
 }) {
   const initialResolution: HistoryResolution = embedded ? "1h" : "4h";
   const [liveRuntime, setLiveRuntime] = useState<{
@@ -436,11 +422,13 @@ export function BotDetailView({
   }, [bot.currentPrice, bot.id, bot.lastHeartbeatAt, bot.status]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || typeof window.EventSource === "undefined") {
+    const streamUrl = runtimeStreamUrl === undefined ? `/api/bots/${bot.id}/runtime?stream=1` : runtimeStreamUrl;
+
+    if (!streamUrl || typeof window === "undefined" || typeof window.EventSource === "undefined") {
       return;
     }
 
-    const source = new EventSource(`/api/bots/${bot.id}/runtime?stream=1`);
+    const source = new EventSource(streamUrl);
     const handleRuntime = (event: MessageEvent<string>) => {
       try {
         const payload = JSON.parse(event.data) as {
@@ -468,7 +456,7 @@ export function BotDetailView({
       source.removeEventListener("runtime", handleRuntime as EventListener);
       source.close();
     };
-  }, [bot.id]);
+  }, [bot.id, runtimeStreamUrl]);
 
   useEffect(() => {
     let active = true;
@@ -557,36 +545,35 @@ export function BotDetailView({
   const chartOrders = useMemo(() => [...bot.orders].reverse(), [bot.orders]);
   const recentLogs = useMemo(() => bot.systemLogs.slice(0, 8), [bot.systemLogs]);
   const recentAlerts = useMemo(() => bot.alerts.slice(0, 6), [bot.alerts]);
-  const [embeddedTab, setEmbeddedTab] = useState<"trades" | "cycles" | "activity">("trades");
   const previewLevels = useMemo(
     () =>
       previewDraft
         ? calculateGridLevels({
-            lowPrice: previewDraft.lowPrice,
-            highPrice: previewDraft.highPrice,
-            levelCount: previewDraft.levelCount,
-            gridType: previewDraft.gridType
-          })
+          lowPrice: previewDraft.lowPrice,
+          highPrice: previewDraft.highPrice,
+          levelCount: previewDraft.levelCount,
+          gridType: previewDraft.gridType
+        })
         : null,
     [previewDraft]
   );
   const chartLevels = previewLevels ?? bot.levels;
   const effectiveConfig = previewDraft
     ? {
-        ...bot.config,
-        lowPrice: previewDraft.lowPrice,
-        highPrice: previewDraft.highPrice,
-        levelCount: previewDraft.levelCount,
-        gridType: previewDraft.gridType,
-        minOrderQuoteAmount: previewDraft.minOrderQuoteAmount,
-        maxDeployableUsd: previewDraft.maxDeployableUsd,
-        reserveQuoteAmount: previewDraft.reserveQuoteAmount,
-        cooldownMs: previewDraft.cooldownMs,
-        maxOrdersPerHour: previewDraft.maxOrdersPerHour,
-        maxDrawdownPct: previewDraft.maxDrawdownPct,
-        priceConfirmationWindowMs: previewDraft.priceConfirmationWindowMs,
-        recenterMode: previewDraft.recenterMode
-      }
+      ...bot.config,
+      lowPrice: previewDraft.lowPrice,
+      highPrice: previewDraft.highPrice,
+      levelCount: previewDraft.levelCount,
+      gridType: previewDraft.gridType,
+      minOrderQuoteAmount: previewDraft.minOrderQuoteAmount,
+      maxDeployableUsd: previewDraft.maxDeployableUsd,
+      reserveQuoteAmount: previewDraft.reserveQuoteAmount,
+      cooldownMs: previewDraft.cooldownMs,
+      maxOrdersPerHour: previewDraft.maxOrdersPerHour,
+      maxDrawdownPct: previewDraft.maxDrawdownPct,
+      priceConfirmationWindowMs: previewDraft.priceConfirmationWindowMs,
+      recenterMode: previewDraft.recenterMode
+    }
     : bot.config;
   const previewActive = Boolean(previewDraft);
 
@@ -646,199 +633,93 @@ export function BotDetailView({
     setHistoryState(
       cached
         ? {
-            candles: cached.candles,
-            sourceLabel: cached.sourceLabel,
-            cappedLabel: cached.cappedLabel,
-            error: null,
-            loading: false
-          }
+          candles: cached.candles,
+          sourceLabel: cached.sourceLabel,
+          cappedLabel: cached.cappedLabel,
+          error: null,
+          loading: false
+        }
         : {
-            candles: [],
-            sourceLabel: "pyth-history",
-            cappedLabel: null,
-            error: null,
-            loading: true
-          }
+          candles: [],
+          sourceLabel: "pyth-history",
+          cappedLabel: null,
+          error: null,
+          loading: true
+        }
     );
     setResolution(nextResolution);
   };
 
   if (embedded) {
+    const totalPnl = bot.position ? bot.position.realizedPnlUsd + bot.position.unrealizedPnlUsd : 0;
+    const roiPct = bot.metrics.deployedQuoteAmount > 0 || (bot.position && bot.metrics.inventoryValue > 0)
+      ? (totalPnl / (bot.metrics.deployedQuoteAmount + bot.metrics.inventoryValue || 1)) * 100
+      : 0;
+
     return (
-      <section className="space-y-3">
-        <SurfaceCard padding="none" className="overflow-hidden">
-          <div className="border-b border-[var(--line)] px-4 py-3">
-            <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-              <div className="space-y-1.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="text-[18px] font-semibold tracking-[-0.03em] text-white">
-                    {bot.baseSymbol}/{bot.quoteSymbol}
-                  </div>
-                  <StatusBadge status={liveRuntime.status} />
-                  <BotChip label={bot.mode} />
-                  <BotChip label={bot.behavior.label} />
-                  {previewActive ? <BotChip label="draft" /> : null}
-                </div>
-                <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono uppercase tracking-[0.16em] text-[var(--muted)]">
-                  <span>
-                    {formatNumber(effectiveConfig.lowPrice, effectiveConfig.lowPrice >= 1000 ? 0 : 2)} {"->"}{" "}
-                    {formatNumber(effectiveConfig.highPrice, effectiveConfig.highPrice >= 1000 ? 0 : 2)}
-                  </span>
-                  <span>{effectiveConfig.levelCount} rails</span>
-                  <span>{effectiveConfig.gridType}</span>
-                </div>
-              </div>
-
-              {embeddedActions ? <div className="flex flex-wrap justify-start gap-2 xl:justify-end">{embeddedActions}</div> : null}
-            </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-[var(--line)] pt-3">
-              <EmbeddedInlineMetric label="Spot" value={currentPrice ? formatNumber(currentPrice, currentPrice >= 1000 ? 0 : 2) : "--"} />
-              <EmbeddedInlineMetric
-                label="PnL"
-                value={bot.position ? formatCurrency(bot.position.realizedPnlUsd + bot.position.unrealizedPnlUsd) : formatCurrency(0)}
-                tone={bot.position && bot.position.realizedPnlUsd + bot.position.unrealizedPnlUsd < 0 ? "negative" : "positive"}
-              />
-              <EmbeddedInlineMetric label="Base" value={bot.position ? `${formatNumber(bot.position.baseAmount, 5)} ${bot.baseSymbol}` : `0 ${bot.baseSymbol}`} />
-              <EmbeddedInlineMetric label="Avg" value={bot.position ? formatNumber(bot.position.averageEntryPrice, 2) : "--"} />
-              <EmbeddedInlineMetric label="Occ" value={`${formatNumber(rangeProgress, 1)}%`} />
-            </div>
-          </div>
-
-          <div className="space-y-2 px-3 py-3">
-            <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-              <TimeRangeTabs
-                options={HISTORY_RESOLUTION_OPTIONS}
-                value={resolution}
-                pending={historyState.loading && historyState.candles.length === 0}
-                onChange={(next) => handleResolutionChange(next as HistoryResolution)}
-              />
-
-              <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-[var(--muted)]">
-                <span>{activeResolutionLabel} candles</span>
-                <span className="border border-[var(--line)] px-2 py-1">{historyState.sourceLabel}</span>
-                <span>tick {liveRuntime.lastHeartbeatAt ? formatDateTime(liveRuntime.lastHeartbeatAt) : "--"}</span>
-              </div>
-            </div>
-
-            <BotPriceChart
-              resolution={resolution}
-              candles={historyState.candles}
-              levels={chartLevels}
-              markers={markers}
-              orderLines={orderLines}
-              currentPrice={currentPrice || null}
-              currentPriceTime={livePriceTime}
-              averageCost={bot.position ? bot.position.averageEntryPrice : null}
-              loading={historyState.loading}
-              resolutionLabel={activeResolutionLabel}
-              sourceLabel={historyState.sourceLabel}
-              cappedLabel={historyState.cappedLabel}
+      <div className="flex h-full flex-col">
+        {/* Metrics strip */}
+        <div className="border-b border-[var(--line)] px-4 py-2 space-y-1.5">
+          <div className="flex flex-wrap items-center gap-4">
+            <span className="text-[15px] font-semibold tracking-[-0.03em] text-white">
+              {bot.baseSymbol}/{bot.quoteSymbol}
+            </span>
+            <EmbeddedInlineMetric label="Spot" value={currentPrice ? formatNumber(currentPrice, currentPrice >= 1000 ? 0 : 2) : "--"} />
+            <EmbeddedInlineMetric
+              label="PnL"
+              value={formatCurrency(totalPnl)}
+              tone={totalPnl < 0 ? "negative" : "positive"}
             />
+            <EmbeddedInlineMetric
+              label="ROI"
+              value={`${roiPct >= 0 ? "+" : ""}${formatNumber(roiPct, 2)}%`}
+              tone={roiPct < 0 ? "negative" : "positive"}
+            />
+            {previewActive ? <BotChip label="draft" /> : null}
+            <span className="ml-auto font-mono text-[10px] text-[var(--muted)]">
+              {formatNumber(effectiveConfig.lowPrice, effectiveConfig.lowPrice >= 1000 ? 0 : 2)}-{formatNumber(effectiveConfig.highPrice, effectiveConfig.highPrice >= 1000 ? 0 : 2)} · {effectiveConfig.levelCount} rails
+            </span>
           </div>
-        </SurfaceCard>
+          <div className="flex flex-wrap items-center gap-4">
+            <EmbeddedInlineMetric label="Deployed" value={formatCurrency(bot.metrics.deployedQuoteAmount)} />
+            <EmbeddedInlineMetric label={`${bot.baseSymbol}`} value={bot.position ? formatNumber(bot.position.baseAmount, 4) : "0"} />
+            <EmbeddedInlineMetric label="Avg entry" value={bot.position?.averageEntryPrice ? formatNumber(bot.position.averageEntryPrice, 2) : "--"} />
+            <EmbeddedInlineMetric label="Realized" value={formatCurrency(bot.position?.realizedPnlUsd ?? 0)} tone={(bot.position?.realizedPnlUsd ?? 0) < 0 ? "negative" : "positive"} />
+            <EmbeddedInlineMetric label="Unrealized" value={formatCurrency(bot.position?.unrealizedPnlUsd ?? 0)} tone={(bot.position?.unrealizedPnlUsd ?? 0) < 0 ? "negative" : "positive"} />
+            <EmbeddedInlineMetric label="Occ" value={`${formatNumber(rangeProgress, 1)}%`} />
+          </div>
+        </div>
 
-        <SurfaceCard padding="none" className="overflow-hidden">
-          <div className="flex items-center gap-2 border-b border-[var(--line)] px-3 py-2.5">
-            <EmbeddedTabButton active={embeddedTab === "trades"} label="Trades" onClick={() => setEmbeddedTab("trades")} />
-            <EmbeddedTabButton active={embeddedTab === "cycles"} label="Cycles" onClick={() => setEmbeddedTab("cycles")} />
-            <EmbeddedTabButton active={embeddedTab === "activity"} label="Activity" onClick={() => setEmbeddedTab("activity")} />
+        {/* Chart area */}
+        <div className="flex-1 space-y-1 px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <TimeRangeTabs
+              options={HISTORY_RESOLUTION_OPTIONS}
+              value={resolution}
+              pending={historyState.loading && historyState.candles.length === 0}
+              onChange={(next) => handleResolutionChange(next as HistoryResolution)}
+            />
+            <span className="font-mono text-[10px] text-[var(--muted)]">
+              {historyState.sourceLabel} · {liveRuntime.lastHeartbeatAt ? formatDateTime(liveRuntime.lastHeartbeatAt) : "--"}
+            </span>
           </div>
 
-          <div className="px-3 py-3">
-            {embeddedTab === "trades" ? (
-              <div className="space-y-3">
-                {recentOrders.length ? (
-                  recentOrders.slice(0, 8).map((order) => (
-                    <div key={order.id} className="grid gap-3 border-b border-[var(--line)] py-3 last:border-b-0 last:pb-0">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <span
-                            className={
-                              order.side === "buy"
-                                ? "inline-flex border border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)] px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--green)]"
-                                : "inline-flex border border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.08)] px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--red)]"
-                            }
-                          >
-                            {order.side}
-                          </span>
-                          <div className="text-sm text-white">
-                            L{String(order.levelIndex).padStart(2, "0")} @ {formatNumber(order.targetPrice, 2)}
-                          </div>
-                        </div>
-                        <div className="text-sm text-[var(--muted)]">{formatOrderTimestamp(order.time)}</div>
-                      </div>
-                      <div className="grid gap-3 text-sm text-[var(--muted)] md:grid-cols-4">
-                        <div>{formatCurrency(order.requestedQuoteAmount)}</div>
-                        <div>
-                          {formatNumber(order.requestedBaseAmount, 6)} {bot.baseSymbol}
-                        </div>
-                        <div>{order.status}</div>
-                        <div className="truncate">{order.executionSummary ?? "Awaiting execution"}</div>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="py-6 text-sm text-[var(--muted)]">No trades yet.</div>
-                )}
-              </div>
-            ) : null}
-
-            {embeddedTab === "cycles" ? (
-              <div className="space-y-3">
-                {bot.openCycles.length ? (
-                  bot.openCycles.map((cycle) => (
-                    <div key={cycle.id} className="grid gap-3 border-b border-[var(--line)] py-3 last:border-b-0 last:pb-0">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div className="text-sm text-white">
-                          Buy L{String(cycle.buyLevelIndex).padStart(2, "0")} {"->"}{" "}
-                          {cycle.sellLevelIndex !== null ? `Sell L${String(cycle.sellLevelIndex).padStart(2, "0")}` : "Exit open"}
-                        </div>
-                        <div className="text-sm text-[var(--muted)]">{formatOrderTimestamp(cycle.openedAt)}</div>
-                      </div>
-                      <div className="grid gap-3 text-sm text-[var(--muted)] md:grid-cols-4">
-                        <div>Buy {formatNumber(cycle.buyPrice, 2)}</div>
-                        <div>Sell {cycle.sellPrice !== null ? formatNumber(cycle.sellPrice, 2) : "--"}</div>
-                        <div>
-                          {formatNumber(cycle.remainingBaseAmount, 6)} {bot.baseSymbol}
-                        </div>
-                        <div>{formatCurrency(cycle.costQuote)}</div>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="py-6 text-sm text-[var(--muted)]">No open cycles yet.</div>
-                )}
-              </div>
-            ) : null}
-
-            {embeddedTab === "activity" ? (
-              <div className="space-y-3">
-                {latestAlert ? (
-                  <div className="border border-[var(--line)] bg-[var(--panel-soft)] px-4 py-3 text-sm">
-                    <div className="font-medium text-white">{latestAlert.title}</div>
-                    <div className="mt-1 text-[var(--muted)]">{latestAlert.message}</div>
-                  </div>
-                ) : null}
-
-                {recentLogs.length ? (
-                  recentLogs.slice(0, 6).map((log) => (
-                    <div key={log.id} className="grid gap-2 border-b border-[var(--line)] py-3 last:border-b-0 last:pb-0">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">{log.category}</div>
-                        <div className="text-sm text-[var(--muted)]">{formatDateTime(log.createdAt)}</div>
-                      </div>
-                      <div className="text-sm text-white">{log.message}</div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="py-6 text-sm text-[var(--muted)]">No activity yet.</div>
-                )}
-              </div>
-            ) : null}
-          </div>
-        </SurfaceCard>
-      </section>
+          <BotPriceChart
+            resolution={resolution}
+            candles={historyState.candles}
+            levels={chartLevels}
+            markers={markers}
+            orderLines={orderLines}
+            currentPrice={currentPrice || null}
+            currentPriceTime={livePriceTime}
+            averageCost={bot.position ? bot.position.averageEntryPrice : null}
+            loading={historyState.loading}
+            resolutionLabel={activeResolutionLabel}
+            sourceLabel={historyState.sourceLabel}
+            cappedLabel={historyState.cappedLabel}
+          />
+        </div>
+      </div>
     );
   }
 
@@ -1159,10 +1040,10 @@ export function BotDetailView({
               {recentLogs.length ? (
                 recentLogs.map((log) => (
                   <div key={log.id} className="border border-[var(--line)] bg-[var(--panel-soft)] p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                      <Activity className="h-4 w-4 text-[var(--green)]" />
-                      {log.category}
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <Activity className="h-4 w-4 text-[var(--green)]" />
+                        {log.category}
                       </div>
                       <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">{formatDateTime(log.createdAt)}</div>
                     </div>

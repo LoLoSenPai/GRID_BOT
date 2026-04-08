@@ -1,7 +1,7 @@
 export const MINTS = {
   SOL: "So11111111111111111111111111111111111111112",
   USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-  BTC: "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E"
+  BTC: "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh"
 } as const;
 
 export const PYTH_FEED_IDS = {

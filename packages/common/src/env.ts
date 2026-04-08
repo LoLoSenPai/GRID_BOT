@@ -39,7 +39,6 @@ export const envSchema = z.object({
   RPC_HTTP_URL: z.string().url(),
   RPC_WS_URL: z.string().url(),
   EXECUTION_WALLET_SECRET_KEY_PATH: z.string().optional().or(z.literal("")),
-  EXECUTION_WALLET_SECRET_KEY_JSON: z.string().optional().or(z.literal("")),
   JUPITER_API_KEY: z.string().optional().or(z.literal("")),
   PYTH_HERMES_BASE_URL: z.string().url().default("https://hermes.pyth.network"),
   PYTH_HISTORY_BASE_URL: z.string().url().default("https://pyth.dourolabs.app/v1"),

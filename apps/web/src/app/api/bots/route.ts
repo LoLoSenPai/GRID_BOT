@@ -3,7 +3,12 @@ import { getEnv } from "@grid-bot/common";
 import { prisma } from "@grid-bot/db";
 
 import { readSession } from "@/lib/auth";
-import { BotManagementValidationError, createInitialStateSnapshot, parseCreateBotPayload } from "@/lib/bot-management";
+import {
+  BotManagementValidationError,
+  createInitialStateSnapshot,
+  parseCreateBotPayload,
+} from "@/lib/bot-management";
+import { validateBudgetAllocation } from "@/lib/wallet-budget";
 
 export async function POST(request: Request) {
   const session = await readSession();
@@ -13,8 +18,22 @@ export async function POST(request: Request) {
 
   try {
     const payload = await request.json();
-    const parsed = parseCreateBotPayload(payload, getEnv().LIVE_TRADING_ENABLED);
-    const baseKey = parsed.key || `${parsed.baseSymbol.toLowerCase()}-${parsed.quoteSymbol.toLowerCase()}-grid`;
+    const parsed = parseCreateBotPayload(
+      payload,
+      getEnv().LIVE_TRADING_ENABLED,
+    );
+
+    const budgetCheck = await validateBudgetAllocation(
+      parsed.totalBudgetUsd,
+      parsed.mode,
+    );
+    if (!budgetCheck.ok) {
+      return NextResponse.json({ error: budgetCheck.error }, { status: 422 });
+    }
+
+    const baseKey =
+      parsed.key ||
+      `${parsed.baseSymbol.toLowerCase()}-${parsed.quoteSymbol.toLowerCase()}-grid`;
     const key = await createUniqueBotKey(baseKey);
 
     const bot = await prisma.$transaction(async (tx) => {
@@ -31,8 +50,8 @@ export async function POST(request: Request) {
           strategyMode: parsed.strategyMode as never,
           mode: parsed.mode as never,
           status: parsed.status as never,
-          executionProvider: parsed.executionProvider as never
-        }
+          executionProvider: parsed.executionProvider as never,
+        },
       });
 
       await tx.botConfig.create({
@@ -56,8 +75,8 @@ export async function POST(request: Request) {
           recenterMode: parsed.recenterMode as never,
           autoRecenterMinIntervalMs: parsed.autoRecenterMinIntervalMs,
           autoRecenterMaxPerDay: parsed.autoRecenterMaxPerDay,
-          outOfRangePause: parsed.outOfRangePause
-        }
+          outOfRangePause: parsed.outOfRangePause,
+        },
       });
 
       await tx.position.create({
@@ -68,16 +87,16 @@ export async function POST(request: Request) {
           averageEntryPrice: 0,
           realizedPnlUsd: 0,
           unrealizedPnlUsd: 0,
-          totalFeesQuote: 0
-        }
+          totalFeesQuote: 0,
+        },
       });
 
       await tx.botStateSnapshot.create({
         data: createInitialStateSnapshot({
           botId: createdBot.id,
           status: parsed.status,
-          totalBudgetUsd: parsed.totalBudgetUsd
-        })
+          totalBudgetUsd: parsed.totalBudgetUsd,
+        }),
       });
 
       await tx.systemLog.create({
@@ -88,9 +107,9 @@ export async function POST(request: Request) {
           message: `Bot created in ${parsed.mode} mode from ${parsed.label} preset.`,
           metadata: {
             actor: session.username,
-            presetId: parsed.presetId
-          }
-        }
+            presetId: parsed.presetId,
+          },
+        },
       });
 
       return createdBot;
@@ -99,16 +118,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, id: bot.id });
   } catch (error) {
     if (error instanceof BotManagementValidationError) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status },
+      );
     }
 
     console.error(error);
     return NextResponse.json(
       {
         error: "Failed to create bot.",
-        detail: process.env.NODE_ENV !== "production" && error instanceof Error ? error.message : undefined
+        detail:
+          process.env.NODE_ENV !== "production" && error instanceof Error
+            ? error.message
+            : undefined,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
@@ -118,7 +143,12 @@ async function createUniqueBotKey(baseKey: string) {
   let attempt = cleanBaseKey;
   let counter = 2;
 
-  while (await prisma.bot.findUnique({ where: { key: attempt }, select: { id: true } })) {
+  while (
+    await prisma.bot.findUnique({
+      where: { key: attempt },
+      select: { id: true },
+    })
+  ) {
     attempt = `${cleanBaseKey}-${counter}`;
     counter += 1;
   }

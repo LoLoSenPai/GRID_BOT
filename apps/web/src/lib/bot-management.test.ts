@@ -1,9 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { BotMode, BotStatus, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
 
-import { analyzeBotDraft, applyBehaviorPreset, applyPaperTurbo, cloneStateSnapshot, createDraftFromPreset, diffBotDraft, inferBehaviorPresetId } from "./bot-management";
+import {
+  analyzeBotDraft,
+  applyBehaviorPreset,
+  applyPaperTurbo,
+  buildBotKeyForMode,
+  cloneStateSnapshot,
+  createDraftFromPreset,
+  diffBotDraft,
+  inferBehaviorPresetId,
+} from "./bot-management";
 
 describe("analyzeBotDraft", () => {
+  it("creates drafts in the requested mode", () => {
+    const draft = createDraftFromPreset("SOL_USDC", BotMode.Live);
+
+    expect(draft.mode).toBe(BotMode.Live);
+  });
+
   it("blocks drafts where deployable capital exceeds budget minus reserve", () => {
     const draft = createDraftFromPreset("SOL_USDC");
     draft.maxDeployableUsd = 1_800;
@@ -50,6 +65,18 @@ describe("analyzeBotDraft", () => {
 });
 
 describe("diffBotDraft", () => {
+  it("builds stable bot keys per mode", () => {
+    expect(buildBotKeyForMode("SOL / USDC Grid", BotMode.Paper)).toBe(
+      "sol-usdc-grid-paper",
+    );
+    expect(buildBotKeyForMode("sol-usdc-grid", BotMode.Live)).toBe(
+      "sol-usdc-grid-live",
+    );
+    expect(buildBotKeyForMode("btc-usdc-grid-live", BotMode.Live)).toBe(
+      "btc-usdc-grid-live",
+    );
+  });
+
   it("returns only changed draft fields with operator-facing formatting", () => {
     const previous = createDraftFromPreset("SOL_USDC");
     const next = {

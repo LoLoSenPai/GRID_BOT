@@ -3,11 +3,24 @@ import { type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
-export const formControlClass =
-  "mt-2 w-full border border-[var(--line)] bg-[var(--bg)] px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-[var(--muted)] focus:border-[var(--line-strong)]";
+/* ── Shared design tokens ── */
 
-export const actionButtonBase =
-  "inline-flex items-center justify-center gap-2 border px-3 py-2 font-mono text-[11px] uppercase tracking-[0.18em] transition disabled:cursor-wait disabled:opacity-50";
+/** Standard height for all form controls (inputs, selects, single-line buttons). */
+const controlH = "h-8";
+
+/** Base class for text inputs and selects. */
+export const formControlClass = cn(
+  "w-full rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white outline-none transition",
+  "placeholder:text-[var(--muted)] focus:border-white/25 focus:ring-1 focus:ring-white/10",
+  controlH
+);
+
+/** Base class for action-style buttons (icon + label). */
+export const actionButtonBase = cn(
+  "inline-flex items-center justify-center gap-1.5 rounded-md border px-2.5 font-mono text-[10px] uppercase tracking-[0.14em] transition",
+  "disabled:pointer-events-none disabled:opacity-50",
+  controlH
+);
 
 export function SummaryMetric({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
@@ -94,7 +107,7 @@ export function ActionButton({
 
   return (
     <button type="button" onClick={onClick} disabled={disabled} className={cn(actionButtonBase, toneClass)}>
-      <Icon className="h-3.5 w-3.5" />
+      <Icon className="h-3.5 w-3.5 shrink-0" />
       {label}
     </button>
   );
@@ -102,10 +115,10 @@ export function ActionButton({
 
 export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <label className="block">
-      <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">{label}</div>
+    <label className="block space-y-1.5">
+      <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">{label}</div>
       {children}
-      {hint ? <div className="mt-2 text-xs leading-5 text-[var(--muted)]">{hint}</div> : null}
+      {hint ? <div className="text-[11px] leading-4 text-[var(--muted)]">{hint}</div> : null}
     </label>
   );
 }

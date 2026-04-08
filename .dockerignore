@@ -1,0 +1,17 @@
+node_modules
+.next
+.turbo
+.git
+.github
+.vscode
+coverage
+dist
+tmp-*.html
+tmp-*.json
+tmp-*.txt
+web-dev.out.log
+web-dev.err.log
+pnpm-debug.log
+.env
+.env.production
+postgres_data

@@ -280,14 +280,17 @@ export class BotManagementValidationError extends Error {
   }
 }
 
-export function createDraftFromPreset(presetId: BotPairPresetId): BotFormDraft {
+export function createDraftFromPreset(
+  presetId: BotPairPresetId,
+  mode: BotMode = BotMode.Paper
+): BotFormDraft {
   const preset = BOT_PAIR_PRESETS[presetId];
 
   return {
     presetId,
     name: preset.defaultName,
     strategyMode: preset.defaults.strategyMode,
-    mode: preset.defaults.mode,
+    mode,
     gridType: preset.defaults.gridType,
     totalBudgetUsd: preset.defaults.totalBudgetUsd,
     maxDeployableUsd: preset.defaults.maxDeployableUsd,
@@ -516,6 +519,17 @@ export function slugifyBotKey(value: string) {
     .replace(/^-|-$/g, "");
 }
 
+export function buildBotKeyForMode(baseKey: string, mode: BotMode) {
+  const normalizedBaseKey = slugifyBotKey(baseKey) || "grid-bot";
+  const suffix = mode === BotMode.Live ? "live" : "paper";
+
+  if (normalizedBaseKey.endsWith(`-${suffix}`)) {
+    return normalizedBaseKey;
+  }
+
+  return `${normalizedBaseKey}-${suffix}`;
+}
+
 export function createInitialRuntimeMetadata(): BotRuntimeMetadataShape {
   return {
     levelLocks: {},
@@ -619,7 +633,7 @@ export function parseCreateBotPayload(payload: unknown, liveTradingEnabled: bool
 
   return {
     presetId,
-    key: slugifyBotKey(draft.name || preset.defaultName),
+    key: buildBotKeyForMode(draft.name || preset.defaultName, draft.mode),
     status: BotStatus.Paused,
     executionProvider: getExecutionProviderForMode(draft.mode),
     ...draft,
