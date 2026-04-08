@@ -19,6 +19,24 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+      args:
+        NODE_ENV: production
+        APP_URL: ${APP_URL}
+        DATABASE_URL: ${DATABASE_URL}
+        ADMIN_USERNAME: ${ADMIN_USERNAME}
+        ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+        SESSION_SECRET: ${SESSION_SECRET}
+        DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
+        LIVE_TRADING_ENABLED: ${LIVE_TRADING_ENABLED}
+        DEFAULT_CLUSTER: ${DEFAULT_CLUSTER}
+        RPC_HTTP_URL: ${RPC_HTTP_URL}
+        RPC_WS_URL: ${RPC_WS_URL}
+        EXECUTION_WALLET_SECRET_KEY_PATH: /run/secrets/execution-wallet.json
+        JUPITER_API_KEY: ${JUPITER_API_KEY}
+        PYTH_HERMES_BASE_URL: ${PYTH_HERMES_BASE_URL}
+        PYTH_HISTORY_BASE_URL: ${PYTH_HISTORY_BASE_URL}
+        BOT_TICK_INTERVAL_MS: ${BOT_TICK_INTERVAL_MS}
+        PRICE_STALE_AFTER_MS: ${PRICE_STALE_AFTER_MS}
     restart: "no"
     env_file:
       - .env.production
@@ -36,6 +54,24 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.web
+      args:
+        NODE_ENV: production
+        APP_URL: ${APP_URL}
+        DATABASE_URL: ${DATABASE_URL}
+        ADMIN_USERNAME: ${ADMIN_USERNAME}
+        ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+        SESSION_SECRET: ${SESSION_SECRET}
+        DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
+        LIVE_TRADING_ENABLED: ${LIVE_TRADING_ENABLED}
+        DEFAULT_CLUSTER: ${DEFAULT_CLUSTER}
+        RPC_HTTP_URL: ${RPC_HTTP_URL}
+        RPC_WS_URL: ${RPC_WS_URL}
+        EXECUTION_WALLET_SECRET_KEY_PATH: /run/secrets/execution-wallet.json
+        JUPITER_API_KEY: ${JUPITER_API_KEY}
+        PYTH_HERMES_BASE_URL: ${PYTH_HERMES_BASE_URL}
+        PYTH_HISTORY_BASE_URL: ${PYTH_HISTORY_BASE_URL}
+        BOT_TICK_INTERVAL_MS: ${BOT_TICK_INTERVAL_MS}
+        PRICE_STALE_AFTER_MS: ${PRICE_STALE_AFTER_MS}
     restart: unless-stopped
     env_file:
       - .env.production
