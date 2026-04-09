@@ -725,4 +725,108 @@ describe("BotEngineService", () => {
       })
     );
   });
+
+  it("does not retrigger the same buy crossing when only the in-memory observed price changed", async () => {
+    const aggregate = createAggregate({
+      config: {
+        totalBudgetUsd: 150,
+        maxDeployableUsd: 150,
+        reserveQuoteAmount: 0,
+        lowPrice: 81,
+        highPrice: 84,
+        levelCount: 4,
+        priceConfirmationWindowMs: 0
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 82.4,
+        availableQuoteAmount: 150,
+        availableBaseAmount: 0,
+        deployedQuoteAmount: 0,
+        averageEntryPrice: null,
+        unrealizedPnlUsd: 0,
+        totalEquityUsd: 150,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {},
+          recenterHistory: [],
+          recentExecutions: []
+        }
+      },
+      position: null,
+      openLots: []
+    });
+
+    const botRepository = createBotRepository(aggregate);
+    const tradeRepository = createTradeRepository();
+    const priceSnapshotRepository: PriceSnapshotRepository & { createPriceSnapshot: ReturnType<typeof vi.fn> } = {
+      createPriceSnapshot: vi.fn(async () => undefined)
+    };
+    const logRepository: SystemLogRepository & { writeLog: ReturnType<typeof vi.fn> } = {
+      writeLog: vi.fn(async () => undefined)
+    };
+    const marketPriceService: MarketPricePort = {
+      getLatestPrice: vi
+        .fn()
+        .mockResolvedValueOnce({
+          symbol: "SOL",
+          pair: "SOL/USDC",
+          price: 81.9,
+          confidence: 0.1,
+          source: "pyth",
+          timestamp: new Date("2026-04-09T12:00:00.000Z"),
+          feedId: "feed-sol"
+        })
+        .mockResolvedValueOnce({
+          symbol: "SOL",
+          pair: "SOL/USDC",
+          price: 81.85,
+          confidence: 0.1,
+          source: "pyth",
+          timestamp: new Date("2026-04-09T12:00:01.000Z"),
+          feedId: "feed-sol"
+        })
+    };
+    const executionAdapter = {
+      getQuote: vi.fn(),
+      estimateExecution: vi.fn(),
+      executeSwap: vi.fn(async () => ({
+        provider: ExecutionProvider.Paper,
+        status: ExecutionStatus.Simulated,
+        executionId: "sim-1",
+        txId: null,
+        inputAmount: 50,
+        outputAmount: 0.61,
+        effectivePrice: 81.97,
+        feeAmount: 0.05
+      })),
+      getExecutionReport: vi.fn()
+    };
+    const executionService = new ExecutionService(
+      {
+        [ExecutionProvider.Paper]: executionAdapter,
+        [ExecutionProvider.Jupiter]: executionAdapter,
+        [ExecutionProvider.Dflow]: executionAdapter
+      },
+      false
+    );
+    const alert = createAlertService();
+    const engine = new BotEngineService(
+      botRepository,
+      tradeRepository,
+      priceSnapshotRepository,
+      logRepository,
+      marketPriceService,
+      executionService,
+      new GridStrategyService(),
+      new RiskManagerService(),
+      alert.service
+    );
+
+    await engine.runBot(aggregate.bot.id);
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.createOrder).toHaveBeenCalledTimes(1);
+  });
 });

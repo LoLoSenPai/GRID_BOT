@@ -21,7 +21,9 @@ import {
 } from "@grid-bot/db";
 
 import { DiscordWebhookSink } from "./discord-webhook-sink";
+import { PythPriceStreamService } from "./pyth-price-stream";
 import { getRuntimeMaintenanceIntervalMs, runRuntimeMaintenance } from "./runtime-maintenance";
+import { SymbolRunScheduler } from "./symbol-run-scheduler";
 
 const env = getEnv();
 
@@ -32,6 +34,7 @@ async function main() {
   const systemLogRepository = new PrismaSystemLogRepository();
   const alertRepository = new PrismaAlertRepository();
 
+  const marketPriceService = new MarketPriceService();
   const executionService = new ExecutionService(
     {
       [ExecutionProvider.Jupiter]: new JupiterExecutionAdapter(),
@@ -47,14 +50,22 @@ async function main() {
     tradeRepository,
     priceSnapshotRepository,
     systemLogRepository,
-    new MarketPriceService(),
+    marketPriceService,
     executionService,
     new GridStrategyService(),
     new RiskManagerService(),
     alertService
   );
+  const symbolRunScheduler = new SymbolRunScheduler(async (symbol) => {
+    await engine.runBotsForSymbol(symbol);
+  });
+  const priceStream = new PythPriceStreamService(async (marketPrice) => {
+    marketPriceService.setLatestPrice(marketPrice);
+    symbolRunScheduler.schedule(marketPrice.symbol);
+  });
 
   logger.info({ tickIntervalMs: env.BOT_TICK_INTERVAL_MS }, "Worker started");
+  priceStream.start();
   await runRuntimeMaintenance();
   await engine.runCycle();
   const interval = setInterval(async () => {
@@ -67,6 +78,7 @@ async function main() {
   const shutdown = async () => {
     clearInterval(interval);
     clearInterval(maintenanceInterval);
+    await priceStream.stop();
     await prisma.$disconnect();
     process.exit(0);
   };

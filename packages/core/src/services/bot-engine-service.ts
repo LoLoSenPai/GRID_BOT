@@ -24,8 +24,12 @@ import { shouldPersistPassivePriceSnapshot, shouldPersistPassiveState } from "./
 import { RiskManagerService } from "./risk-manager-service";
 import { round } from "../utils/math";
 
+const HEARTBEAT_UPDATE_INTERVAL_MS = 2_000;
+
 export class BotEngineService {
   private readonly passivePriceSnapshotWriteAt = new Map<string, number>();
+  private readonly lastObservedPriceByBotId = new Map<string, number>();
+  private readonly lastHeartbeatWriteAt = new Map<string, number>();
 
   constructor(
     private readonly botRepository: BotStateRepository,
@@ -44,6 +48,16 @@ export class BotEngineService {
     await Promise.all(bots.map((aggregate) => this.runBot(aggregate.bot.id)));
   }
 
+  async runBotsForSymbol(symbol: string): Promise<void> {
+    const normalizedSymbol = symbol.toUpperCase();
+    const bots = await this.botRepository.listRunnableBots();
+    await Promise.all(
+      bots
+        .filter((aggregate) => aggregate.bot.baseSymbol.toUpperCase() === normalizedSymbol)
+        .map((aggregate) => this.runBot(aggregate.bot.id))
+    );
+  }
+
   async runBot(botId: string, options?: { skipLock?: boolean }): Promise<void> {
     const execute = async () => {
       const aggregate = await this.botRepository.getBotAggregate(botId);
@@ -55,15 +69,18 @@ export class BotEngineService {
 
       try {
         const marketPrice = await this.marketPriceService.getLatestPrice(aggregate.bot);
-        await this.botRepository.setBotHeartbeat(botId, marketPrice.price);
+        const previousObservedPrice =
+          this.lastObservedPriceByBotId.get(botId) ?? aggregate.latestState?.currentPrice ?? null;
+        this.lastObservedPriceByBotId.set(botId, marketPrice.price);
+        await this.maybeSetBotHeartbeat(botId, marketPrice.price, now);
         const levels = this.gridStrategyService.calculateLevels(
           aggregate.config.lowPrice,
           aggregate.config.highPrice,
           aggregate.config.levelCount,
           aggregate.config.gridType
         );
-        const crossedSignals = aggregate.latestState?.currentPrice
-          ? this.gridStrategyService.detectCrossedLevels(levels, aggregate.latestState.currentPrice, marketPrice.price)
+        const crossedSignals = previousObservedPrice !== null
+          ? this.gridStrategyService.detectCrossedLevels(levels, previousObservedPrice, marketPrice.price)
           : [];
 
         if (aggregate.bot.status === BotStatus.Error) {
@@ -289,6 +306,16 @@ export class BotEngineService {
       capturedAt
     });
     this.passivePriceSnapshotWriteAt.set(botId, capturedAt.getTime());
+  }
+
+  private async maybeSetBotHeartbeat(botId: string, currentPrice: number | null, now: Date) {
+    const lastUpdatedAt = this.lastHeartbeatWriteAt.get(botId);
+    if (lastUpdatedAt && now.getTime() - lastUpdatedAt < HEARTBEAT_UPDATE_INTERVAL_MS) {
+      return;
+    }
+
+    await this.botRepository.setBotHeartbeat(botId, currentPrice);
+    this.lastHeartbeatWriteAt.set(botId, now.getTime());
   }
 
   private async persistPassivePriceSnapshot(
