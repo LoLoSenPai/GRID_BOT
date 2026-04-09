@@ -179,7 +179,7 @@ Variables principales:
 | `PYTH_HERMES_BASE_URL` | endpoint Hermes Pyth |
 | `EXECUTION_WALLET_SECRET_KEY_PATH` | chemin du fichier keypair du wallet hot |
 | `DISCORD_WEBHOOK_URL` | webhook alertes Discord |
-| `BOT_TICK_INTERVAL_MS` | cadence du worker, `5000` recommande en prod sur petit VPS |
+| `BOT_TICK_INTERVAL_MS` | cadence du worker, `2000` recommande en prod live sur petit VPS optimise |
 | `PRICE_STALE_AFTER_MS` | garde-fou sur fraicheur du prix |
 
 ## Execution locale
@@ -297,7 +297,7 @@ Points importants a adapter:
 - `JUPITER_API_KEY`
 - `DISCORD_WEBHOOK_URL`
 - `EXECUTION_WALLET_HOST_PATH`
-- `BOT_TICK_INTERVAL_MS=5000`
+- `BOT_TICK_INTERVAL_MS=2000`
 
 L'app dans les conteneurs lira toujours:
 
@@ -402,7 +402,7 @@ Pass runtime recommande pour le VPS actuel:
 
 - `/bots` reste la page temps reel
 - `/dashboard` et `/activity` sont des vues de lecture a refresh manuel
-- garder `BOT_TICK_INTERVAL_MS=5000` en prod sur cette machine
+- garder `BOT_TICK_INTERVAL_MS=2000` en prod live sur cette machine
 
 Routine de sauvegarde:
 

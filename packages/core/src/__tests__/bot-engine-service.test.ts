@@ -429,6 +429,61 @@ describe("BotEngineService", () => {
     );
   });
 
+  it("executes an actionable crossed buy on the same tick when confirmation is disabled", async () => {
+    const aggregate = createAggregate({
+      config: {
+        totalBudgetUsd: 50,
+        maxDeployableUsd: 40,
+        reserveQuoteAmount: 10,
+        lowPrice: 82,
+        highPrice: 85,
+        levelCount: 4,
+        gridType: GridType.Arithmetic,
+        minOrderQuoteAmount: 10,
+        priceConfirmationWindowMs: 0,
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 82.3,
+        availableQuoteAmount: 40,
+        availableBaseAmount: 0,
+        deployedQuoteAmount: 0,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {},
+          recenterHistory: [],
+          recentExecutions: [],
+        },
+      },
+      position: null,
+      openLots: [],
+    });
+
+    const { engine, tradeRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 82,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol",
+      },
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.createOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        side: TradeSide.Buy,
+        levelIndex: 0,
+        targetPrice: 82,
+      }),
+    );
+  });
+
   it("creates a simulated execution and enters cooldown after a confirmed signal", async () => {
     const aggregate = createAggregate({
       latestState: {

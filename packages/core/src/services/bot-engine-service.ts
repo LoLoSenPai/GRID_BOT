@@ -56,6 +56,15 @@ export class BotEngineService {
       try {
         const marketPrice = await this.marketPriceService.getLatestPrice(aggregate.bot);
         await this.botRepository.setBotHeartbeat(botId, marketPrice.price);
+        const levels = this.gridStrategyService.calculateLevels(
+          aggregate.config.lowPrice,
+          aggregate.config.highPrice,
+          aggregate.config.levelCount,
+          aggregate.config.gridType
+        );
+        const crossedSignals = aggregate.latestState?.currentPrice
+          ? this.gridStrategyService.detectCrossedLevels(levels, aggregate.latestState.currentPrice, marketPrice.price)
+          : [];
 
         if (aggregate.bot.status === BotStatus.Error) {
           await this.botRepository.updateBotStatus(botId, BotStatus.Running);
@@ -79,17 +88,17 @@ export class BotEngineService {
           return;
         }
 
-        const signal = this.getConfirmedSignal(aggregate, marketPrice.price, now);
+        const signal = this.getConfirmedSignalFromState(aggregate, marketPrice.price, now, levels, crossedSignals);
         if (!signal) {
           await this.persistPassivePriceSnapshot(aggregate, marketPrice, now);
-          await this.persistPassiveState(aggregate, marketPrice.price, now);
+          await this.persistPassiveState(aggregate, marketPrice.price, now, {}, undefined, undefined, levels, crossedSignals);
           return;
         }
 
         const orderIntent = this.gridStrategyService.buildOrderIntent(aggregate, signal);
         if (!orderIntent) {
           await this.persistPassivePriceSnapshot(aggregate, marketPrice, now);
-          await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null });
+          await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null }, undefined, undefined, levels, crossedSignals);
           return;
         }
 
@@ -113,7 +122,7 @@ export class BotEngineService {
               message: risk.reasons.join(", ")
             });
           }
-          await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null });
+          await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null }, undefined, undefined, levels, crossedSignals);
           return;
         }
 
@@ -358,17 +367,43 @@ export class BotEngineService {
   }
 
   private getConfirmedSignal(aggregate: BotAggregate, currentPrice: number, now: Date): TriggerSignal | null {
-    const pending = aggregate.latestState?.metadata.pendingSignal;
-    if (!pending) {
-      return null;
-    }
-
     const levels = this.gridStrategyService.calculateLevels(
       aggregate.config.lowPrice,
       aggregate.config.highPrice,
       aggregate.config.levelCount,
       aggregate.config.gridType
     );
+    const crossedSignals = aggregate.latestState?.currentPrice
+      ? this.gridStrategyService.detectCrossedLevels(levels, aggregate.latestState.currentPrice, currentPrice)
+      : [];
+
+    return this.getConfirmedSignalFromState(aggregate, currentPrice, now, levels, crossedSignals);
+  }
+
+  private getConfirmedSignalFromState(
+    aggregate: BotAggregate,
+    currentPrice: number,
+    now: Date,
+    levels: Array<{ index: number; price: number }>,
+    crossedSignals: TriggerSignal[]
+  ): TriggerSignal | null {
+    const pending = aggregate.latestState?.metadata.pendingSignal;
+    const immediateSignal =
+      aggregate.config.priceConfirmationWindowMs === 0
+        ? this.selectActionableCrossedSignal(aggregate, crossedSignals, now)
+        : null;
+
+    if (immediateSignal) {
+      return {
+        ...immediateSignal,
+        idempotencyKey: `${aggregate.bot.id}:${immediateSignal.side}:${immediateSignal.levelIndex}:${now.getTime()}`,
+        triggeredAt: now
+      };
+    }
+
+    if (!pending) {
+      return null;
+    }
     const pendingLevel = levels.find((level) => level.index === pending.levelIndex);
     if (!pendingLevel) {
       return null;
@@ -398,18 +433,22 @@ export class BotEngineService {
     now: Date,
     metadataPatch: Partial<BotRuntimeMetadata> = {},
     status = this.getPassiveStatus(aggregate, now),
-    lastRecenterAt = aggregate.latestState?.lastRecenterAt ?? null
+    lastRecenterAt = aggregate.latestState?.lastRecenterAt ?? null,
+    precomputedLevels?: Array<{ index: number; price: number }>,
+    precomputedCrossedSignals?: TriggerSignal[]
   ): Promise<void> {
     const latest = aggregate.latestState;
-    const levels = this.gridStrategyService.calculateLevels(
-      aggregate.config.lowPrice,
-      aggregate.config.highPrice,
-      aggregate.config.levelCount,
-      aggregate.config.gridType
-    );
-    const crossedSignals = latest?.currentPrice
-      ? this.gridStrategyService.detectCrossedLevels(levels, latest.currentPrice, currentPrice)
-      : [];
+    const levels =
+      precomputedLevels ??
+      this.gridStrategyService.calculateLevels(
+        aggregate.config.lowPrice,
+        aggregate.config.highPrice,
+        aggregate.config.levelCount,
+        aggregate.config.gridType
+      );
+    const crossedSignals =
+      precomputedCrossedSignals ??
+      (latest?.currentPrice ? this.gridStrategyService.detectCrossedLevels(levels, latest.currentPrice, currentPrice) : []);
     const pendingSignal = this.resolvePendingSignal(aggregate, crossedSignals, levels, currentPrice, now);
     const availableBaseAmount = latest?.availableBaseAmount ?? aggregate.position?.baseAmount ?? 0;
     const availableQuoteAmount = latest?.availableQuoteAmount ?? aggregate.config.totalBudgetUsd;

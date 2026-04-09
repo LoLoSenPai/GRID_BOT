@@ -206,7 +206,7 @@ export const BOT_BEHAVIOR_PRESETS = {
     cooldownMs: 15_000,
     maxOrdersPerHour: 96,
     levelLockMs: 15_000,
-    priceConfirmationWindowMs: 1_000
+    priceConfirmationWindowMs: 0
   }
 } as const;
 
