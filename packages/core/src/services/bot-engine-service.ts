@@ -584,7 +584,7 @@ export class BotEngineService {
   }
 
   private getPassiveStatus(aggregate: BotAggregate, now: Date): BotStatus {
-    if (aggregate.bot.status === BotStatus.Error) {
+    if (aggregate.bot.status === BotStatus.Error || aggregate.bot.status === BotStatus.OutOfRange) {
       return BotStatus.Running;
     }
 

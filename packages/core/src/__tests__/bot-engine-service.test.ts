@@ -352,6 +352,40 @@ describe("BotEngineService", () => {
     expect(alert.createAlert).not.toHaveBeenCalled();
   });
 
+  it("returns out_of_range bots to running once price re-enters the configured band", async () => {
+    const aggregate = createAggregate({
+      bot: { status: BotStatus.OutOfRange },
+      latestState: {
+        ...createAggregate().latestState,
+        status: BotStatus.OutOfRange,
+        currentPrice: 170
+      }
+    });
+
+    const { engine, botRepository, tradeRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 150,
+        confidence: 0.2,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol"
+      }
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.createOrder).not.toHaveBeenCalled();
+    expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: BotStatus.Running,
+        currentPrice: 150
+      })
+    );
+  });
+
   it("tracks the next actionable lower buy rail when a drop crosses an already occupied level", async () => {
     const aggregate = createAggregate({
       config: {
