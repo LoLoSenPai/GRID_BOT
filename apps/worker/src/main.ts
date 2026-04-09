@@ -21,6 +21,7 @@ import {
 } from "@grid-bot/db";
 
 import { DiscordWebhookSink } from "./discord-webhook-sink";
+import { getRuntimeMaintenanceIntervalMs, runRuntimeMaintenance } from "./runtime-maintenance";
 
 const env = getEnv();
 
@@ -54,13 +55,18 @@ async function main() {
   );
 
   logger.info({ tickIntervalMs: env.BOT_TICK_INTERVAL_MS }, "Worker started");
+  await runRuntimeMaintenance();
   await engine.runCycle();
   const interval = setInterval(async () => {
     await engine.runCycle();
   }, env.BOT_TICK_INTERVAL_MS);
+  const maintenanceInterval = setInterval(async () => {
+    await runRuntimeMaintenance();
+  }, getRuntimeMaintenanceIntervalMs());
 
   const shutdown = async () => {
     clearInterval(interval);
+    clearInterval(maintenanceInterval);
     await prisma.$disconnect();
     process.exit(0);
   };

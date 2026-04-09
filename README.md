@@ -179,7 +179,7 @@ Variables principales:
 | `PYTH_HERMES_BASE_URL` | endpoint Hermes Pyth |
 | `EXECUTION_WALLET_SECRET_KEY_PATH` | chemin du fichier keypair du wallet hot |
 | `DISCORD_WEBHOOK_URL` | webhook alertes Discord |
-| `BOT_TICK_INTERVAL_MS` | cadence du worker |
+| `BOT_TICK_INTERVAL_MS` | cadence du worker, `5000` recommande en prod sur petit VPS |
 | `PRICE_STALE_AFTER_MS` | garde-fou sur fraicheur du prix |
 
 ## Execution locale
@@ -265,6 +265,12 @@ Exemple de chemin wallet sur le VPS:
 /opt/grid-bot/wallets/execution-wallet.json
 ```
 
+Baseline memoire recommande sur un petit VPS:
+
+- `2 Go` de RAM minimum
+- `2 Go` de swap minimum
+- sans swap, `next-server` et `worker` peuvent finir tues par l'OOM killer
+
 ### 2. Cloner le repo sur le VPS
 
 ```bash
@@ -291,6 +297,7 @@ Points importants a adapter:
 - `JUPITER_API_KEY`
 - `DISCORD_WEBHOOK_URL`
 - `EXECUTION_WALLET_HOST_PATH`
+- `BOT_TICK_INTERVAL_MS=5000`
 
 L'app dans les conteneurs lira toujours:
 
@@ -391,6 +398,12 @@ Routine rapide apres chaque mise a jour:
 - ouvrir `/bots?deskMode=live`
 - verifier qu'aucun bot live inattendu n'est en `running`
 
+Pass runtime recommande pour le VPS actuel:
+
+- `/bots` reste la page temps reel
+- `/dashboard` et `/activity` sont des vues de lecture a refresh manuel
+- garder `BOT_TICK_INTERVAL_MS=5000` en prod sur cette machine
+
 Routine de sauvegarde:
 
 - lancer `./scripts/backup-postgres.sh`
@@ -488,7 +501,7 @@ Discord:
 - pas de perps
 - `DflowAdapter` non branche en execution reelle
 - recentrage auto present mais volontairement strict
-- pas de streaming temps reel front; rafraichissement via polling
+- `/bots` est la seule page a rester en quasi temps reel; `/dashboard` et `/activity` sont volontairement plus calmes
 - un warning Turbopack subsiste autour du chargeur d'env partage, sans impact sur la build
 
 ## Fichiers centraux

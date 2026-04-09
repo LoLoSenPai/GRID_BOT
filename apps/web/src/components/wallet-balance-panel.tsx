@@ -39,9 +39,23 @@ export function WalletBalancePanel({ deskMode }: { deskMode: BotMode }) {
         if (deskMode !== BotMode.Live) {
             return;
         }
-        void fetchBalances();
-        const id = setInterval(() => void fetchBalances(), 15_000);
-        return () => clearInterval(id);
+
+        const refreshIfVisible = () => {
+            if (document.visibilityState !== "visible") {
+                return;
+            }
+
+            void fetchBalances();
+        };
+
+        refreshIfVisible();
+        document.addEventListener("visibilitychange", refreshIfVisible);
+        const id = window.setInterval(refreshIfVisible, 60_000);
+
+        return () => {
+            document.removeEventListener("visibilitychange", refreshIfVisible);
+            window.clearInterval(id);
+        };
     }, [deskMode, fetchBalances]);
 
     if (deskMode !== BotMode.Live) {

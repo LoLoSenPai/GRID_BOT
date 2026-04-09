@@ -8,7 +8,7 @@ import { useRouter } from "next/navigation";
 
 
 import { BotConfigFields } from "@/components/bot-config-fields";
-import { BotDetailView, type BotDetailViewData } from "@/components/bot-detail-view";
+import { BotDetailView, type BotDetailRuntimeData, type BotDetailViewData } from "@/components/bot-detail-view";
 
 import { StatusBadge } from "@/components/status-badge";
 import { SurfaceCard } from "@/components/surface-card";
@@ -183,6 +183,19 @@ export function BotManagementConsole({
     [createBoardSource, createDraft]
   );
   const activeBoard = panelKind === "create" ? createPreviewBoard : selectedBoard;
+  const selectedRuntimeData = useMemo<BotDetailRuntimeData | null>(() => {
+    if (!selectedBot) {
+      return null;
+    }
+
+    return {
+      currentPrice: selectedBot.currentPrice,
+      lastHeartbeatAt: selectedBot.lastHeartbeatAt,
+      status: selectedBot.status,
+      lastProcessedAt: selectedBot.runtime.lastProcessedAt,
+      lastExecutionAt: selectedBot.runtime.lastExecutionAt
+    };
+  }, [selectedBot]);
   const activePreviewDraft =
     panelKind === "create" && panelTab === "setup"
       ? createDraft
@@ -212,7 +225,8 @@ export function BotManagementConsole({
       return;
     }
 
-    const source = new EventSource("/api/bots/runtime?stream=1");
+    setLiveTelemetry({});
+    const source = new EventSource(`/api/bots/runtime?stream=1&mode=${deskMode}`);
     const handleRuntime = (event: MessageEvent<string>) => {
       try {
         const payload = JSON.parse(event.data) as { bots?: BotRuntimeTelemetry[] };
@@ -236,7 +250,7 @@ export function BotManagementConsole({
       source.removeEventListener("runtime", handleRuntime as EventListener);
       source.close();
     };
-  }, []);
+  }, [deskMode]);
 
 
 
@@ -646,7 +660,13 @@ export function BotManagementConsole({
             {/* ─── Left: Chart ─── */}
             <div className="min-w-0 border-r border-[var(--line)]">
               {activeBoard ? (
-                <BotDetailView bot={activeBoard} embedded previewDraft={activePreviewDraft} runtimeStreamUrl={panelKind === "create" ? null : undefined} />
+                <BotDetailView
+                  bot={activeBoard}
+                  embedded
+                  previewDraft={activePreviewDraft}
+                  runtimeStreamUrl={null}
+                  runtimeData={panelKind === "create" ? null : selectedRuntimeData}
+                />
               ) : (
                 <div className="flex h-[500px] items-center justify-center text-sm text-[var(--muted)]">Select a bot below</div>
               )}

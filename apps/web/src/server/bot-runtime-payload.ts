@@ -1,12 +1,135 @@
+import { BotMode } from "@grid-bot/core/enums";
 import { prisma } from "@grid-bot/db";
 
-export async function getBotRuntimeListPayload() {
+type RuntimeMode = BotMode | undefined;
+
+function buildPaperSessionFallback() {
+  return {
+    ordersCount: 0,
+    executionsCount: 0,
+    latestExecutionAt: null,
+    latestExecutionStatus: null,
+    latestExecutionInputAmount: null,
+    latestExecutionOutputAmount: null,
+    latestExecutionPrice: null,
+    latestOrderSide: null,
+    latestOrderStatus: null,
+    latestOrderAt: null,
+  };
+}
+
+export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
+  if (mode === BotMode.Live) {
+    const bots = await prisma.bot.findMany({
+      where: { mode: BotMode.Live as never },
+      select: {
+        id: true,
+        status: true,
+        currentPrice: true,
+        lastHeartbeatAt: true,
+        stateSnapshots: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: {
+            currentPrice: true,
+            availableQuoteAmount: true,
+            availableBaseAmount: true,
+            deployedQuoteAmount: true,
+            averageEntryPrice: true,
+            realizedPnlUsd: true,
+            unrealizedPnlUsd: true,
+            totalEquityUsd: true,
+            consecutiveFailures: true,
+            lastProcessedAt: true,
+            lastExecutionAt: true,
+            metadata: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    return {
+      bots: bots.map((bot) => {
+        const latestState = bot.stateSnapshots[0];
+
+        return {
+          id: bot.id,
+          status: bot.status,
+          currentPrice: bot.currentPrice
+            ? Number(bot.currentPrice)
+            : latestState?.currentPrice
+              ? Number(latestState.currentPrice)
+              : null,
+          lastHeartbeatAt: bot.lastHeartbeatAt?.toISOString() ?? null,
+          runtime: latestState
+            ? {
+                availableQuoteAmount: Number(latestState.availableQuoteAmount),
+                availableBaseAmount: Number(latestState.availableBaseAmount),
+                deployedQuoteAmount: Number(latestState.deployedQuoteAmount),
+                averageEntryPrice: latestState.averageEntryPrice
+                  ? Number(latestState.averageEntryPrice)
+                  : null,
+                realizedPnlUsd: Number(latestState.realizedPnlUsd),
+                unrealizedPnlUsd: Number(latestState.unrealizedPnlUsd),
+                totalEquityUsd: Number(latestState.totalEquityUsd),
+                consecutiveFailures: latestState.consecutiveFailures,
+                lastProcessedAt: latestState.lastProcessedAt?.toISOString() ?? null,
+                lastExecutionAt: latestState.lastExecutionAt?.toISOString() ?? null,
+                pendingSignal: latestState.metadata,
+              }
+            : null,
+          paperSession: buildPaperSessionFallback(),
+        };
+      }),
+    };
+  }
+
   const bots = await prisma.bot.findMany({
-    include: {
-      config: true,
-      stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
-      orders: { orderBy: { createdAt: "desc" }, take: 1 },
-      executions: { orderBy: { createdAt: "desc" }, take: 1 },
+    where: mode ? { mode: mode as never } : undefined,
+    select: {
+      id: true,
+      status: true,
+      currentPrice: true,
+      lastHeartbeatAt: true,
+      stateSnapshots: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          currentPrice: true,
+          availableQuoteAmount: true,
+          availableBaseAmount: true,
+          deployedQuoteAmount: true,
+          averageEntryPrice: true,
+          realizedPnlUsd: true,
+          unrealizedPnlUsd: true,
+          totalEquityUsd: true,
+          consecutiveFailures: true,
+          lastProcessedAt: true,
+          lastExecutionAt: true,
+          metadata: true,
+        },
+      },
+      orders: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          side: true,
+          status: true,
+          createdAt: true,
+        },
+      },
+      executions: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          status: true,
+          createdAt: true,
+          executedInputAmount: true,
+          executedOutputAmount: true,
+          quotePrice: true,
+        },
+      },
       _count: {
         select: {
           orders: true,
@@ -26,7 +149,6 @@ export async function getBotRuntimeListPayload() {
       return {
         id: bot.id,
         status: bot.status,
-        totalBudgetUsd: bot.config ? Number(bot.config.totalBudgetUsd) : 0,
         currentPrice: bot.currentPrice
           ? Number(bot.currentPrice)
           : latestState?.currentPrice
@@ -106,7 +228,7 @@ export async function getBotRuntimePayload(id: string) {
 export function createSseResponse<T>({
   request,
   getPayload,
-  intervalMs = 2000,
+  intervalMs = 5000,
 }: {
   request: Request;
   getPayload: () => Promise<T>;

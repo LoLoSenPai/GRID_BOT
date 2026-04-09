@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { BotMode } from "@grid-bot/core/enums";
 
 import { readSession } from "@/lib/auth";
 import { createSseResponse, getBotRuntimeListPayload } from "@/server/bot-runtime-payload";
@@ -10,16 +11,18 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url);
+  const modeParam = searchParams.get("mode");
+  const mode = modeParam === BotMode.Paper || modeParam === BotMode.Live ? modeParam : undefined;
   if (searchParams.get("stream") === "1") {
     return createSseResponse({
       request,
-      getPayload: getBotRuntimeListPayload,
-      intervalMs: 2000
+      getPayload: () => getBotRuntimeListPayload(mode),
+      intervalMs: 5000
     });
   }
 
   return NextResponse.json(
-    await getBotRuntimeListPayload(),
+    await getBotRuntimeListPayload(mode),
     {
       headers: {
         "Cache-Control": "no-store"

@@ -20,10 +20,13 @@ import type { BotAggregate, BotRuntimeMetadata, GridCycle, PositionLot, TriggerS
 import { AlertService } from "./alert-service";
 import { ExecutionService } from "./execution-service";
 import { GridStrategyService } from "./grid-strategy-service";
+import { shouldPersistPassivePriceSnapshot, shouldPersistPassiveState } from "./passive-runtime-throttle";
 import { RiskManagerService } from "./risk-manager-service";
 import { round } from "../utils/math";
 
 export class BotEngineService {
+  private readonly passivePriceSnapshotWriteAt = new Map<string, number>();
+
   constructor(
     private readonly botRepository: BotStateRepository,
     private readonly tradeRepository: TradeRepository,
@@ -53,16 +56,6 @@ export class BotEngineService {
       try {
         const marketPrice = await this.marketPriceService.getLatestPrice(aggregate.bot);
         await this.botRepository.setBotHeartbeat(botId, marketPrice.price);
-        await this.priceSnapshotRepository.createPriceSnapshot({
-          botId,
-          symbol: marketPrice.pair,
-          source: marketPrice.source,
-          price: marketPrice.price,
-          confidence: marketPrice.confidence,
-          feedId: marketPrice.feedId,
-          status: "ok",
-          capturedAt: now
-        });
 
         if (aggregate.bot.status === BotStatus.Error) {
           await this.botRepository.updateBotStatus(botId, BotStatus.Running);
@@ -75,29 +68,34 @@ export class BotEngineService {
         }
 
         if (aggregate.bot.status === BotStatus.Paused || aggregate.bot.status === BotStatus.Stopped) {
+          await this.persistPassivePriceSnapshot(aggregate, marketPrice, now);
           await this.persistPassiveState(aggregate, marketPrice.price, now);
           return;
         }
 
         if (this.isOutOfRange(aggregate, marketPrice.price)) {
+          await this.persistPriceSnapshot(botId, marketPrice, now);
           await this.handleOutOfRange(aggregate, marketPrice.price, now);
           return;
         }
 
         const signal = this.getConfirmedSignal(aggregate, marketPrice.price, now);
         if (!signal) {
+          await this.persistPassivePriceSnapshot(aggregate, marketPrice, now);
           await this.persistPassiveState(aggregate, marketPrice.price, now);
           return;
         }
 
         const orderIntent = this.gridStrategyService.buildOrderIntent(aggregate, signal);
         if (!orderIntent) {
+          await this.persistPassivePriceSnapshot(aggregate, marketPrice, now);
           await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null });
           return;
         }
 
         const risk = this.riskManagerService.evaluate(aggregate, signal, orderIntent, marketPrice, now);
         if (!risk.allowed) {
+          await this.persistPriceSnapshot(botId, marketPrice, now);
           const blockedOrder = await this.tradeRepository.createOrder({
             ...orderIntent,
             status: OrderStatus.Blocked
@@ -119,6 +117,7 @@ export class BotEngineService {
           return;
         }
 
+        await this.persistPriceSnapshot(botId, marketPrice, now);
         const order = await this.tradeRepository.createOrder(orderIntent);
         const execution = await this.tradeRepository.createExecution({
           orderId: order.id,
@@ -259,6 +258,53 @@ export class BotEngineService {
     await this.botRepository.withBotLock(botId, execute);
   }
 
+  private async persistPriceSnapshot(
+    botId: string,
+    marketPrice: {
+      pair: string;
+      source: string;
+      price: number;
+      confidence: number;
+      feedId: string;
+    },
+    capturedAt: Date
+  ) {
+    await this.priceSnapshotRepository.createPriceSnapshot({
+      botId,
+      symbol: marketPrice.pair,
+      source: marketPrice.source,
+      price: marketPrice.price,
+      confidence: marketPrice.confidence,
+      feedId: marketPrice.feedId,
+      status: "ok",
+      capturedAt
+    });
+    this.passivePriceSnapshotWriteAt.set(botId, capturedAt.getTime());
+  }
+
+  private async persistPassivePriceSnapshot(
+    aggregate: BotAggregate,
+    marketPrice: {
+      pair: string;
+      source: string;
+      price: number;
+      confidence: number;
+      feedId: string;
+    },
+    capturedAt: Date
+  ) {
+    const lastPersistedAtMs = this.passivePriceSnapshotWriteAt.get(aggregate.bot.id);
+    const lastPersistedAt = lastPersistedAtMs
+      ? new Date(lastPersistedAtMs)
+      : aggregate.latestState?.lastProcessedAt ?? null;
+
+    if (!shouldPersistPassivePriceSnapshot({ lastPersistedAt, now: capturedAt })) {
+      return;
+    }
+
+    await this.persistPriceSnapshot(aggregate.bot.id, marketPrice, capturedAt);
+  }
+
   private isOutOfRange(aggregate: BotAggregate, price: number): boolean {
     return price < aggregate.config.lowPrice || price > aggregate.config.highPrice;
   }
@@ -369,6 +415,27 @@ export class BotEngineService {
     const averageEntryPrice = availableBaseAmount > 0 && openCostBasis > 0 ? round(openCostBasis / availableBaseAmount, 8) : null;
     const unrealizedPnlUsd = availableBaseAmount > 0 ? round(availableBaseAmount * currentPrice - openCostBasis, 8) : 0;
     const totalEquityUsd = round(availableQuoteAmount + availableBaseAmount * currentPrice, 8);
+    const metadata = {
+      levelLocks: latest?.metadata.levelLocks ?? {},
+      pendingSignal,
+      gridCycles: latest?.metadata.gridCycles ?? {},
+      recenterHistory: latest?.metadata.recenterHistory ?? [],
+      recentExecutions: latest?.metadata.recentExecutions ?? [],
+      ...metadataPatch
+    };
+
+    if (
+      !shouldPersistPassiveState({
+        latestState: latest,
+        status,
+        metadata,
+        lastExecutionAt: latest?.lastExecutionAt ?? null,
+        lastRecenterAt,
+        now
+      })
+    ) {
+      return;
+    }
 
     await this.botRepository.createStateSnapshot({
       botId: aggregate.bot.id,
@@ -385,14 +452,7 @@ export class BotEngineService {
       lastExecutionAt: latest?.lastExecutionAt ?? null,
       lastProcessedAt: now,
       lastRecenterAt,
-      metadata: {
-        levelLocks: latest?.metadata.levelLocks ?? {},
-        pendingSignal,
-        gridCycles: latest?.metadata.gridCycles ?? {},
-        recenterHistory: latest?.metadata.recenterHistory ?? [],
-        recentExecutions: latest?.metadata.recentExecutions ?? [],
-        ...metadataPatch
-      }
+      metadata
     });
   }
 

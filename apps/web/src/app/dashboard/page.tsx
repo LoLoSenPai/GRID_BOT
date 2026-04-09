@@ -3,7 +3,7 @@ import Link from "next/link";
 import { AlertTriangle, ArrowUpRight, Clock3, Zap } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
-import { AutoRefresh } from "@/components/auto-refresh";
+import { ManualRefresh } from "@/components/manual-refresh";
 import { StatusBadge } from "@/components/status-badge";
 import { SurfaceCard } from "@/components/surface-card";
 import { requireSession } from "@/lib/auth";
@@ -47,12 +47,13 @@ export default async function DashboardPage({
   const cookieStore = await cookies();
   const deskMode = parseDeskMode(params.deskMode ?? cookieStore.get(DESK_MODE_COOKIE)?.value);
   const data = await getDashboardData(deskMode);
+  const lastUpdatedAt = new Date().toISOString();
 
   return (
     <AppShell title="Dashboard" subtitle="Overview and routing" pathname="/dashboard" deskMode={deskMode}>
-      <AutoRefresh />
-
       <section className="space-y-4">
+        <ManualRefresh lastUpdatedAt={lastUpdatedAt} />
+
         <SurfaceCard padding="none" className="overflow-hidden">
           <div className="grid gap-0 md:grid-cols-4">
             <StripMetric label="Equity" value={formatCurrency(data.totalEquity)} hint={`${data.botCards.length} bots loaded`} />

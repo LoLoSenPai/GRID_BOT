@@ -122,6 +122,14 @@ export type BotDetailViewData = {
   }>;
 };
 
+export type BotDetailRuntimeData = {
+  currentPrice: number | null;
+  lastHeartbeatAt: string | null;
+  status: string;
+  lastProcessedAt: string | null;
+  lastExecutionAt: string | null;
+};
+
 type BotOrderView = BotDetailViewData["orders"][number];
 
 function isTradeVisibleOrder(order: BotOrderView) {
@@ -360,13 +368,15 @@ export function BotDetailView({
   embedded = false,
   previewDraft,
   embeddedActions,
-  runtimeStreamUrl
+  runtimeStreamUrl,
+  runtimeData
 }: {
   bot: BotDetailViewData;
   embedded?: boolean;
   previewDraft?: BotFormDraft | null;
   embeddedActions?: React.ReactNode;
   runtimeStreamUrl?: string | null;
+  runtimeData?: BotDetailRuntimeData | null;
 }) {
   const initialResolution: HistoryResolution = embedded ? "1h" : "4h";
   const [liveRuntime, setLiveRuntime] = useState<{
@@ -395,7 +405,7 @@ export function BotDetailView({
   }>({
     candles: initialCache?.candles ?? bot.initialCandles,
     sourceLabel: initialCache?.sourceLabel ?? bot.initialHistorySourceLabel,
-    cappedLabel: null,
+    cappedLabel: initialCache?.cappedLabel ?? null,
     error: null,
     loading: false
   });
@@ -419,13 +429,23 @@ export function BotDetailView({
 
   useEffect(() => {
     setLiveRuntime({
-      currentPrice: bot.currentPrice,
-      lastHeartbeatAt: bot.lastHeartbeatAt,
-      status: bot.status,
-      lastProcessedAt: null,
-      lastExecutionAt: null
+      currentPrice: runtimeData?.currentPrice ?? bot.currentPrice,
+      lastHeartbeatAt: runtimeData?.lastHeartbeatAt ?? bot.lastHeartbeatAt,
+      status: runtimeData?.status ?? bot.status,
+      lastProcessedAt: runtimeData?.lastProcessedAt ?? null,
+      lastExecutionAt: runtimeData?.lastExecutionAt ?? null
     });
-  }, [bot.currentPrice, bot.id, bot.lastHeartbeatAt, bot.status]);
+  }, [
+    bot.currentPrice,
+    bot.id,
+    bot.lastHeartbeatAt,
+    bot.status,
+    runtimeData?.currentPrice,
+    runtimeData?.lastHeartbeatAt,
+    runtimeData?.status,
+    runtimeData?.lastProcessedAt,
+    runtimeData?.lastExecutionAt
+  ]);
 
   useEffect(() => {
     const streamUrl = runtimeStreamUrl === undefined ? `/api/bots/${bot.id}/runtime?stream=1` : runtimeStreamUrl;
@@ -519,16 +539,6 @@ export function BotDetailView({
     return () => {
       active = false;
     };
-  }, [bot.baseSymbol, resolution]);
-
-  useEffect(() => {
-    HISTORY_RESOLUTION_OPTIONS.forEach((option) => {
-      if (option.value === resolution) {
-        return;
-      }
-
-      void requestHistory(bot.baseSymbol, option.value).catch(() => undefined);
-    });
   }, [bot.baseSymbol, resolution]);
 
   useEffect(() => {

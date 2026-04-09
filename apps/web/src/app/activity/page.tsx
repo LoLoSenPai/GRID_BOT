@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { Activity, AlertTriangle, Cpu, ShieldAlert, TerminalSquare } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
-import { AutoRefresh } from "@/components/auto-refresh";
+import { ManualRefresh } from "@/components/manual-refresh";
 import { SurfaceCard } from "@/components/surface-card";
 import { requireSession } from "@/lib/auth";
 import { DESK_MODE_COOKIE, parseDeskMode } from "@/lib/desk-mode";
@@ -60,6 +60,7 @@ export default async function ActivityPage({
   const cookieStore = await cookies();
   const deskMode = parseDeskMode(params.deskMode ?? cookieStore.get(DESK_MODE_COOKIE)?.value);
   const activity = await getActivityFeed(deskMode);
+  const lastUpdatedAt = new Date().toISOString();
 
   const failedExecutions = activity.executions.filter((execution) => execution.status === "failed").slice(0, 6);
   const watchAlerts = activity.alerts.slice(0, 6);
@@ -67,9 +68,9 @@ export default async function ActivityPage({
 
   return (
     <AppShell title="Activity" subtitle="System, alerting and execution trail" pathname="/activity" deskMode={deskMode}>
-      <AutoRefresh />
-
       <section className="space-y-4">
+        <ManualRefresh lastUpdatedAt={lastUpdatedAt} />
+
         <SurfaceCard padding="none" className="overflow-hidden">
           <div className="grid gap-0 md:grid-cols-4">
             <div className="border-r border-[var(--line)] px-4 py-4 last:border-r-0">
