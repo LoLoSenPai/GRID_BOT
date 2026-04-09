@@ -22,16 +22,9 @@ export function BotDraftReview({
     <div className="space-y-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <SummaryTile
-          label="Executable capital"
+          label="Bot budget"
           value={formatCurrency(analysis.summary.executableCapitalUsd)}
-          hint={`${formatPercent(analysis.summary.reserveRatioPct, 1)} reserve kept aside`}
-          icon={Wallet2}
-        />
-        <SummaryTile
-          label="Deployable headroom"
-          value={formatCurrency(analysis.summary.deployableHeadroomUsd)}
-          hint="Capital still outside the active rails"
-          tone={analysis.summary.deployableHeadroomUsd >= 0 ? "default" : "negative"}
+          hint="Fully active by default"
           icon={Wallet2}
         />
         <SummaryTile
@@ -45,6 +38,12 @@ export function BotDraftReview({
           value={formatCurrency(analysis.summary.budgetPerCycleUsd)}
           hint={`${analysis.summary.tradeCycleCount} cycles, auto min ~${formatCurrency(analysis.summary.suggestedMinOrderQuoteAmount)}`}
           tone={analysis.summary.budgetPerCycleUsd > 0 ? "default" : "negative"}
+          icon={ShieldCheck}
+        />
+        <SummaryTile
+          label="Min order"
+          value={formatCurrency(analysis.summary.suggestedMinOrderQuoteAmount)}
+          hint="Suggested from budget and cycle count"
           icon={ShieldCheck}
         />
       </div>

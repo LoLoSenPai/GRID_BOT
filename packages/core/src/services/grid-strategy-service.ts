@@ -50,7 +50,8 @@ export class GridStrategyService {
     const snapshot = bot.latestState;
     const gridCycles = snapshot?.metadata.gridCycles ?? {};
     const availableQuote = snapshot?.availableQuoteAmount ?? bot.config.totalBudgetUsd;
-    const targetNotional = round(bot.config.maxDeployableUsd / bot.config.levelCount, 2);
+    const tradeCycleCount = Math.max(1, bot.config.levelCount - 1);
+    const targetNotional = round(bot.config.maxDeployableUsd / tradeCycleCount, 2);
     const requestedQuoteAmount = Math.max(targetNotional, bot.config.minOrderQuoteAmount);
 
     if (!this.isExecutableLevel(signal.levelIndex, bot.config.levelCount, signal.side)) {

@@ -19,21 +19,22 @@ describe("analyzeBotDraft", () => {
     expect(draft.mode).toBe(BotMode.Live);
   });
 
-  it("blocks drafts where deployable capital exceeds budget minus reserve", () => {
+  it("normalizes budget so the whole amount stays active by default", () => {
     const draft = createDraftFromPreset("SOL_USDC");
-    draft.maxDeployableUsd = 1_800;
-    draft.reserveQuoteAmount = 400;
     draft.totalBudgetUsd = 2_000;
 
     const analysis = analyzeBotDraft(draft, true);
 
-    expect(analysis.canSubmit).toBe(false);
-    expect(analysis.blockingIssues.some((issue) => issue.field === "maxDeployableUsd")).toBe(true);
+    expect(draft.reserveQuoteAmount).toBe(0);
+    expect(draft.maxDeployableUsd).toBe(2_000);
+    expect(analysis.canSubmit).toBe(true);
+    expect(analysis.summary.executableCapitalUsd).toBe(2_000);
   });
 
   it("flags dense grids that cannot respect the minimum order size", () => {
     const draft = createDraftFromPreset("BTC_USDC");
     draft.levelCount = 48;
+    draft.totalBudgetUsd = 480;
     draft.maxDeployableUsd = 480;
     draft.minOrderQuoteAmount = 25;
 
@@ -164,6 +165,16 @@ describe("behavior presets", () => {
     const balancedDraft = createDraftFromPreset("SOL_USDC");
     balancedDraft.strategyMode = StrategyMode.Balanced;
     expect(inferBehaviorPresetId(balancedDraft)).toBe("balanced_cycle");
+  });
+
+  it("starts presets with no idle reserve and full active budget", () => {
+    const sol = createDraftFromPreset("SOL_USDC");
+    const btc = createDraftFromPreset("BTC_USDC");
+
+    expect(sol.reserveQuoteAmount).toBe(0);
+    expect(sol.maxDeployableUsd).toBe(sol.totalBudgetUsd);
+    expect(btc.reserveQuoteAmount).toBe(0);
+    expect(btc.maxDeployableUsd).toBe(btc.totalBudgetUsd);
   });
 });
 

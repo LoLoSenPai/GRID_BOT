@@ -54,8 +54,6 @@ const DRAFT_DIFF_FIELDS: Array<keyof BotFormDraft> = [
   "mode",
   "gridType",
   "totalBudgetUsd",
-  "maxDeployableUsd",
-  "reserveQuoteAmount",
   "lowPrice",
   "highPrice",
   "levelCount",
@@ -89,8 +87,8 @@ export const BOT_PAIR_PRESETS = {
       mode: BotMode.Paper,
       gridType: GridType.Arithmetic,
       totalBudgetUsd: 2_000,
-      maxDeployableUsd: 1_500,
-      reserveQuoteAmount: 500,
+      maxDeployableUsd: 2_000,
+      reserveQuoteAmount: 0,
       lowPrice: 105,
       highPrice: 165,
       levelCount: 14,
@@ -123,8 +121,8 @@ export const BOT_PAIR_PRESETS = {
       mode: BotMode.Paper,
       gridType: GridType.Geometric,
       totalBudgetUsd: 2_000,
-      maxDeployableUsd: 1_500,
-      reserveQuoteAmount: 500,
+      maxDeployableUsd: 2_000,
+      reserveQuoteAmount: 0,
       lowPrice: 56_000,
       highPrice: 76_000,
       levelCount: 12,
@@ -248,8 +246,6 @@ export interface BotDraftIssue {
 
 export interface BotDraftSummary {
   executableCapitalUsd: number;
-  reserveRatioPct: number;
-  deployableHeadroomUsd: number;
   rangeWidthPct: number;
   tradeCycleCount: number;
   budgetPerCycleUsd: number;
@@ -409,8 +405,8 @@ export function getSuggestedMinOrderQuoteAmount(draft: Pick<BotFormDraft, "maxDe
 
 export function normalizeBotDraftCapital(draft: BotFormDraft): BotFormDraft {
   const totalBudgetUsd = Math.max(0, roundDraftNumber(draft.totalBudgetUsd, 2));
-  const reserveQuoteAmount = Math.max(0, Math.min(totalBudgetUsd, roundDraftNumber(draft.reserveQuoteAmount, 2)));
-  const maxDeployableUsd = Math.max(0, roundDraftNumber(totalBudgetUsd - reserveQuoteAmount, 2));
+  const reserveQuoteAmount = 0;
+  const maxDeployableUsd = totalBudgetUsd;
 
   return {
     ...draft,
@@ -421,9 +417,7 @@ export function normalizeBotDraftCapital(draft: BotFormDraft): BotFormDraft {
 }
 
 export function analyzeBotDraft(draft: BotFormDraft, liveTradingEnabled: boolean): BotDraftAnalysis {
-  const executableCapitalUsd = Math.max(0, draft.totalBudgetUsd - draft.reserveQuoteAmount);
-  const reserveRatioPct = draft.totalBudgetUsd > 0 ? (draft.reserveQuoteAmount / draft.totalBudgetUsd) * 100 : 0;
-  const deployableHeadroomUsd = executableCapitalUsd - draft.maxDeployableUsd;
+  const executableCapitalUsd = draft.totalBudgetUsd;
   const rangeWidthPct = draft.lowPrice > 0 ? ((draft.highPrice - draft.lowPrice) / draft.lowPrice) * 100 : 0;
   const tradeCycleCount = getTradeCycleCount(draft.levelCount);
   const budgetPerCycleUsd = getBudgetPerCycleUsd(draft.maxDeployableUsd, draft.levelCount);
@@ -440,18 +434,6 @@ export function analyzeBotDraft(draft: BotFormDraft, liveTradingEnabled: boolean
 
   if (draft.lowPrice >= draft.highPrice) {
     addIssue({ tone: "error", field: "lowPrice", message: "Low price must stay below high price." });
-  }
-
-  if (draft.reserveQuoteAmount > draft.totalBudgetUsd) {
-    addIssue({ tone: "error", field: "reserveQuoteAmount", message: "USDC reserve cannot exceed total budget." });
-  }
-
-  if (draft.maxDeployableUsd > executableCapitalUsd) {
-    addIssue({
-      tone: "error",
-      field: "maxDeployableUsd",
-      message: "Max deployable must fit inside total budget minus reserve."
-    });
   }
 
   if (draft.minOrderQuoteAmount > draft.maxDeployableUsd) {
@@ -475,14 +457,6 @@ export function analyzeBotDraft(draft: BotFormDraft, liveTradingEnabled: boolean
       tone: "warning",
       field: "levelCount",
       message: "Budget per cycle is below the minimum order size. Parts of the grid may never arm."
-    });
-  }
-
-  if (reserveRatioPct < 10) {
-    addIssue({
-      tone: "warning",
-      field: "reserveQuoteAmount",
-      message: "Reserve is under 10% of total budget. The bot will have less room to absorb downside."
     });
   }
 
@@ -521,8 +495,6 @@ export function analyzeBotDraft(draft: BotFormDraft, liveTradingEnabled: boolean
   return {
     summary: {
       executableCapitalUsd,
-      reserveRatioPct,
-      deployableHeadroomUsd,
       rangeWidthPct,
       tradeCycleCount,
       budgetPerCycleUsd,
@@ -704,8 +676,8 @@ function parseBotDraft(record: Record<string, unknown>, liveTradingEnabled: bool
   const gridType = readEnum(record, "gridType", GRID_TYPE_OPTIONS);
   const recenterMode = readEnum(record, "recenterMode", RECENTER_MODE_OPTIONS);
   const totalBudgetUsd = readNumber(record, "totalBudgetUsd", { min: 1 });
-  const maxDeployableUsd = readNumber(record, "maxDeployableUsd", { min: 1 });
-  const reserveQuoteAmount = readNumber(record, "reserveQuoteAmount", { min: 0 });
+  const maxDeployableUsd = readOptionalNumber(record, "maxDeployableUsd", { min: 1 }) ?? totalBudgetUsd;
+  const reserveQuoteAmount = readOptionalNumber(record, "reserveQuoteAmount", { min: 0 }) ?? 0;
   const lowPrice = readNumber(record, "lowPrice", { min: 0.000001 });
   const highPrice = readNumber(record, "highPrice", { min: 0.000001 });
   const levelCount = readNumber(record, "levelCount", { min: 2, max: 64, integer: true });
@@ -734,7 +706,7 @@ function parseBotDraft(record: Record<string, unknown>, liveTradingEnabled: bool
   }
 
   if (maxDeployableUsd > totalBudgetUsd - reserveQuoteAmount) {
-    throw new BotManagementValidationError("Max deployable capital must fit inside total budget minus reserve.");
+    throw new BotManagementValidationError("Max deployable capital must fit inside the total budget.");
   }
 
   if (minOrderQuoteAmount > maxDeployableUsd) {
@@ -848,6 +820,23 @@ function readNumber(
   }
 
   return value;
+}
+
+function readOptionalNumber(
+  record: Record<string, unknown>,
+  key: string,
+  options: {
+    min?: number;
+    max?: number;
+    integer?: boolean;
+  }
+) {
+  const value = record[key];
+  if (typeof value === "undefined") {
+    return undefined;
+  }
+
+  return readNumber(record, key, options);
 }
 
 function numberOrZero(value: unknown) {

@@ -339,4 +339,22 @@ describe("GridStrategyService", () => {
 
     expect(order).toBeNull();
   });
+
+  it("sizes buy intents by trade cycle count instead of raw rail count", () => {
+    const order = service.buildOrderIntent(
+      aggregate,
+      {
+        levelIndex: 2,
+        side: TradeSide.Buy,
+        levelPrice: 120,
+        observedPrice: 119,
+        idempotencyKey: "signal-3",
+        triggeredAt: new Date()
+      }
+    );
+
+    expect(order?.requestedQuoteAmount).toBe(250);
+    expect(order?.requestedBaseAmount).toBeCloseTo(2.08333333, 6);
+    expect(order?.status).toBe(OrderStatus.Created);
+  });
 });

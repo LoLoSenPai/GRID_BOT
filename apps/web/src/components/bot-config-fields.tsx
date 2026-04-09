@@ -52,7 +52,6 @@ export function BotConfigFields({
   const suggestedMinOrder = getSuggestedMinOrderQuoteAmount(values);
   const goalSummary = getGoalSummary(activeBehaviorPreset, pairLabel);
   const spacingLabel = values.gridType === "arithmetic" ? "Even dollars" : "Even percentages";
-  const activeCapitalLabel = values.maxDeployableUsd > 0 ? formatCurrency(values.maxDeployableUsd) : "$0.00";
 
   return (
     <div className="space-y-3">
@@ -183,9 +182,9 @@ export function BotConfigFields({
         </div>
 
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          <CompactMetric label="Active capital" value={activeCapitalLabel} hint="Bot budget minus idle USDC" />
-          <CompactMetric label="Idle USDC" value={formatCurrency(values.reserveQuoteAmount)} hint="Advanced setting" />
-          <CompactMetric label="Per cycle" value={formatCurrency(budgetPerCycle)} hint={tradeCycleCount > 0 ? `~${tradeCycleCount} possible cycles` : "Needs 2 rails"} />
+          <CompactMetric label="Active budget" value={formatCurrency(values.totalBudgetUsd)} hint="The whole bot budget is active by default" />
+          <CompactMetric label="Per cycle" value={formatCurrency(budgetPerCycle)} hint={tradeCycleCount > 0 ? `${tradeCycleCount} adjacent cycles` : "Needs 2 rails"} />
+          <CompactMetric label="Auto min order" value={formatCurrency(suggestedMinOrder)} hint="Override manually in Advanced if needed" />
         </div>
       </ConfigSection>
 
@@ -202,7 +201,6 @@ export function BotConfigFields({
 
       <ConfigSection title="Advanced">
         <div className="grid gap-3 sm:grid-cols-2">
-          <NumberField label="Idle USDC" hint="Keep this much USDC unused by the strategy." value={values.reserveQuoteAmount} onChange={(value) => onChange("reserveQuoteAmount", value)} min={0} step={10} />
           <NumberField
             label="Min order size"
             hint={`Auto target ~${formatCurrency(suggestedMinOrder)} from budget and cycles. You can override it.`}
