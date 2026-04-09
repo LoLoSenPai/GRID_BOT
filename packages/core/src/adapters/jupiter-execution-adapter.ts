@@ -105,7 +105,6 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
     const transaction = VersionedTransaction.deserialize(Buffer.from(order.transaction, "base64"));
     transaction.sign([wallet]);
     const signedTransaction = Buffer.from(transaction.serialize()).toString("base64");
-
     const executeResponse = await this.fetchJson<JupiterExecuteResponse>("https://api.jup.ag/swap/v2/execute", {
       method: "POST",
       headers: {
