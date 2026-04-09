@@ -67,7 +67,8 @@ function buildLiveCandle(
   candles: CandlePoint[],
   resolution: HistoryResolution,
   livePrice?: number | null,
-  liveTime?: string | null
+  liveTime?: string | null,
+  previousLiveCandle?: CandlestickData<Time> | null
 ) {
   if (!candles.length || !livePrice || !liveTime) {
     return null;
@@ -85,6 +86,14 @@ function buildLiveCandle(
 
   const liveBucket = bucketTimestamp(liveTimestamp, resolution);
   const lastBucket = bucketTimestamp(new Date(lastCandle.time).getTime(), resolution);
+  const currentBucketTime =
+    liveBucket === lastBucket
+      ? (Math.floor(new Date(lastCandle.time).getTime() / 1000) as UTCTimestamp)
+      : (Math.floor(liveBucket / 1000) as UTCTimestamp);
+  const seededCandle =
+    previousLiveCandle && previousLiveCandle.time === currentBucketTime
+      ? previousLiveCandle
+      : null;
 
   if (liveBucket < lastBucket) {
     return null;
@@ -92,19 +101,19 @@ function buildLiveCandle(
 
   if (liveBucket === lastBucket) {
     return {
-      time: Math.floor(new Date(lastCandle.time).getTime() / 1000) as UTCTimestamp,
-      open: lastCandle.open,
-      high: Math.max(lastCandle.high, livePrice),
-      low: Math.min(lastCandle.low, livePrice),
+      time: currentBucketTime,
+      open: seededCandle?.open ?? lastCandle.open,
+      high: Math.max(lastCandle.high, seededCandle?.high ?? lastCandle.high, livePrice),
+      low: Math.min(lastCandle.low, seededCandle?.low ?? lastCandle.low, livePrice),
       close: livePrice
     } satisfies CandlestickData<Time>;
   }
 
   return {
-    time: Math.floor(liveBucket / 1000) as UTCTimestamp,
-    open: lastCandle.close,
-    high: Math.max(lastCandle.close, livePrice),
-    low: Math.min(lastCandle.close, livePrice),
+    time: currentBucketTime,
+    open: seededCandle?.open ?? lastCandle.close,
+    high: Math.max(seededCandle?.high ?? lastCandle.close, livePrice),
+    low: Math.min(seededCandle?.low ?? lastCandle.close, livePrice),
     close: livePrice
   } satisfies CandlestickData<Time>;
 }
@@ -143,6 +152,7 @@ export function BotPriceChart({
   const markerPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const staticPriceLinesRef = useRef<IPriceLine[]>([]);
   const spotPriceLineRef = useRef<IPriceLine | null>(null);
+  const liveCandleRef = useRef<CandlestickData<Time> | null>(null);
   const markerLookupRef = useRef<Record<number, GridMarker[]>>({});
   const visibleLogicalRangeRef = useRef<LogicalRange | null>(null);
   const isSyncingViewportRef = useRef(false);
@@ -164,7 +174,10 @@ export function BotPriceChart({
       })),
     [orderedCandles]
   );
-  const liveCandle = useMemo(() => buildLiveCandle(candles, resolution, currentPrice, currentPriceTime), [candles, currentPrice, currentPriceTime, resolution]);
+  const liveCandle = useMemo(
+    () => buildLiveCandle(candles, resolution, currentPrice, currentPriceTime, liveCandleRef.current),
+    [candles, currentPrice, currentPriceTime, resolution]
+  );
   const latestHistorical = orderedCandles.at(-1);
   const latestDisplay = liveCandle ?? latestHistorical ?? null;
   const staticBaselinePrice = latestHistorical?.close ?? currentPrice ?? null;
@@ -239,6 +252,14 @@ export function BotPriceChart({
 
     return { from, to } as LogicalRange;
   };
+
+  useEffect(() => {
+    liveCandleRef.current = null;
+  }, [resolution, orderedCandles.at(-1)?.time]);
+
+  useEffect(() => {
+    liveCandleRef.current = liveCandle;
+  }, [liveCandle]);
 
   useEffect(() => {
     if (!containerRef.current) {
