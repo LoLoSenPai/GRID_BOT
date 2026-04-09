@@ -328,6 +328,19 @@ git pull
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 ```
 
+Ou via le script fourni:
+
+```bash
+chmod +x scripts/deploy-vps.sh
+./scripts/deploy-vps.sh
+```
+
+Pour un redeploiement local sans `git pull`:
+
+```bash
+./scripts/deploy-vps.sh --skip-pull
+```
+
 ### 7. HTTPS / reverse proxy
 
 Le compose expose le `web` sur `3000`.
@@ -345,6 +358,43 @@ En prod publique, mettre `Caddy` ou `Nginx` devant pour:
 - ne jamais commiter le fichier wallet
 - sauvegarder regulierement le volume Postgres
 - faire tourner le worker en permanence: c'est lui qui pilote les bots live
+
+### 9. Sauvegarde PostgreSQL
+
+Script fourni:
+
+```bash
+chmod +x scripts/backup-postgres.sh
+./scripts/backup-postgres.sh
+```
+
+Le dump compresse sera ecrit dans:
+
+```bash
+./backups
+```
+
+### 10. Checklist d'exploitation
+
+Avant de laisser tourner:
+
+- verifier `https://grid.lololabs.xyz/login`
+- verifier `docker compose --env-file .env.production -f docker-compose.prod.yml ps`
+- verifier les logs worker au moins une fois apres deploy
+- verifier que le wallet live affiche bien les soldes attendus
+- verifier `LIVE_TRADING_ENABLED=true` seulement si tu veux autoriser du live
+
+Routine rapide apres chaque mise a jour:
+
+- `./scripts/deploy-vps.sh`
+- `docker compose --env-file .env.production -f docker-compose.prod.yml logs --tail=100 worker`
+- ouvrir `/bots?deskMode=live`
+- verifier qu'aucun bot live inattendu n'est en `running`
+
+Routine de sauvegarde:
+
+- lancer `./scripts/backup-postgres.sh`
+- copier periodiquement `./backups` hors du VPS
 
 ## Build et tests
 

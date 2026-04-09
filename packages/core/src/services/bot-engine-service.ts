@@ -92,12 +92,6 @@ export class BotEngineService {
 
         const orderIntent = this.gridStrategyService.buildOrderIntent(aggregate, signal);
         if (!orderIntent) {
-          await this.logRepository.writeLog({
-            botId,
-            level: LogLevel.Info,
-            category: "engine",
-            message: `Signal ${signal.side} level ${signal.levelIndex} skipped: empty intent.`
-          });
           await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null });
           return;
         }

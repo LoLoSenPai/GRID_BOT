@@ -122,6 +122,12 @@ export type BotDetailViewData = {
   }>;
 };
 
+type BotOrderView = BotDetailViewData["orders"][number];
+
+function isTradeVisibleOrder(order: BotOrderView) {
+  return order.status === "submitted" || order.status === "filled" || order.status === "simulated";
+}
+
 type HistoryResponse = {
   candles: CandlePoint[];
   meta: {
@@ -541,8 +547,9 @@ export function BotDetailView({
       };
     });
   }, [fallbackCandles]);
-  const recentOrders = useMemo(() => bot.orders.slice(0, 12), [bot.orders]);
-  const chartOrders = useMemo(() => [...bot.orders].reverse(), [bot.orders]);
+  const visibleOrders = useMemo(() => bot.orders.filter((order) => isTradeVisibleOrder(order)), [bot.orders]);
+  const recentOrders = useMemo(() => visibleOrders.slice(0, 12), [visibleOrders]);
+  const chartOrders = useMemo(() => [...visibleOrders].reverse(), [visibleOrders]);
   const recentLogs = useMemo(() => bot.systemLogs.slice(0, 8), [bot.systemLogs]);
   const recentAlerts = useMemo(() => bot.alerts.slice(0, 6), [bot.alerts]);
   const previewLevels = useMemo(
@@ -903,7 +910,7 @@ export function BotDetailView({
                   ))
                 ) : (
                   <div className="border border-dashed border-[var(--line)] bg-[var(--panel-soft)] p-5 text-sm text-[var(--muted)]">
-                    No orders recorded yet. Executions will appear here as the bot starts trading.
+                    No executed trades recorded yet. Real fills and simulated executions will appear here once the bot actually trades.
                   </div>
                 )}
               </div>

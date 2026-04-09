@@ -13,6 +13,18 @@ function isVisibleIncidentAlert(alert: { type: string; bot?: { status: string } 
   return true;
 }
 
+function isVisibleSystemLog(log: { category: string; level: string; message: string }) {
+  if (log.level === "debug") {
+    return false;
+  }
+
+  if (log.category === "engine" && log.level === "info" && log.message.includes("skipped: empty intent")) {
+    return false;
+  }
+
+  return true;
+}
+
 function buildScopedBotRelation(mode?: BotMode) {
   if (!mode) {
     return undefined;
@@ -39,7 +51,7 @@ function buildScopedOptionalBotRelation(mode?: BotMode) {
 }
 
 export async function getDashboardData(mode?: BotMode) {
-  const [bots, rawAlerts, orders, executions, logs] = await Promise.all([
+  const [bots, rawAlerts, orders, executions, rawLogs] = await Promise.all([
     prisma.bot.findMany({
       where: mode ? { mode: mode as never } : undefined,
       include: {
@@ -72,11 +84,12 @@ export async function getDashboardData(mode?: BotMode) {
       where: buildScopedOptionalBotRelation(mode),
       include: { bot: true },
       orderBy: { createdAt: "desc" },
-      take: 8
+      take: 24
     })
   ]);
 
   const alerts = rawAlerts.filter((alert) => isVisibleIncidentAlert(alert)).slice(0, 8);
+  const logs = rawLogs.filter((log) => isVisibleSystemLog(log)).slice(0, 8);
 
   const botCards = bots.map((bot) => {
     const latest = bot.stateSnapshots[0];
@@ -217,12 +230,13 @@ export async function getBotDetail(botId: string) {
 
   return {
     ...bot,
-    alerts: bot.alerts.filter((alert) => isVisibleIncidentAlert({ ...alert, bot })).slice(0, 24)
+    alerts: bot.alerts.filter((alert) => isVisibleIncidentAlert({ ...alert, bot })).slice(0, 24),
+    systemLogs: bot.systemLogs.filter((log) => isVisibleSystemLog(log)).slice(0, 40)
   };
 }
 
 export async function getActivityFeed(mode?: BotMode) {
-  const [rawAlerts, logs, executions] = await Promise.all([
+  const [rawAlerts, rawLogs, executions] = await Promise.all([
     prisma.alert.findMany({
       where: buildScopedOptionalBotRelation(mode),
       include: { bot: true },
@@ -233,7 +247,7 @@ export async function getActivityFeed(mode?: BotMode) {
       where: buildScopedOptionalBotRelation(mode),
       include: { bot: true },
       orderBy: { createdAt: "desc" },
-      take: 40,
+      take: 120,
     }),
     prisma.execution.findMany({
       where: mode ? { bot: { mode: mode as never } } : undefined,
@@ -244,6 +258,7 @@ export async function getActivityFeed(mode?: BotMode) {
   ]);
 
   const alerts = rawAlerts.filter((alert) => isVisibleIncidentAlert(alert)).slice(0, 40);
+  const logs = rawLogs.filter((log) => isVisibleSystemLog(log)).slice(0, 40);
 
   const timeline = [
     ...alerts.map((alert) => ({

@@ -34,6 +34,7 @@ export class GridStrategyService {
 
     return levels
       .filter((level) => level.price >= lower && level.price <= upper)
+      .filter((level) => this.isExecutableLevel(level.index, levels.length, side))
       .sort((left, right) => (side === TradeSide.Buy ? right.price - left.price : left.price - right.price))
       .map((level) => ({
         levelIndex: level.index,
@@ -51,6 +52,10 @@ export class GridStrategyService {
     const availableQuote = snapshot?.availableQuoteAmount ?? bot.config.totalBudgetUsd;
     const targetNotional = round(bot.config.maxDeployableUsd / bot.config.levelCount, 2);
     const requestedQuoteAmount = Math.max(targetNotional, bot.config.minOrderQuoteAmount);
+
+    if (!this.isExecutableLevel(signal.levelIndex, bot.config.levelCount, signal.side)) {
+      return null;
+    }
 
     if (signal.side === TradeSide.Buy) {
       if (gridCycles[String(signal.levelIndex)]) {
@@ -144,5 +149,13 @@ export class GridStrategyService {
       default:
         return round(remainingCostQuote + (currentNotional - remainingCostQuote) / 2, 8);
     }
+  }
+
+  private isExecutableLevel(levelIndex: number, levelCount: number, side: TradeSide) {
+    if (levelCount <= 1) {
+      return false;
+    }
+
+    return side === TradeSide.Buy ? levelIndex < levelCount - 1 : levelIndex > 0;
   }
 }

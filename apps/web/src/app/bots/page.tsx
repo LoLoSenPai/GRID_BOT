@@ -16,6 +16,10 @@ import { getBotsOverview } from "@/lib/data";
 const PREVIEW_SYMBOLS = ["SOL", "BTC"] as const;
 type PreviewSymbol = (typeof PREVIEW_SYMBOLS)[number];
 
+function isVisibleSystemLog(log: { category: string; level: string; message: string }) {
+  return !(log.category === "engine" && log.level === "info" && log.message.includes("skipped: empty intent"));
+}
+
 function buildGridLevels(lowPrice: number, highPrice: number, levelCount: number, gridType: BotFormDraft["gridType"]) {
   if (levelCount <= 1) {
     return [];
@@ -383,13 +387,15 @@ export default async function BotsPage({
           severity: alert.severity,
           createdAt: alert.createdAt.toISOString()
         })),
-        systemLogs: bot.systemLogs.map((log) => ({
-          id: log.id,
-          category: log.category,
-          message: log.message,
-          level: log.level,
-          createdAt: log.createdAt.toISOString()
-        }))
+        systemLogs: bot.systemLogs
+          .filter((log) => isVisibleSystemLog(log))
+          .map((log) => ({
+            id: log.id,
+            category: log.category,
+            message: log.message,
+            level: log.level,
+            createdAt: log.createdAt.toISOString()
+          }))
       };
 
       return [bot.id, board];

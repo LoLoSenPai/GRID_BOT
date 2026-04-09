@@ -95,6 +95,19 @@ describe("GridStrategyService", () => {
     expect(signal[0]?.side).toBe(TradeSide.Buy);
   });
 
+  it("ignores impossible boundary signals at the bottom of the grid", () => {
+    const levels = service.calculateLevels(100, 160, 7, GridType.Arithmetic);
+    const signal = service.detectCrossedLevels(levels, 95, 105);
+    expect(signal).toEqual([]);
+  });
+
+  it("ignores the topmost buy rail when price re-enters from above range", () => {
+    const levels = service.calculateLevels(100, 160, 7, GridType.Arithmetic);
+    const signal = service.detectCrossedLevels(levels, 165, 145);
+    expect(signal.map((entry) => entry.levelIndex)).toEqual([5]);
+    expect(signal[0]?.side).toBe(TradeSide.Buy);
+  });
+
   it("builds an accumulate_base sell that keeps the profit in base", () => {
     const order = service.buildOrderIntent(
       {

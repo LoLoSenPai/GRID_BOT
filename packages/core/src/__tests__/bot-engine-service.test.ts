@@ -539,4 +539,58 @@ describe("BotEngineService", () => {
       })
     );
   });
+
+  it("does not log benign empty-intent signals", async () => {
+    const aggregate = createAggregate({
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 99,
+        availableQuoteAmount: 1500,
+        availableBaseAmount: 0,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: {
+            levelIndex: 0,
+            side: TradeSide.Sell,
+            firstObservedAt: new Date(Date.now() - 20_000).toISOString(),
+            lastObservedPrice: 101
+          },
+          gridCycles: {},
+          recenterHistory: [],
+          recentExecutions: []
+        }
+      },
+      position: null,
+      openLots: []
+    });
+
+    const { engine, tradeRepository, logRepository, botRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 101,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol"
+      }
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.createOrder).not.toHaveBeenCalled();
+    expect(logRepository.writeLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("empty intent")
+      })
+    );
+    expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          pendingSignal: null
+        })
+      })
+    );
+  });
 });
