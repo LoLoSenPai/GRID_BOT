@@ -166,7 +166,7 @@ type BotOrderView = BotDetailViewData["orders"][number];
 type BotExecutionView = BotDetailViewData["executions"][number];
 
 function isMarkerVisibleExecution(execution: BotExecutionView) {
-  return execution.status === "filled" || execution.status === "simulated";
+  return execution.status === "submitted" || execution.status === "filled" || execution.status === "simulated";
 }
 
 type HistoryResponse = {
@@ -598,11 +598,21 @@ export function BotDetailView({
     });
   }, [fallbackCandles]);
   const recentOrders = useMemo(() => bot.orders.slice(0, 12), [bot.orders]);
-  const visibleExecutions = useMemo(
-    () => [...bot.executions].filter(isMarkerVisibleExecution).sort((left, right) => new Date(left.time).getTime() - new Date(right.time).getTime()),
-    [bot.executions]
-  );
   const latestExecution = liveRuntime.latestExecution ?? bot.executions[0] ?? null;
+  const visibleExecutions = useMemo(() => {
+    const executionMap = new Map<string, BotExecutionView>();
+    for (const execution of bot.executions) {
+      if (isMarkerVisibleExecution(execution)) {
+        executionMap.set(execution.id, execution);
+      }
+    }
+
+    if (latestExecution && isMarkerVisibleExecution(latestExecution)) {
+      executionMap.set(latestExecution.id, latestExecution);
+    }
+
+    return [...executionMap.values()].sort((left, right) => new Date(left.time).getTime() - new Date(right.time).getTime());
+  }, [bot.executions, latestExecution]);
   const recentLogs = useMemo(() => bot.systemLogs.slice(0, 8), [bot.systemLogs]);
   const recentAlerts = useMemo(() => bot.alerts.slice(0, 6), [bot.alerts]);
   const previewLevels = useMemo(

@@ -434,7 +434,7 @@ function getRuntimeListDeskEvents(payload: { bots: RuntimeBotShape[] }) {
       return [];
     }
 
-    if (!["filled", "simulated", "failed"].includes(latestExecution.status)) {
+    if (!["submitted", "filled", "simulated", "failed"].includes(latestExecution.status)) {
       return [];
     }
 

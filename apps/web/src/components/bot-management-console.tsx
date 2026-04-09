@@ -316,9 +316,15 @@ export function BotManagementConsole({
       baseSymbol
     });
     const tone = execution.status === "failed" ? "error" : execution.side === "buy" ? "success" : "info";
+    const verb =
+      execution.status === "failed"
+        ? "failed"
+        : execution.status === "submitted"
+          ? "sent"
+          : "executed";
     return {
       tone,
-      title: `${botName} ${execution.side === "buy" ? "buy" : "sell"} ${execution.status === "failed" ? "failed" : "executed"}`,
+      title: `${botName} ${execution.side === "buy" ? "buy" : "sell"} ${verb}`,
       message: `${trade.compact}${execution.effectivePrice ? ` @ ${formatNumber(execution.effectivePrice, 2)}` : ""}`,
     } as const;
   }
