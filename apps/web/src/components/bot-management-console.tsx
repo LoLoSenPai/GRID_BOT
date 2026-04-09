@@ -9,9 +9,9 @@ import { useRouter } from "next/navigation";
 
 import { BotConfigFields } from "@/components/bot-config-fields";
 import { BotDetailView, type BotDetailRuntimeData, type BotDetailViewData } from "@/components/bot-detail-view";
+import { BotTradingDrawer } from "@/components/bot-trading-drawer";
 
 import { StatusBadge } from "@/components/status-badge";
-import { SurfaceCard } from "@/components/surface-card";
 import {
   applyPaperTurbo,
   applyBehaviorPreset,
@@ -21,6 +21,7 @@ import {
   createDraftFromPreset,
   diffBotDraft,
   inferBehaviorPresetId,
+  normalizeBotDraftCapital,
   type BotDraftAnalysis,
   type BotDraftDiffItem,
   type BotFormDraft,
@@ -28,6 +29,7 @@ import {
   type BotPairPresetId
 } from "@/lib/bot-management";
 import { calculateGridLevels, getNextGridTriggers, parsePendingSignal } from "@/lib/bot-runtime";
+import { formatGoalLabel, formatTradeDisplay } from "@/lib/trade-display";
 import { cn, formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/utils";
 
 type ManagedBot = {
@@ -44,6 +46,7 @@ type ManagedBot = {
   currentPrice: number | null;
   lastHeartbeatAt: string | null;
   sparkline: number[];
+  latestExecution: BotDetailViewData["executions"][number] | null;
   config: BotFormDraft;
   metrics: {
     deployedQuoteAmount: number;
@@ -80,11 +83,14 @@ type ManagedBot = {
     lastResetAt: string | null;
     ordersCount: number;
     executionsCount: number;
+    latestExecutionId: string | null;
+    latestExecutionSide: "buy" | "sell" | null;
     latestExecutionAt: string | null;
     latestExecutionStatus: string | null;
     latestExecutionInputAmount: number | null;
     latestExecutionOutputAmount: number | null;
     latestExecutionPrice: number | null;
+    latestExecutionTxId: string | null;
     latestOrderSide: string | null;
     latestOrderStatus: string | null;
     latestOrderAt: string | null;
@@ -98,6 +104,36 @@ type BotRuntimeTelemetry = {
   totalBudgetUsd?: number;
   currentPrice: number | null;
   lastHeartbeatAt: string | null;
+  latestOrder: {
+    id: string;
+    side: string;
+    status: string;
+    levelIndex: number;
+    targetPrice: number;
+    requestedBaseAmount: number;
+    requestedQuoteAmount: number;
+    reason: string;
+    createdAt: string;
+  } | null;
+  latestExecution: {
+    id: string;
+    orderId: string;
+    side: "buy" | "sell";
+    status: string;
+    levelIndex: number;
+    targetPrice: number;
+    quoteAmount: number | null;
+    baseAmount: number | null;
+    effectivePrice: number | null;
+    provider: string;
+    executionRef: string;
+    txId: string | null;
+    errorMessage: string | null;
+    reason: string;
+    time: string;
+    createdAt: string;
+    completedAt: string | null;
+  } | null;
   runtime: {
     availableQuoteAmount: number;
     availableBaseAmount: number;
@@ -114,15 +150,31 @@ type BotRuntimeTelemetry = {
   paperSession: {
     ordersCount: number;
     executionsCount: number;
+    latestExecutionId: string | null;
+    latestExecutionSide: "buy" | "sell" | null;
     latestExecutionAt: string | null;
     latestExecutionStatus: string | null;
     latestExecutionInputAmount: number | null;
     latestExecutionOutputAmount: number | null;
     latestExecutionPrice: number | null;
+    latestExecutionTxId: string | null;
     latestOrderSide: string | null;
     latestOrderStatus: string | null;
     latestOrderAt: string | null;
   };
+};
+
+type DeskToast = {
+  id: string;
+  tone: "success" | "error" | "info";
+  title: string;
+  message: string;
+};
+
+type RuntimeDeskEvent = {
+  kind: "execution";
+  botId: string;
+  execution: BotRuntimeTelemetry["latestExecution"];
 };
 
 type FeedbackState =
@@ -155,19 +207,39 @@ export function BotManagementConsole({
   const [selectedBotId, setSelectedBotId] = useState<string | null>(initialSelectedBotId ?? bots[0]?.id ?? null);
   const [panelKind, setPanelKind] = useState<PanelKind>(null);
   const [panelTab, setPanelTab] = useState<PanelTab>("setup");
-  const [createDraft, setCreateDraft] = useState<BotFormDraft>(() => createDraftFromPreset("SOL_USDC", deskMode));
+  const [createDraft, setCreateDraft] = useState<BotFormDraft>(() => normalizeBotDraftCapital(createDraftFromPreset("SOL_USDC", deskMode)));
   const [editDraft, setEditDraft] = useState<BotFormDraft | null>(() => (bots[0] ? cloneDraft(bots[0].config) : null));
   const [feedback, setFeedback] = useState<FeedbackState>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [drawerBotId, setDrawerBotId] = useState<string | null>(null);
+  const [deskToasts, setDeskToasts] = useState<DeskToast[]>([]);
 
   const [liveTelemetry, setLiveTelemetry] = useState<Record<string, BotRuntimeTelemetry>>({});
   const hydratedBotIdRef = useRef<string | null>(initialSelectedBotId ?? bots[0]?.id ?? null);
+  const liveEventSeenRef = useRef<Set<string>>(new Set());
+  const botStatusRef = useRef<Record<string, string>>(
+    bots.reduce<Record<string, string>>((accumulator, bot) => {
+      accumulator[bot.id] = bot.status;
+      return accumulator;
+    }, {})
+  );
+  const botMetaRef = useRef<Record<string, { name: string; baseSymbol: string }>>(
+    bots.reduce<Record<string, { name: string; baseSymbol: string }>>((accumulator, bot) => {
+      accumulator[bot.id] = {
+        name: bot.name,
+        baseSymbol: bot.pairLabel.split("/")[0] ?? "SOL"
+      };
+      return accumulator;
+    }, {})
+  );
+  const liveRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const runtimeBots = useMemo(() => bots.map((bot) => applyTelemetry(bot, liveTelemetry[bot.id])), [bots, liveTelemetry]);
   const hasBots = runtimeBots.length > 0;
 
   const selectedBot = useMemo(() => runtimeBots.find((bot) => bot.id === selectedBotId) ?? runtimeBots[0] ?? null, [runtimeBots, selectedBotId]);
   const selectedBoard = selectedBot ? botBoards[selectedBot.id] ?? null : null;
+  const drawerBot = useMemo(() => (drawerBotId ? botBoards[drawerBotId] ?? null : null), [botBoards, drawerBotId]);
   const boardsBySymbol = useMemo(
     () =>
       Object.values(botBoards).reduce<Partial<Record<"SOL" | "BTC", BotDetailViewData>>>((accumulator, board) => {
@@ -183,6 +255,7 @@ export function BotManagementConsole({
     [createBoardSource, createDraft]
   );
   const activeBoard = panelKind === "create" ? createPreviewBoard : selectedBoard;
+  const selectedTelemetry = selectedBot ? liveTelemetry[selectedBot.id] ?? null : null;
   const selectedRuntimeData = useMemo<BotDetailRuntimeData | null>(() => {
     if (!selectedBot) {
       return null;
@@ -193,9 +266,10 @@ export function BotManagementConsole({
       lastHeartbeatAt: selectedBot.lastHeartbeatAt,
       status: selectedBot.status,
       lastProcessedAt: selectedBot.runtime.lastProcessedAt,
-      lastExecutionAt: selectedBot.runtime.lastExecutionAt
+      lastExecutionAt: selectedBot.runtime.lastExecutionAt,
+      latestExecution: selectedTelemetry?.latestExecution ?? selectedBoard?.executions[0] ?? null
     };
-  }, [selectedBot]);
+  }, [selectedBoard, selectedBot, selectedTelemetry]);
   const activePreviewDraft =
     panelKind === "create" && panelTab === "setup"
       ? createDraft
@@ -203,11 +277,71 @@ export function BotManagementConsole({
         ? editDraft
         : null;
 
+  function pushDeskToast(toast: DeskToast) {
+    setDeskToasts((current) => {
+      if (current.some((entry) => entry.id === toast.id)) {
+        return current;
+      }
+
+      return [...current, toast].slice(-4);
+    });
+  }
+
+  function dismissDeskToast(id: string) {
+    setDeskToasts((current) => current.filter((toast) => toast.id !== id));
+  }
+
+  function scheduleLiveRefresh() {
+    if (liveRefreshTimeoutRef.current) {
+      return;
+    }
+
+    liveRefreshTimeoutRef.current = setTimeout(() => {
+      liveRefreshTimeoutRef.current = null;
+      startTransition(() => {
+        router.refresh();
+      });
+    }, 850);
+  }
+
+  function formatExecutionToast(
+    execution: NonNullable<BotRuntimeTelemetry["latestExecution"]>,
+    botName: string,
+    baseSymbol: string
+  ) {
+    const trade = formatTradeDisplay({
+      side: execution.side,
+      quoteAmount: execution.quoteAmount,
+      baseAmount: execution.baseAmount,
+      baseSymbol
+    });
+    const tone = execution.status === "failed" ? "error" : execution.side === "buy" ? "success" : "info";
+    return {
+      tone,
+      title: `${botName} ${execution.side === "buy" ? "buy" : "sell"} ${execution.status === "failed" ? "failed" : "executed"}`,
+      message: `${trade.compact}${execution.effectivePrice ? ` @ ${formatNumber(execution.effectivePrice, 2)}` : ""}`,
+    } as const;
+  }
+
 
 
   useEffect(() => {
     setCreateDraft((current) => ({ ...current, mode: deskMode }));
   }, [deskMode]);
+
+  useEffect(() => {
+    botStatusRef.current = bots.reduce<Record<string, string>>((accumulator, bot) => {
+      accumulator[bot.id] = bot.status;
+      return accumulator;
+    }, {});
+    botMetaRef.current = bots.reduce<Record<string, { name: string; baseSymbol: string }>>((accumulator, bot) => {
+      accumulator[bot.id] = {
+        name: bot.name,
+        baseSymbol: bot.pairLabel.split("/")[0] ?? "SOL"
+      };
+      return accumulator;
+    }, {});
+  }, [bots]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !selectedBotId) {
@@ -240,14 +374,58 @@ export function BotManagementConsole({
             return accumulator;
           }, {})
         );
+
+        for (const bot of payload.bots) {
+          const previousStatus = botStatusRef.current[bot.id];
+          if (previousStatus && previousStatus !== bot.status) {
+            const statusKey = `status:${bot.id}:${bot.status}`;
+            if (!liveEventSeenRef.current.has(statusKey)) {
+              liveEventSeenRef.current.add(statusKey);
+              const botMeta = botMetaRef.current[bot.id];
+              pushDeskToast({
+                id: statusKey,
+                tone: bot.status === "error" ? "error" : "info",
+                title: botMeta?.name ?? "Bot status changed",
+                message: `Status ${bot.status.replaceAll("_", " ")}`
+              });
+            }
+          }
+
+          botStatusRef.current[bot.id] = bot.status;
+        }
+      } catch {
+        return;
+      }
+    };
+    const handleDeskEvent = (event: MessageEvent<string>) => {
+      try {
+        const payload = JSON.parse(event.data) as RuntimeDeskEvent;
+        if (payload.kind !== "execution" || !payload.execution) {
+          return;
+        }
+
+        const executionKey = `execution:${payload.execution.id}:${payload.execution.status}`;
+        if (liveEventSeenRef.current.has(executionKey)) {
+          return;
+        }
+
+        liveEventSeenRef.current.add(executionKey);
+        const botMeta = botMetaRef.current[payload.botId];
+        pushDeskToast({
+          id: executionKey,
+          ...formatExecutionToast(payload.execution, botMeta?.name ?? "Bot", botMeta?.baseSymbol ?? "SOL")
+        });
+        scheduleLiveRefresh();
       } catch {
         return;
       }
     };
 
     source.addEventListener("runtime", handleRuntime as EventListener);
+    source.addEventListener("desk-event", handleDeskEvent as EventListener);
     return () => {
       source.removeEventListener("runtime", handleRuntime as EventListener);
+      source.removeEventListener("desk-event", handleDeskEvent as EventListener);
       source.close();
     };
   }, [deskMode]);
@@ -296,19 +474,42 @@ export function BotManagementConsole({
   }, [feedback]);
 
   useEffect(() => {
-    if (!panelKind) {
+    if (!deskToasts.length) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setDeskToasts((current) => current.slice(1));
+    }, 4200);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [deskToasts]);
+
+  useEffect(() => {
+    return () => {
+      if (liveRefreshTimeoutRef.current) {
+        clearTimeout(liveRefreshTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!panelKind && !drawerBotId) {
       return;
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        setPanelKind(null);
+        setDrawerBotId(null);
+        if (panelKind) {
+          setPanelKind(null);
+        }
       }
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [panelKind]);
+  }, [drawerBotId, panelKind]);
 
   const paperBots = runtimeBots.filter((bot) => bot.mode === BotMode.Paper).length;
   const createDraftAnalysis = useMemo(() => analyzeBotDraft(createDraft, liveTradingEnabled), [createDraft, liveTradingEnabled]);
@@ -394,36 +595,29 @@ export function BotManagementConsole({
           value as BotPairPresetId,
           current.mode,
         );
-        return applyBehaviorPreset(nextDraft, inferBehaviorPresetId(current));
+        return normalizeBotDraftCapital(applyBehaviorPreset(nextDraft, inferBehaviorPresetId(current)));
       });
       return;
     }
 
-    setCreateDraft((current) => ({ ...current, [key]: value }));
+    setCreateDraft((current) => normalizeBotDraftCapital({ ...current, [key]: value }));
   }
 
   function updateEditDraft<K extends keyof BotFormDraft>(key: K, value: BotFormDraft[K]) {
-    setEditDraft((current) => (current ? { ...current, [key]: value } : current));
+    setEditDraft((current) => (current ? normalizeBotDraftCapital({ ...current, [key]: value }) : current));
   }
 
   function applyCreateBehaviorPreset(presetId: BotBehaviorPresetId) {
-    setCreateDraft((current) => applyBehaviorPreset(current, presetId));
-    setFeedback({
-      tone: "info",
-      message: `${BOT_BEHAVIOR_PRESETS[presetId].label} applied.`
-    });
+    setCreateDraft((current) => normalizeBotDraftCapital(applyBehaviorPreset(current, presetId)));
   }
 
   function applyEditBehaviorPreset(presetId: BotBehaviorPresetId) {
-    setEditDraft((current) => (current ? applyBehaviorPreset(current, presetId) : current));
-    setFeedback({
-      tone: "info",
-      message: `${BOT_BEHAVIOR_PRESETS[presetId].label} applied.`
-    });
+    setEditDraft((current) => (current ? normalizeBotDraftCapital(applyBehaviorPreset(current, presetId)) : current));
   }
 
   function openCreatePanel() {
-    setCreateDraft((current) => ({ ...current, mode: deskMode }));
+    setFeedback(null);
+    setCreateDraft((current) => normalizeBotDraftCapital({ ...current, mode: deskMode }));
     setPanelKind("create");
     setPanelTab("setup");
   }
@@ -437,19 +631,15 @@ export function BotManagementConsole({
 
   function resetCreateDraftToPreset() {
     setCreateDraft((current) =>
-      applyBehaviorPreset(
+      normalizeBotDraftCapital(applyBehaviorPreset(
         createDraftFromPreset(current.presetId, current.mode),
         inferBehaviorPresetId(current),
-      ),
+      )),
     );
   }
 
   function handleCreatePaperTurbo() {
-    setCreateDraft((current) => applyPaperTurbo(current));
-    setFeedback({
-      tone: "info",
-      message: `${BOT_PAIR_PRESETS[createDraft.presetId].label} paper turbo applied.`
-    });
+    setCreateDraft((current) => normalizeBotDraftCapital(applyPaperTurbo(current)));
   }
 
   function resetEditDraft() {
@@ -465,29 +655,42 @@ export function BotManagementConsole({
       return;
     }
 
-    setEditDraft(applyPaperTurbo(editDraft, selectedBot.currentPrice));
-    setFeedback({
-      tone: "info",
-      message: `${selectedBot.name} paper turbo applied.`
-    });
+    setEditDraft(normalizeBotDraftCapital(applyPaperTurbo(editDraft, selectedBot.currentPrice)));
   }
 
   async function handleCreateSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await runMutation({
-      key: "create",
-      url: "/api/bots",
-      method: "POST",
-      body: createDraft,
-      successMessage: `${BOT_PAIR_PRESETS[createDraft.presetId].label} bot created in ${createDraft.mode} mode.`,
-      afterSuccess: (payload) => {
-        if (payload?.id) {
-          router.replace(`/bots?deskMode=${createDraft.mode}&botId=${payload.id}`);
-        }
-        setPanelKind(null);
-        setCreateDraft(createDraftFromPreset(createDraft.presetId, deskMode));
+    setBusyKey("create");
+    setFeedback(null);
+
+    try {
+      const payload = await requestJson({
+        url: "/api/bots",
+        method: "POST",
+        body: createDraft
+      });
+
+      const nextUrl = payload?.id
+        ? `/bots?deskMode=${createDraft.mode}&botId=${payload.id}`
+        : `/bots?deskMode=${createDraft.mode}`;
+
+      if (typeof window !== "undefined") {
+        window.location.assign(nextUrl);
+        return;
       }
-    });
+
+      router.replace(nextUrl);
+      startTransition(() => {
+        router.refresh();
+      });
+    } catch (error) {
+      setFeedback({
+        tone: "error",
+        message: error instanceof Error ? error.message : "The request failed."
+      });
+    } finally {
+      setBusyKey(null);
+    }
   }
 
   async function handleEditSubmit(event: FormEvent<HTMLFormElement>) {
@@ -610,6 +813,7 @@ export function BotManagementConsole({
       afterSuccess: () => {
         setSelectedBotId(nextBot?.id ?? null);
         setPanelKind(null);
+        setDrawerBotId((current) => (current === selectedBot.id ? null : current));
       }
     });
   }
@@ -650,6 +854,37 @@ export function BotManagementConsole({
           )}
         >
           {feedback.message}
+        </div>
+      ) : null}
+      {deskToasts.length ? (
+        <div className="pointer-events-none fixed right-6 top-6 z-40 flex w-full max-w-[360px] flex-col gap-2">
+          {deskToasts.map((toast) => (
+            <div
+              key={toast.id}
+              className={cn(
+                "pointer-events-auto border px-4 py-3 shadow-[0_14px_40px_rgba(0,0,0,0.35)]",
+                toast.tone === "success"
+                  ? "border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)] text-[var(--green)]"
+                  : toast.tone === "error"
+                    ? "border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.08)] text-[var(--red)]"
+                    : "border-[var(--line)] bg-[var(--panel)] text-white"
+              )}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-mono text-[10px] uppercase tracking-[0.14em]">{toast.title}</div>
+                  <div className="mt-1 text-sm text-white">{toast.message}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => dismissDeskToast(toast.id)}
+                  className="text-[10px] uppercase tracking-[0.14em] text-[var(--muted)] transition hover:text-white"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       ) : null}
 
@@ -838,6 +1073,14 @@ export function BotManagementConsole({
                     const isSelected = selectedBotId === bot.id;
                     const pnlValue = bot.metrics.pnl;
                     const roiPct = bot.config.totalBudgetUsd > 0 ? (pnlValue / bot.config.totalBudgetUsd) * 100 : 0;
+                    const latestTradeDisplay = bot.latestExecution
+                      ? formatTradeDisplay({
+                          side: bot.latestExecution.side,
+                          quoteAmount: bot.latestExecution.quoteAmount,
+                          baseAmount: bot.latestExecution.baseAmount,
+                          baseSymbol: bot.pairLabel.split("/")[0] ?? "SOL"
+                        })
+                      : null;
                     return (
                       <tr
                         key={bot.id}
@@ -851,11 +1094,22 @@ export function BotManagementConsole({
                       >
                         <td className="px-4 py-3">
                           <div className="font-medium text-white">{bot.name}</div>
-                          <div className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
-                            {BOT_BEHAVIOR_PRESETS[inferBehaviorPresetId(bot.config)].label}
+                          <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
+                            <span>{BOT_BEHAVIOR_PRESETS[inferBehaviorPresetId(bot.config)].label}</span>
+                            <span>{formatGoalLabel(bot.strategyMode)}</span>
+                          </div>
+                          {latestTradeDisplay && bot.latestExecution?.time ? (
+                            <div className="mt-1 text-xs text-[var(--muted)]">
+                              {latestTradeDisplay.direction} {latestTradeDisplay.compact} | {formatDateTime(bot.latestExecution.time)}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 text-white">
+                          <div>{bot.pairLabel}</div>
+                          <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--muted)]">
+                            {bot.config.levelCount} rails = {Math.max(bot.config.levelCount - 1, 0)} cycles
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-white">{bot.pairLabel}</td>
                         <td className="px-4 py-3">
                           <span className={cn(
                             "rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.1em]",
@@ -893,7 +1147,11 @@ export function BotManagementConsole({
                         <td className="px-4 py-3">
                           <button
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); openEditPanel(bot.id, "setup"); }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedBotId(bot.id);
+                              setDrawerBotId(bot.id);
+                            }}
                             className="rounded-md border border-[var(--line)] px-2 h-6 font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--muted)] transition hover:bg-white/[0.04] hover:text-white"
                           >
                             Details
@@ -977,12 +1235,13 @@ export function BotManagementConsole({
           </aside>
         </div>
       )}
+      <BotTradingDrawer bot={drawerBot} open={Boolean(drawerBot)} onClose={() => setDrawerBotId(null)} />
     </section>
   );
 }
 
 function cloneDraft(draft: BotFormDraft): BotFormDraft {
-  return { ...draft };
+  return normalizeBotDraftCapital({ ...draft });
 }
 
 function buildCreatePreviewBoard(source: BotDetailViewData, draft: BotFormDraft): BotDetailViewData {
@@ -1043,6 +1302,7 @@ function buildCreatePreviewBoard(source: BotDetailViewData, draft: BotFormDraft)
       deployableUsage: 0
     },
     orders: [],
+    executions: [],
     positionLots: [],
     openCycles: [],
     alerts: [],
@@ -1064,6 +1324,25 @@ function applyTelemetry(bot: ManagedBot, telemetry?: BotRuntimeTelemetry): Manag
     status: telemetry.status,
     currentPrice,
     lastHeartbeatAt: telemetry.lastHeartbeatAt ?? bot.lastHeartbeatAt,
+    latestExecution: telemetry.latestExecution
+      ? {
+          id: telemetry.latestExecution.id,
+          orderId: telemetry.latestExecution.orderId,
+          time: telemetry.latestExecution.time,
+          status: telemetry.latestExecution.status,
+          side: telemetry.latestExecution.side,
+          levelIndex: telemetry.latestExecution.levelIndex,
+          targetPrice: telemetry.latestExecution.targetPrice,
+          quoteAmount: telemetry.latestExecution.quoteAmount,
+          baseAmount: telemetry.latestExecution.baseAmount,
+          effectivePrice: telemetry.latestExecution.effectivePrice,
+          provider: telemetry.latestExecution.provider,
+          executionRef: telemetry.latestExecution.executionRef,
+          txId: telemetry.latestExecution.txId,
+          errorMessage: telemetry.latestExecution.errorMessage,
+          reason: telemetry.latestExecution.reason
+        }
+      : bot.latestExecution,
     metrics: {
       ...bot.metrics,
       deployedQuoteAmount: telemetry.runtime?.deployedQuoteAmount ?? bot.metrics.deployedQuoteAmount,
@@ -1103,11 +1382,14 @@ function applyTelemetry(bot: ManagedBot, telemetry?: BotRuntimeTelemetry): Manag
       ...bot.paperSession,
       ordersCount: telemetry.paperSession.ordersCount,
       executionsCount: telemetry.paperSession.executionsCount,
-      latestExecutionAt: telemetry.paperSession.latestExecutionAt,
+      latestExecutionId: telemetry.paperSession.latestExecutionId,
+      latestExecutionSide: telemetry.paperSession.latestExecutionSide,
+      latestExecutionAt: telemetry.paperSession.latestExecutionAt ?? telemetry.latestExecution?.time ?? bot.paperSession.latestExecutionAt,
       latestExecutionStatus: telemetry.paperSession.latestExecutionStatus,
       latestExecutionInputAmount: telemetry.paperSession.latestExecutionInputAmount,
       latestExecutionOutputAmount: telemetry.paperSession.latestExecutionOutputAmount,
       latestExecutionPrice: telemetry.paperSession.latestExecutionPrice ?? bot.paperSession.latestExecutionPrice,
+      latestExecutionTxId: telemetry.paperSession.latestExecutionTxId,
       latestOrderSide: telemetry.paperSession.latestOrderSide,
       latestOrderStatus: telemetry.paperSession.latestOrderStatus,
       latestOrderAt: telemetry.paperSession.latestOrderAt
@@ -1140,6 +1422,7 @@ function CompactDraftStatus({
   behaviorLabel: string;
 }) {
   const topIssues = analysis.issues.slice(0, 2);
+  const cycleCountLabel = analysis.summary.tradeCycleCount === 1 ? "1 cycle" : `${analysis.summary.tradeCycleCount} cycles`;
 
   return (
     <div className="rounded-md border border-[var(--line)] bg-[var(--panel-soft)] px-3 py-2.5">
@@ -1147,7 +1430,8 @@ function CompactDraftStatus({
         <StatusChip label={analysis.canSubmit ? "ready" : "fix"} tone={analysis.canSubmit ? "positive" : "negative"} />
         <StatusChip label={behaviorLabel} tone="default" />
         <StatusChip label={`${changes.length} changes`} tone={changes.length ? "amber" : "default"} />
-        <StatusChip label={`${formatCurrency(analysis.summary.levelBudgetUsd)} / rail`} tone="default" />
+        <StatusChip label={cycleCountLabel} tone="default" />
+        <StatusChip label={`${formatCurrency(analysis.summary.budgetPerCycleUsd)} / cycle`} tone="default" />
         <StatusChip label={`${formatPercent(analysis.summary.rangeWidthPct, 1)} width`} tone="default" />
       </div>
 

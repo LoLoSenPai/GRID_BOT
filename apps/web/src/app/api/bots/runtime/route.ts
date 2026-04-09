@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { BotMode } from "@grid-bot/core/enums";
 
 import { readSession } from "@/lib/auth";
-import { createSseResponse, getBotRuntimeListPayload } from "@/server/bot-runtime-payload";
+import { createSseResponse, getBotRuntimeListPayload, getRuntimeListDeskEvents } from "@/server/bot-runtime-payload";
 
 export async function GET(request: Request) {
   const session = await readSession();
@@ -17,6 +17,7 @@ export async function GET(request: Request) {
     return createSseResponse({
       request,
       getPayload: () => getBotRuntimeListPayload(mode),
+      getEventsFromPayload: getRuntimeListDeskEvents,
       intervalMs: 5000
     });
   }

@@ -1,5 +1,5 @@
 import { ChevronDown } from "lucide-react";
-import { BotMode, type GridType, type RecenterMode, type StrategyMode } from "@grid-bot/core/enums";
+import { BotMode, type GridType, type RecenterMode } from "@grid-bot/core/enums";
 
 import {
   BOT_BEHAVIOR_PRESETS,
@@ -8,7 +8,9 @@ import {
   BOT_PAIR_PRESET_IDS,
   GRID_TYPE_OPTIONS,
   RECENTER_MODE_OPTIONS,
-  STRATEGY_MODE_OPTIONS,
+  getBudgetPerCycleUsd,
+  getSuggestedMinOrderQuoteAmount,
+  getTradeCycleCount,
   inferBehaviorPresetId,
   type BotFormDraft,
   type BotBehaviorPresetId,
@@ -38,14 +40,19 @@ export function BotConfigFields({
 }) {
   const activeBehaviorPreset = inferBehaviorPresetId(values);
   const activePreset = BOT_BEHAVIOR_PRESETS[activeBehaviorPreset];
-  const railSpan = values.levelCount > 1 ? (values.highPrice - values.lowPrice) / (values.levelCount - 1) : 0;
+  const tradeCycleCount = getTradeCycleCount(values.levelCount);
+  const railSpan = tradeCycleCount > 0 ? (values.highPrice - values.lowPrice) / tradeCycleCount : 0;
   const midPrice = values.lowPrice > 0 && values.highPrice > 0 ? (values.lowPrice + values.highPrice) / 2 : 0;
   const geometricStepPct =
     values.gridType === "geometric" && values.lowPrice > 0 && values.highPrice > values.lowPrice && values.levelCount > 1
       ? (Math.pow(values.highPrice / values.lowPrice, 1 / (values.levelCount - 1)) - 1) * 100
       : null;
   const railGainPct = values.gridType === "geometric" ? geometricStepPct ?? 0 : midPrice > 0 ? (railSpan / midPrice) * 100 : 0;
-  const budgetPerRail = values.levelCount > 0 ? values.maxDeployableUsd / values.levelCount : 0;
+  const budgetPerCycle = getBudgetPerCycleUsd(values.maxDeployableUsd, values.levelCount);
+  const suggestedMinOrder = getSuggestedMinOrderQuoteAmount(values);
+  const goalSummary = getGoalSummary(activeBehaviorPreset, pairLabel);
+  const spacingLabel = values.gridType === "arithmetic" ? "Even dollars" : "Even percentages";
+  const activeCapitalLabel = values.maxDeployableUsd > 0 ? formatCurrency(values.maxDeployableUsd) : "$0.00";
 
   return (
     <div className="space-y-3">
@@ -84,11 +91,12 @@ export function BotConfigFields({
         </div>
 
         <div className="mt-3">
-          <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">Preset</div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">Style</div>
           <div className="mt-1.5 grid gap-2 sm:grid-cols-3">
             {BOT_BEHAVIOR_PRESET_IDS.map((presetId) => {
               const preset = BOT_BEHAVIOR_PRESETS[presetId];
               const active = activeBehaviorPreset === presetId;
+              const summary = getGoalSummary(presetId, pairLabel);
 
               return (
                 <button
@@ -103,36 +111,51 @@ export function BotConfigFields({
                   )}
                 >
                   <div className={cn("text-[13px] font-medium", active ? "text-white" : "text-white/80")}>{preset.label}</div>
-                  <div className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">{preset.tags[0]}</div>
+                  <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">{summary}</div>
                 </button>
               );
             })}
           </div>
 
-          <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-[var(--muted)]">
-            <CompactTag label={activePreset.cycleRule} />
-            <CompactTag label={activePreset.exitRule} />
+          <div className="mt-2 space-y-1 text-[11px] leading-4 text-[var(--muted)]">
+            <div>{goalSummary}</div>
+            <div>{activePreset.exitRule}</div>
           </div>
         </div>
       </ConfigSection>
 
       <ConfigSection title="Grid" defaultOpen>
         <div className="grid gap-3 sm:grid-cols-2">
-          <NumberField label="Low" value={values.lowPrice} onChange={(value) => onChange("lowPrice", value)} min={0.000001} step="any" />
-          <NumberField label="High" value={values.highPrice} onChange={(value) => onChange("highPrice", value)} min={0.000001} step="any" />
-          <NumberField label="Levels" value={values.levelCount} onChange={(value) => onChange("levelCount", value)} min={2} max={120} step={1} />
+          <NumberField label="Range low" value={values.lowPrice} onChange={(value) => onChange("lowPrice", value)} min={0.000001} step="any" />
+          <NumberField label="Range high" value={values.highPrice} onChange={(value) => onChange("highPrice", value)} min={0.000001} step="any" />
+          <NumberField
+            label="Rails"
+            hint={tradeCycleCount > 0 ? `${values.levelCount} rails = ${tradeCycleCount} adjacent trade cycles.` : "Add at least 2 rails."}
+            value={values.levelCount}
+            onChange={(value) => onChange("levelCount", value)}
+            min={2}
+            max={120}
+            step={1}
+          />
           <SelectField
-            label="Type"
+            label="Spacing"
             value={values.gridType}
             onChange={(value) => onChange("gridType", value as GridType)}
-            options={GRID_TYPE_OPTIONS.map((value) => ({ value, label: value }))}
+            options={GRID_TYPE_OPTIONS.map((value) => ({
+              value,
+              label: value === "arithmetic" ? "Even dollars (arithmetic)" : "Even percentages (geometric)"
+            }))}
           />
         </div>
 
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          <CompactMetric label="Step" value={formatNumber(railSpan, values.highPrice >= 1000 ? 0 : 2)} hint={values.gridType} />
-          <CompactMetric label="Gain / rail" value={formatPercent(railGainPct, 2)} hint="Approx" />
-          <CompactMetric label="Goal" value={values.strategyMode.replaceAll("_", " ")} hint={activePreset.label} />
+          <CompactMetric label="Trade cycles" value={formatNumber(tradeCycleCount, 0)} hint="One buy opens one cycle" />
+          <CompactMetric label="Step" value={formatNumber(railSpan, values.highPrice >= 1000 ? 0 : 2)} hint={spacingLabel} />
+          <CompactMetric label="Gain / cycle" value={formatPercent(railGainPct, 2)} hint="Approx" />
+        </div>
+
+        <div className="mt-3 rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
+          Lowest rail can only buy. Highest rail can only sell. Middle rails can close one cycle and open the next.
         </div>
       </ConfigSection>
 
@@ -148,46 +171,53 @@ export function BotConfigFields({
             <span>{formatCurrency(availableUsd)}</span>
           </div>
         ) : null}
-        <div className="grid gap-3 sm:grid-cols-2">
-          <NumberField label="Budget" value={values.totalBudgetUsd} onChange={(value) => onChange("totalBudgetUsd", value)} min={1} step={10} />
-          <NumberField label="Deployable" value={values.maxDeployableUsd} onChange={(value) => onChange("maxDeployableUsd", value)} min={1} step={10} />
-          <NumberField label="Reserve" value={values.reserveQuoteAmount} onChange={(value) => onChange("reserveQuoteAmount", value)} min={0} step={10} />
-          <NumberField label="Min order" value={values.minOrderQuoteAmount} onChange={(value) => onChange("minOrderQuoteAmount", value)} min={1} step={5} />
+        <div className="grid gap-3 sm:grid-cols-1">
+          <NumberField
+            label="Bot budget"
+            hint="How much USDC from the wallet you allocate to this bot."
+            value={values.totalBudgetUsd}
+            onChange={(value) => onChange("totalBudgetUsd", value)}
+            min={1}
+            step={10}
+          />
         </div>
 
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          <CompactMetric label="Per rail" value={formatCurrency(budgetPerRail)} hint="Deployable only" />
-          <CompactMetric label="Range width" value={formatPercent(midPrice > 0 ? ((values.highPrice - values.lowPrice) / midPrice) * 100 : 0, 1)} hint="Low to high" />
-          <CompactMetric label="Provider" value={botMode === BotMode.Paper ? "paper" : "jupiter"} hint="Execution" />
+          <CompactMetric label="Active capital" value={activeCapitalLabel} hint="Bot budget minus idle USDC" />
+          <CompactMetric label="Idle USDC" value={formatCurrency(values.reserveQuoteAmount)} hint="Advanced setting" />
+          <CompactMetric label="Per cycle" value={formatCurrency(budgetPerCycle)} hint={tradeCycleCount > 0 ? `~${tradeCycleCount} possible cycles` : "Needs 2 rails"} />
         </div>
       </ConfigSection>
 
       <ConfigSection title="Execution">
         <div className="grid gap-3 sm:grid-cols-2">
-          <SelectField
-            label="Goal"
-            value={values.strategyMode}
-            onChange={(value) => onChange("strategyMode", value as StrategyMode)}
-            options={STRATEGY_MODE_OPTIONS.map((value) => ({ value, label: value.replaceAll("_", " ") }))}
+          <NumberField label="Confirmation delay" hint="How long a touch must persist before it becomes a signal." value={values.priceConfirmationWindowMs} onChange={(value) => onChange("priceConfirmationWindowMs", value)} min={0} step={1000} />
+          <NumberField label="Rail cooldown" hint="How long a used rail stays blocked before it can arm again." value={values.levelLockMs} onChange={(value) => onChange("levelLockMs", value)} min={0} step={1000} />
+          <NumberField label="Orders / hour" hint="Safety cap against churn." value={values.maxOrdersPerHour} onChange={(value) => onChange("maxOrdersPerHour", value)} min={1} max={500} step={1} />
+          <NumberField label="Cooldown" hint="Minimum gap after a completed trade." value={values.cooldownMs} onChange={(value) => onChange("cooldownMs", value)} min={0} step={1000} />
+          <NumberField label="Slippage limit (bps)" hint="Execution tolerance if the quote moves." value={values.maxSlippageBps} onChange={(value) => onChange("maxSlippageBps", value)} min={1} max={500} step={1} />
+          <NumberField label="Max drawdown %" hint="Emergency pause threshold." value={values.maxDrawdownPct} onChange={(value) => onChange("maxDrawdownPct", value)} min={0} max={100} step="any" />
+        </div>
+      </ConfigSection>
+
+      <ConfigSection title="Advanced">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <NumberField label="Idle USDC" hint="Keep this much USDC unused by the strategy." value={values.reserveQuoteAmount} onChange={(value) => onChange("reserveQuoteAmount", value)} min={0} step={10} />
+          <NumberField
+            label="Min order size"
+            hint={`Auto target ~${formatCurrency(suggestedMinOrder)} from budget and cycles. You can override it.`}
+            value={values.minOrderQuoteAmount}
+            onChange={(value) => onChange("minOrderQuoteAmount", value)}
+            min={1}
+            step={5}
           />
-          <NumberField label="Cooldown" value={values.cooldownMs} onChange={(value) => onChange("cooldownMs", value)} min={0} step={1000} />
-          <NumberField label="Orders / h" value={values.maxOrdersPerHour} onChange={(value) => onChange("maxOrdersPerHour", value)} min={1} max={500} step={1} />
-          <NumberField label="Confirm" value={values.priceConfirmationWindowMs} onChange={(value) => onChange("priceConfirmationWindowMs", value)} min={0} step={1000} />
-          <NumberField label="Slippage" value={values.maxSlippageBps} onChange={(value) => onChange("maxSlippageBps", value)} min={1} max={500} step={1} />
-          <NumberField label="Drawdown %" value={values.maxDrawdownPct} onChange={(value) => onChange("maxDrawdownPct", value)} min={0} max={100} step="any" />
-          <NumberField label="Level lock" value={values.levelLockMs} onChange={(value) => onChange("levelLockMs", value)} min={0} step={1000} />
+          <NumberField label="Max failures" value={values.maxConsecutiveFailures} onChange={(value) => onChange("maxConsecutiveFailures", value)} min={1} max={20} step={1} />
           <SelectField
             label="Recenter"
             value={values.recenterMode}
             onChange={(value) => onChange("recenterMode", value as RecenterMode)}
             options={RECENTER_MODE_OPTIONS.map((value) => ({ value, label: value.replaceAll("_", " ") }))}
           />
-        </div>
-      </ConfigSection>
-
-      <ConfigSection title="Advanced">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <NumberField label="Max failures" value={values.maxConsecutiveFailures} onChange={(value) => onChange("maxConsecutiveFailures", value)} min={1} max={20} step={1} />
           <Field label="Out of range">
             <select
               value={values.outOfRangePause ? "true" : "false"}
@@ -230,10 +260,6 @@ function ConfigSection({
   );
 }
 
-function CompactTag({ label }: { label: string }) {
-  return <span className="rounded border border-[var(--line)] px-1.5 py-0.5 text-[11px]">{label}</span>;
-}
-
 function CompactMetric({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
     <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
@@ -245,3 +271,15 @@ function CompactMetric({ label, value, hint }: { label: string; value: string; h
 }
 
 const compactFormControlClass = formControlClass;
+
+function getGoalSummary(presetId: BotBehaviorPresetId, pairLabel: string) {
+  if (presetId === "token_stacker") {
+    return `Keep more ${pairLabel.split("/")[0]} after each profitable cycle.`;
+  }
+
+  if (presetId === "range_farmer") {
+    return "Recycle each profitable lot fully back into USDC.";
+  }
+
+  return `Recycle part of each profitable move while keeping some ${pairLabel.split("/")[0]}.`;
+}

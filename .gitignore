@@ -9,3 +9,4 @@ dist
 packages/db/src/generated
 *.log
 .vscode
+*.tsbuildinfo

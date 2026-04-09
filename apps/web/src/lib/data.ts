@@ -192,10 +192,19 @@ export async function getBotsOverview(mode?: BotMode) {
       stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
       position: true,
       positionLots: { orderBy: { openedAt: "asc" } },
-      orders: { orderBy: { createdAt: "desc" }, take: 80, include: { executions: true } },
+      orders: {
+        orderBy: { createdAt: "desc" },
+        take: 80,
+        include: {
+          executions: {
+            orderBy: { createdAt: "desc" },
+            take: 1
+          }
+        }
+      },
       priceSnapshots: { orderBy: { capturedAt: "asc" }, take: 240 },
       alerts: { orderBy: { createdAt: "desc" }, take: 24 },
-      executions: { orderBy: { createdAt: "desc" }, take: 8 },
+      executions: { orderBy: { createdAt: "desc" }, take: 24, include: { order: true } },
       systemLogs: { orderBy: { createdAt: "desc" }, take: 24 },
       _count: {
         select: {
@@ -216,11 +225,21 @@ export async function getBotDetail(botId: string) {
       stateSnapshots: { orderBy: { createdAt: "desc" }, take: 120 },
       position: true,
       positionLots: { orderBy: { openedAt: "asc" } },
-      orders: { orderBy: { createdAt: "desc" }, take: 80, include: { executions: true } },
+      orders: {
+        orderBy: { createdAt: "desc" },
+        take: 80,
+        include: {
+          executions: {
+            orderBy: { createdAt: "desc" },
+            take: 1
+          }
+        }
+      },
       alerts: { orderBy: { createdAt: "desc" }, take: 80 },
       systemLogs: { orderBy: { createdAt: "desc" }, take: 80 },
       priceSnapshots: { orderBy: { capturedAt: "desc" }, take: 240 },
-      pnlSnapshots: { orderBy: { createdAt: "desc" }, take: 120 }
+      pnlSnapshots: { orderBy: { createdAt: "desc" }, take: 120 },
+      executions: { orderBy: { createdAt: "desc" }, take: 40, include: { order: true } }
     }
   });
 

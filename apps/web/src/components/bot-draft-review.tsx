@@ -41,10 +41,10 @@ export function BotDraftReview({
           icon={ShieldCheck}
         />
         <SummaryTile
-          label="Budget / level"
-          value={formatCurrency(analysis.summary.levelBudgetUsd)}
-          hint={`Exec provider ${analysis.summary.provider}`}
-          tone={analysis.summary.levelBudgetUsd > 0 ? "default" : "negative"}
+          label="Budget / cycle"
+          value={formatCurrency(analysis.summary.budgetPerCycleUsd)}
+          hint={`${analysis.summary.tradeCycleCount} cycles, auto min ~${formatCurrency(analysis.summary.suggestedMinOrderQuoteAmount)}`}
+          tone={analysis.summary.budgetPerCycleUsd > 0 ? "default" : "negative"}
           icon={ShieldCheck}
         />
       </div>

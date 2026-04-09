@@ -12,6 +12,7 @@ import { TimeRangeTabs } from "@/components/time-range-tabs";
 import { HISTORY_RESOLUTION_OPTIONS, type CandlePoint, type HistoryResolution, bucketTimestamp, buildCandlesFromSnapshots } from "@/lib/charting";
 import type { BotFormDraft } from "@/lib/bot-management";
 import { calculateGridLevels } from "@/lib/bot-runtime";
+import { formatGoalLabel, formatRailModelLabel, formatTradeBadgeLabel, formatTradeDisplay } from "@/lib/trade-display";
 import { cn, formatCurrency, formatDateTime, formatNumber } from "@/lib/utils";
 
 const HISTORY_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -86,7 +87,37 @@ export type BotDetailViewData = {
     targetPrice: number;
     requestedBaseAmount: number;
     requestedQuoteAmount: number;
+    reason: string;
+    execution: {
+      id: string;
+      time: string;
+      status: string;
+      provider: string;
+      executionRef: string;
+      txId: string | null;
+      quoteAmount: number | null;
+      baseAmount: number | null;
+      effectivePrice: number | null;
+      errorMessage: string | null;
+    } | null;
     executionSummary: string | null;
+  }>;
+  executions: Array<{
+    id: string;
+    orderId: string;
+    time: string;
+    status: string;
+    side: "buy" | "sell";
+    levelIndex: number;
+    targetPrice: number;
+    quoteAmount: number | null;
+    baseAmount: number | null;
+    effectivePrice: number | null;
+    provider: string;
+    executionRef: string;
+    txId: string | null;
+    errorMessage: string | null;
+    reason: string;
   }>;
   positionLots: Array<{
     id: string;
@@ -128,12 +159,14 @@ export type BotDetailRuntimeData = {
   status: string;
   lastProcessedAt: string | null;
   lastExecutionAt: string | null;
+  latestExecution: BotDetailViewData["executions"][number] | null;
 };
 
 type BotOrderView = BotDetailViewData["orders"][number];
+type BotExecutionView = BotDetailViewData["executions"][number];
 
-function isTradeVisibleOrder(order: BotOrderView) {
-  return order.status === "submitted" || order.status === "filled" || order.status === "simulated";
+function isMarkerVisibleExecution(execution: BotExecutionView) {
+  return execution.status === "filled" || execution.status === "simulated";
 }
 
 type HistoryResponse = {
@@ -385,12 +418,14 @@ export function BotDetailView({
     status: string;
     lastProcessedAt: string | null;
     lastExecutionAt: string | null;
+    latestExecution: BotExecutionView | null;
   }>({
     currentPrice: bot.currentPrice,
     lastHeartbeatAt: bot.lastHeartbeatAt,
     status: bot.status,
     lastProcessedAt: null,
-    lastExecutionAt: null
+    lastExecutionAt: null,
+    latestExecution: bot.executions[0] ?? null
   });
   const [resolution, setResolution] = useState<HistoryResolution>(initialResolution);
   const fallbackCandles = useMemo(() => buildCandlesFromSnapshots(bot.priceSnapshots, resolution), [bot.priceSnapshots, resolution]);
@@ -433,10 +468,12 @@ export function BotDetailView({
       lastHeartbeatAt: runtimeData?.lastHeartbeatAt ?? bot.lastHeartbeatAt,
       status: runtimeData?.status ?? bot.status,
       lastProcessedAt: runtimeData?.lastProcessedAt ?? null,
-      lastExecutionAt: runtimeData?.lastExecutionAt ?? null
+      lastExecutionAt: runtimeData?.lastExecutionAt ?? null,
+      latestExecution: runtimeData?.latestExecution ?? bot.executions[0] ?? null
     });
   }, [
     bot.currentPrice,
+    bot.executions,
     bot.id,
     bot.lastHeartbeatAt,
     bot.status,
@@ -444,7 +481,8 @@ export function BotDetailView({
     runtimeData?.lastHeartbeatAt,
     runtimeData?.status,
     runtimeData?.lastProcessedAt,
-    runtimeData?.lastExecutionAt
+    runtimeData?.lastExecutionAt,
+    runtimeData?.latestExecution
   ]);
 
   useEffect(() => {
@@ -463,6 +501,7 @@ export function BotDetailView({
           status: string;
           lastProcessedAt: string | null;
           lastExecutionAt: string | null;
+          latestExecution?: BotExecutionView | null;
         };
 
         setLiveRuntime({
@@ -470,7 +509,8 @@ export function BotDetailView({
           lastHeartbeatAt: payload.lastHeartbeatAt,
           status: payload.status,
           lastProcessedAt: payload.lastProcessedAt,
-          lastExecutionAt: payload.lastExecutionAt
+          lastExecutionAt: payload.lastExecutionAt,
+          latestExecution: payload.latestExecution ?? null
         });
       } catch {
         return;
@@ -557,9 +597,12 @@ export function BotDetailView({
       };
     });
   }, [fallbackCandles]);
-  const visibleOrders = useMemo(() => bot.orders.filter((order) => isTradeVisibleOrder(order)), [bot.orders]);
-  const recentOrders = useMemo(() => visibleOrders.slice(0, 12), [visibleOrders]);
-  const chartOrders = useMemo(() => [...visibleOrders].reverse(), [visibleOrders]);
+  const recentOrders = useMemo(() => bot.orders.slice(0, 12), [bot.orders]);
+  const visibleExecutions = useMemo(
+    () => [...bot.executions].filter(isMarkerVisibleExecution).sort((left, right) => new Date(left.time).getTime() - new Date(right.time).getTime()),
+    [bot.executions]
+  );
+  const latestExecution = liveRuntime.latestExecution ?? bot.executions[0] ?? null;
   const recentLogs = useMemo(() => bot.systemLogs.slice(0, 8), [bot.systemLogs]);
   const recentAlerts = useMemo(() => bot.alerts.slice(0, 6), [bot.alerts]);
   const previewLevels = useMemo(
@@ -596,15 +639,17 @@ export function BotDetailView({
 
   const markers = useMemo(
     () =>
-      chartOrders.map((order) => ({
-        time: order.time,
-        side: order.side,
-        label:
-          order.side === "buy"
-            ? `B ${formatCurrency(order.requestedQuoteAmount)}`
-            : `S ${formatNumber(order.requestedBaseAmount, 4)} ${bot.baseSymbol}`
+      visibleExecutions.map((execution) => ({
+        time: execution.time,
+        side: execution.side,
+        label: `${execution.side === "buy" ? "B" : "S"} ${formatTradeDisplay({
+          side: execution.side,
+          quoteAmount: execution.quoteAmount,
+          baseAmount: execution.baseAmount,
+          baseSymbol: bot.baseSymbol
+        }).compact}`
       })),
-    [bot.baseSymbol, chartOrders]
+    [bot.baseSymbol, visibleExecutions]
   );
 
   const orderLines = useMemo(
@@ -634,6 +679,16 @@ export function BotDetailView({
   const visibleHigh = visibleExtremes.high;
   const visibleDeltaPct = firstVisiblePrice ? ((lastVisiblePrice - firstVisiblePrice) / firstVisiblePrice) * 100 : 0;
   const currentPrice = liveSpotPrice || lastVisiblePrice;
+  const goalLabel = formatGoalLabel(bot.strategyMode);
+  const railModelLabel = formatRailModelLabel(effectiveConfig.levelCount);
+  const latestExecutionBadge = latestExecution
+    ? formatTradeBadgeLabel({
+        side: latestExecution.side,
+        quoteAmount: latestExecution.quoteAmount,
+        baseAmount: latestExecution.baseAmount,
+        baseSymbol: bot.baseSymbol
+      })
+    : null;
   const rangeProgress =
     effectiveConfig.highPrice > effectiveConfig.lowPrice
       ? Math.max(0, Math.min(100, ((currentPrice - effectiveConfig.lowPrice) / (effectiveConfig.highPrice - effectiveConfig.lowPrice)) * 100))
@@ -693,6 +748,7 @@ export function BotDetailView({
               tone={roiPct < 0 ? "negative" : "positive"}
             />
             {previewActive ? <BotChip label="draft" /> : null}
+            <BotChip label={goalLabel} />
             <span className="ml-auto font-mono text-[10px] text-[var(--muted)]">
               {formatNumber(effectiveConfig.lowPrice, effectiveConfig.lowPrice >= 1000 ? 0 : 2)}-{formatNumber(effectiveConfig.highPrice, effectiveConfig.highPrice >= 1000 ? 0 : 2)} · {effectiveConfig.levelCount} rails
             </span>
@@ -704,6 +760,10 @@ export function BotDetailView({
             <EmbeddedInlineMetric label="Realized" value={formatCurrency(bot.position?.realizedPnlUsd ?? 0)} tone={(bot.position?.realizedPnlUsd ?? 0) < 0 ? "negative" : "positive"} />
             <EmbeddedInlineMetric label="Unrealized" value={formatCurrency(bot.position?.unrealizedPnlUsd ?? 0)} tone={(bot.position?.unrealizedPnlUsd ?? 0) < 0 ? "negative" : "positive"} />
             <EmbeddedInlineMetric label="Occ" value={`${formatNumber(rangeProgress, 1)}%`} />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--muted)]">
+            <span>{railModelLabel}</span>
+            {latestExecutionBadge ? <span className="text-white">{latestExecutionBadge}</span> : null}
           </div>
         </div>
 
@@ -792,9 +852,9 @@ export function BotDetailView({
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <BotChip label={bot.config.gridType} />
-                <BotChip label={`${bot.config.levelCount} levels`} />
+                <BotChip label={`${bot.config.levelCount} rails`} />
                 <BotChip label={bot.behavior.label} />
-                <BotChip label={bot.strategyMode.replaceAll("_", " ")} />
+                <BotChip label={goalLabel} />
                 <BotChip label={bot.mode} />
                 <BotChip label={bot.config.recenterMode.replaceAll("_", " ")} />
               </div>
@@ -849,7 +909,7 @@ export function BotDetailView({
                   <div className="mt-2 text-sm text-white">
                     {visibleCandles[0] ? formatDateTime(visibleCandles[0].time) : "--"} {"->"} {visibleCandles.at(-1) ? formatDateTime(visibleCandles.at(-1)!.time) : "--"}
                   </div>
-                  <div className="mt-3 text-sm text-[var(--muted)]">{chartOrders.length} markers projected, {recentOrders.length} latest orders surfaced below</div>
+                  <div className="mt-3 text-sm text-[var(--muted)]">{visibleExecutions.length} fills projected, {recentOrders.length} latest orders surfaced below</div>
                 </SurfaceCard>
 
                 <SurfaceCard tone="muted" padding="sm">
@@ -870,7 +930,7 @@ export function BotDetailView({
               <SectionHeading
                 eyebrow="Trade tape"
                 title="Latest orders"
-                description={embedded ? "Recent orders for the selected bot." : "Recent executions stay readable here even while the chart keeps the full market history."}
+                description={embedded ? "Recent orders for the selected bot." : "Orders keep the requested size visible, while fills summarize what actually traded."}
                 icon={ArrowUpRight}
               />
 
@@ -915,7 +975,30 @@ export function BotDetailView({
                         </div>
                       </div>
 
-                      {order.executionSummary ? <div className="mt-3 text-sm text-[var(--muted)]">{order.executionSummary}</div> : null}
+                      <div className="mt-3 text-sm text-[var(--muted)]">Reason: {order.reason.replaceAll("_", " ")}</div>
+                      {order.execution ? (
+                        <div className="mt-3 border border-[var(--line)] bg-black/20 p-3 text-sm">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">
+                              {order.execution.provider} {order.execution.status}
+                            </span>
+                            <span className="text-white">
+                              {formatTradeDisplay({
+                                side: order.side,
+                                quoteAmount: order.execution.quoteAmount,
+                                baseAmount: order.execution.baseAmount,
+                                baseSymbol: bot.baseSymbol
+                              }).compact}
+                            </span>
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-[var(--muted)]">
+                            <span>{formatOrderTimestamp(order.execution.time)}</span>
+                            {order.execution.effectivePrice ? <span>@ {formatNumber(order.execution.effectivePrice, 2)}</span> : null}
+                            {order.execution.txId ? <span>{order.execution.txId}</span> : <span>{order.execution.executionRef}</span>}
+                          </div>
+                          {order.execution.errorMessage ? <div className="mt-2 text-xs text-[var(--red)]">{order.execution.errorMessage}</div> : null}
+                        </div>
+                      ) : order.executionSummary ? <div className="mt-3 text-sm text-[var(--muted)]">{order.executionSummary}</div> : null}
                     </div>
                   ))
                 ) : (
@@ -993,13 +1076,14 @@ export function BotDetailView({
 
             <div className="mt-5">
               <InfoRow label="Style" value={bot.behavior.label} />
-              <InfoRow label="Goal" value={bot.strategyMode.replaceAll("_", " ")} />
+              <InfoRow label="Goal" value={goalLabel} />
               <InfoRow label="Cycle rule" value={bot.behavior.cycleRule} />
               <InfoRow label="Exit rule" value={bot.behavior.exitRule} />
             </div>
 
             <SurfaceCard tone="muted" padding="sm" className="mt-5">
               <div className="text-sm text-[var(--muted)]">{bot.behavior.operatorHint}</div>
+              <div className="mt-2 text-xs text-[var(--muted)]">{railModelLabel}</div>
             </SurfaceCard>
           </SurfaceCard>
 
@@ -1009,10 +1093,11 @@ export function BotDetailView({
             <div className="mt-5">
               <InfoRow label="Status" value={liveRuntime.status.replaceAll("_", " ")} />
               <InfoRow label="Mode" value={bot.mode} />
-              <InfoRow label="Strategy" value={bot.strategyMode.replaceAll("_", " ")} />
+              <InfoRow label="Strategy" value={goalLabel} />
               <InfoRow label="Current price" value={currentPrice ? formatNumber(currentPrice, 2) : "--"} />
               <InfoRow label="Average cost" value={bot.position ? formatNumber(bot.position.averageEntryPrice, 2) : "--"} />
               <InfoRow label="Range" value={`${formatNumber(bot.config.lowPrice, 2)} / ${formatNumber(bot.config.highPrice, 2)}`} />
+              <InfoRow label="Last trade" value={latestExecutionBadge ?? "--"} />
             </div>
           </SurfaceCard>
 
@@ -1033,7 +1118,7 @@ export function BotDetailView({
             <SectionHeading eyebrow="Config" title="Grid parameters" description={embedded ? "Live rules in force." : "Parameters currently enforcing this strategy."} icon={ArrowDownRight} />
 
             <div className="mt-5">
-              <InfoRow label="Grid" value={`${bot.config.gridType} / ${bot.config.levelCount} levels`} />
+              <InfoRow label="Grid" value={`${bot.config.gridType} / ${bot.config.levelCount} rails`} />
               <InfoRow label="Deployable cap" value={formatCurrency(bot.config.maxDeployableUsd)} />
               <InfoRow label="Min order" value={formatCurrency(bot.config.minOrderQuoteAmount)} />
               <InfoRow label="Cooldown" value={`${Math.round(bot.config.cooldownMs / 1000)}s`} />

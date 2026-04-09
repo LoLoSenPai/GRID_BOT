@@ -25,23 +25,23 @@ interface BotRuntimeMetadataShape {
 const DRAFT_FIELD_LABELS: Record<keyof BotFormDraft, string> = {
   presetId: "Pair preset",
   name: "Bot name",
-  strategyMode: "Strategy",
+  strategyMode: "Goal",
   mode: "Mode",
-  gridType: "Grid type",
-  totalBudgetUsd: "Total budget",
-  maxDeployableUsd: "Max deployable",
-  reserveQuoteAmount: "USDC reserve",
-  lowPrice: "Low price",
-  highPrice: "High price",
-  levelCount: "Levels",
-  minOrderQuoteAmount: "Min order",
-  maxSlippageBps: "Max slippage",
+  gridType: "Rail spacing",
+  totalBudgetUsd: "Bot budget",
+  maxDeployableUsd: "Active capital",
+  reserveQuoteAmount: "Idle USDC",
+  lowPrice: "Range low",
+  highPrice: "Range high",
+  levelCount: "Rails",
+  minOrderQuoteAmount: "Min order size",
+  maxSlippageBps: "Slippage limit",
   cooldownMs: "Cooldown",
   maxOrdersPerHour: "Orders/hour limit",
   maxDrawdownPct: "Max drawdown",
   maxConsecutiveFailures: "Max consecutive failures",
-  levelLockMs: "Level lock",
-  priceConfirmationWindowMs: "Confirmation window",
+  levelLockMs: "Rail cooldown",
+  priceConfirmationWindowMs: "Confirmation delay",
   recenterMode: "Recenter mode",
   autoRecenterMinIntervalMs: "Auto recenter interval",
   autoRecenterMaxPerDay: "Auto recenter max/day",
@@ -251,7 +251,9 @@ export interface BotDraftSummary {
   reserveRatioPct: number;
   deployableHeadroomUsd: number;
   rangeWidthPct: number;
-  levelBudgetUsd: number;
+  tradeCycleCount: number;
+  budgetPerCycleUsd: number;
+  suggestedMinOrderQuoteAmount: number;
   provider: ExecutionProvider;
 }
 
@@ -379,12 +381,53 @@ export function getExecutionProviderForMode(mode: BotMode) {
   return mode === BotMode.Paper ? ExecutionProvider.Paper : ExecutionProvider.Jupiter;
 }
 
+export function getTradeCycleCount(levelCount: number) {
+  return Math.max(0, levelCount - 1);
+}
+
+export function getBudgetPerCycleUsd(maxDeployableUsd: number, levelCount: number) {
+  const tradeCycleCount = getTradeCycleCount(levelCount);
+  return tradeCycleCount > 0 ? maxDeployableUsd / tradeCycleCount : 0;
+}
+
+export function getSuggestedMinOrderQuoteAmount(draft: Pick<BotFormDraft, "maxDeployableUsd" | "levelCount">) {
+  const budgetPerCycleUsd = getBudgetPerCycleUsd(draft.maxDeployableUsd, draft.levelCount);
+  if (budgetPerCycleUsd <= 0) {
+    return 0;
+  }
+
+  if (budgetPerCycleUsd >= 100) {
+    return roundDraftNumber(budgetPerCycleUsd, 0);
+  }
+
+  if (budgetPerCycleUsd >= 25) {
+    return roundDraftNumber(budgetPerCycleUsd, 1);
+  }
+
+  return roundDraftNumber(budgetPerCycleUsd, 2);
+}
+
+export function normalizeBotDraftCapital(draft: BotFormDraft): BotFormDraft {
+  const totalBudgetUsd = Math.max(0, roundDraftNumber(draft.totalBudgetUsd, 2));
+  const reserveQuoteAmount = Math.max(0, Math.min(totalBudgetUsd, roundDraftNumber(draft.reserveQuoteAmount, 2)));
+  const maxDeployableUsd = Math.max(0, roundDraftNumber(totalBudgetUsd - reserveQuoteAmount, 2));
+
+  return {
+    ...draft,
+    totalBudgetUsd,
+    reserveQuoteAmount,
+    maxDeployableUsd
+  };
+}
+
 export function analyzeBotDraft(draft: BotFormDraft, liveTradingEnabled: boolean): BotDraftAnalysis {
   const executableCapitalUsd = Math.max(0, draft.totalBudgetUsd - draft.reserveQuoteAmount);
   const reserveRatioPct = draft.totalBudgetUsd > 0 ? (draft.reserveQuoteAmount / draft.totalBudgetUsd) * 100 : 0;
   const deployableHeadroomUsd = executableCapitalUsd - draft.maxDeployableUsd;
   const rangeWidthPct = draft.lowPrice > 0 ? ((draft.highPrice - draft.lowPrice) / draft.lowPrice) * 100 : 0;
-  const levelBudgetUsd = draft.levelCount > 0 ? draft.maxDeployableUsd / draft.levelCount : 0;
+  const tradeCycleCount = getTradeCycleCount(draft.levelCount);
+  const budgetPerCycleUsd = getBudgetPerCycleUsd(draft.maxDeployableUsd, draft.levelCount);
+  const suggestedMinOrderQuoteAmount = getSuggestedMinOrderQuoteAmount(draft);
 
   const issues: BotDraftIssue[] = [];
   const addIssue = (issue: BotDraftIssue) => {
@@ -427,11 +470,11 @@ export function analyzeBotDraft(draft: BotFormDraft, liveTradingEnabled: boolean
     });
   }
 
-  if (levelBudgetUsd < draft.minOrderQuoteAmount) {
+  if (budgetPerCycleUsd < draft.minOrderQuoteAmount) {
     addIssue({
       tone: "warning",
       field: "levelCount",
-      message: "Per-level budget is below the minimum order size. Parts of the grid may never arm."
+      message: "Budget per cycle is below the minimum order size. Parts of the grid may never arm."
     });
   }
 
@@ -481,7 +524,9 @@ export function analyzeBotDraft(draft: BotFormDraft, liveTradingEnabled: boolean
       reserveRatioPct,
       deployableHeadroomUsd,
       rangeWidthPct,
-      levelBudgetUsd,
+      tradeCycleCount,
+      budgetPerCycleUsd,
+      suggestedMinOrderQuoteAmount,
       provider: getExecutionProviderForMode(draft.mode)
     },
     issues,

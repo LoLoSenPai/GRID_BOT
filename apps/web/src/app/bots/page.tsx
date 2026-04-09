@@ -16,6 +16,44 @@ import { getBotsOverview } from "@/lib/data";
 const PREVIEW_SYMBOLS = ["SOL", "BTC"] as const;
 type PreviewSymbol = (typeof PREVIEW_SYMBOLS)[number];
 
+function deriveExecutionAmounts(
+  side: "buy" | "sell",
+  execution: {
+    executedInputAmount: { toString(): string } | null;
+    executedOutputAmount: { toString(): string } | null;
+    quotePrice: { toString(): string } | null;
+  },
+  order: {
+    requestedQuoteAmount: { toString(): string };
+    requestedBaseAmount: { toString(): string };
+  }
+) {
+  const requestedQuoteAmount = Number(order.requestedQuoteAmount);
+  const requestedBaseAmount = Number(order.requestedBaseAmount);
+  const executedInputAmount = execution.executedInputAmount ? Number(execution.executedInputAmount) : null;
+  const executedOutputAmount = execution.executedOutputAmount ? Number(execution.executedOutputAmount) : null;
+  const quoteAmount =
+    side === "buy"
+      ? executedInputAmount ?? requestedQuoteAmount
+      : executedOutputAmount ?? requestedQuoteAmount;
+  const baseAmount =
+    side === "buy"
+      ? executedOutputAmount ?? requestedBaseAmount
+      : executedInputAmount ?? requestedBaseAmount;
+  const effectivePrice =
+    execution.quotePrice
+      ? Number(execution.quotePrice)
+      : quoteAmount > 0 && baseAmount > 0
+        ? quoteAmount / baseAmount
+        : null;
+
+  return {
+    quoteAmount,
+    baseAmount,
+    effectivePrice,
+  };
+}
+
 function isVisibleSystemLog(log: { category: string; level: string; message: string }) {
   return !(log.category === "engine" && log.level === "info" && log.message.includes("skipped: empty intent"));
 }
@@ -106,6 +144,7 @@ function buildMarketPreviewBoard(
     initialCandles: candles,
     initialHistorySourceLabel: history?.meta.source ?? "pyth-history",
     orders: [],
+    executions: [],
     positionLots: [],
     openCycles: [],
     alerts: [],
@@ -178,6 +217,7 @@ export default async function BotsPage({
     const nextTriggers = getNextGridTriggers(draftConfig, price);
     const latestOrder = bot.orders[0] ?? null;
     const latestExecution = bot.executions[0] ?? null;
+    const latestExecutionAmounts = latestExecution ? deriveExecutionAmounts(latestExecution.order.side as "buy" | "sell", latestExecution, latestExecution.order) : null;
     const latestPaperSignalAt = latest?.lastProcessedAt?.toISOString() ?? null;
 
     return {
@@ -194,6 +234,25 @@ export default async function BotsPage({
       currentPrice: price,
       lastHeartbeatAt: bot.lastHeartbeatAt?.toISOString() ?? null,
       sparkline: bot.priceSnapshots.map((snapshot) => Number(snapshot.price)),
+      latestExecution: latestExecution
+        ? {
+            id: latestExecution.id,
+            orderId: latestExecution.orderId,
+            time: (latestExecution.completedAt ?? latestExecution.createdAt).toISOString(),
+            status: latestExecution.status,
+            side: latestExecution.order.side as "buy" | "sell",
+            levelIndex: latestExecution.order.levelIndex,
+            targetPrice: Number(latestExecution.order.targetPrice),
+            quoteAmount: latestExecutionAmounts?.quoteAmount ?? null,
+            baseAmount: latestExecutionAmounts?.baseAmount ?? null,
+            effectivePrice: latestExecutionAmounts?.effectivePrice ?? null,
+            provider: latestExecution.provider,
+            executionRef: latestExecution.executionRef,
+            txId: latestExecution.txId,
+            errorMessage: latestExecution.errorMessage,
+            reason: latestExecution.order.reason
+          }
+        : null,
       config: draftConfig,
       metrics: {
         deployedQuoteAmount: Number(latest?.deployedQuoteAmount ?? 0),
@@ -232,11 +291,14 @@ export default async function BotsPage({
         lastResetAt: latestPaperReset?.createdAt.toISOString() ?? null,
         ordersCount: bot._count.orders,
         executionsCount: bot._count.executions,
+        latestExecutionId: latestExecution?.id ?? null,
+        latestExecutionSide: latestExecution?.order.side ?? null,
         latestExecutionAt: latestExecution?.createdAt.toISOString() ?? null,
         latestExecutionStatus: latestExecution?.status ?? null,
         latestExecutionInputAmount: latestExecution?.executedInputAmount ? Number(latestExecution.executedInputAmount) : null,
         latestExecutionOutputAmount: latestExecution?.executedOutputAmount ? Number(latestExecution.executedOutputAmount) : null,
         latestExecutionPrice: latestExecution?.quotePrice ? Number(latestExecution.quotePrice) : price,
+        latestExecutionTxId: latestExecution?.txId ?? null,
         latestOrderSide: latestOrder?.side ?? null,
         latestOrderStatus: latestOrder?.status ?? null,
         latestOrderAt: latestOrder?.createdAt.toISOString() ?? null,
@@ -344,19 +406,61 @@ export default async function BotsPage({
         priceSnapshots,
         initialCandles: initialHistory?.candles.length ? initialHistory.candles : buildCandlesFromSnapshots(priceSnapshots, "1h"),
         initialHistorySourceLabel: initialHistory?.meta.source ?? "local snapshots",
-        orders: [...bot.orders].reverse().map((order) => ({
-          id: order.id,
-          time: order.createdAt.toISOString(),
-          side: order.side as "buy" | "sell",
-          status: order.status,
-          levelIndex: order.levelIndex,
-          targetPrice: Number(order.targetPrice),
-          requestedBaseAmount: Number(order.requestedBaseAmount),
-          requestedQuoteAmount: Number(order.requestedQuoteAmount),
-          executionSummary: order.executions[0]
-            ? `${order.executions[0].provider} ${order.executions[0].status}${order.executions[0].txId ? ` | ${order.executions[0].txId}` : ""}`
-            : null
-        })),
+        orders: bot.orders.map((order) => {
+          const latestExecution = order.executions[0] ?? null;
+          const executionAmounts = latestExecution
+            ? deriveExecutionAmounts(order.side as "buy" | "sell", latestExecution, order)
+            : null;
+
+          return {
+            id: order.id,
+            time: order.createdAt.toISOString(),
+            side: order.side as "buy" | "sell",
+            status: order.status,
+            levelIndex: order.levelIndex,
+            targetPrice: Number(order.targetPrice),
+            requestedBaseAmount: Number(order.requestedBaseAmount),
+            requestedQuoteAmount: Number(order.requestedQuoteAmount),
+            reason: order.reason,
+            execution: latestExecution
+              ? {
+                  id: latestExecution.id,
+                  time: (latestExecution.completedAt ?? latestExecution.createdAt).toISOString(),
+                  status: latestExecution.status,
+                  provider: latestExecution.provider,
+                  executionRef: latestExecution.executionRef,
+                  txId: latestExecution.txId,
+                  quoteAmount: executionAmounts?.quoteAmount ?? null,
+                  baseAmount: executionAmounts?.baseAmount ?? null,
+                  effectivePrice: executionAmounts?.effectivePrice ?? null,
+                  errorMessage: latestExecution.errorMessage,
+                }
+              : null,
+            executionSummary: latestExecution
+              ? `${latestExecution.provider} ${latestExecution.status}${latestExecution.txId ? ` | ${latestExecution.txId}` : ""}`
+              : null
+          };
+        }),
+        executions: bot.executions.map((execution) => {
+          const executionAmounts = deriveExecutionAmounts(execution.order.side as "buy" | "sell", execution, execution.order);
+          return {
+            id: execution.id,
+            orderId: execution.orderId,
+            time: (execution.completedAt ?? execution.createdAt).toISOString(),
+            status: execution.status,
+            side: execution.order.side as "buy" | "sell",
+            levelIndex: execution.order.levelIndex,
+            targetPrice: Number(execution.order.targetPrice),
+            quoteAmount: executionAmounts.quoteAmount,
+            baseAmount: executionAmounts.baseAmount,
+            effectivePrice: executionAmounts.effectivePrice,
+            provider: execution.provider,
+            executionRef: execution.executionRef,
+            txId: execution.txId,
+            errorMessage: execution.errorMessage,
+            reason: execution.order.reason
+          };
+        }),
         positionLots: bot.positionLots.map((lot) => ({
           id: lot.id,
           remainingBaseAmount: Number(lot.remainingBaseAmount),

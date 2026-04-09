@@ -103,7 +103,7 @@ describe("diffBotDraft", () => {
       },
       {
         field: "maxSlippageBps",
-        label: "Max slippage",
+        label: "Slippage limit",
         previous: "50 bps",
         next: "75 bps"
       }
