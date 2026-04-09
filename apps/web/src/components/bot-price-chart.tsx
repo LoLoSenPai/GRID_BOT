@@ -109,11 +109,13 @@ function buildLiveCandle(
     } satisfies CandlestickData<Time>;
   }
 
+  const previousDisplayedClose = previousLiveCandle?.close ?? lastCandle.close;
+
   return {
     time: currentBucketTime,
-    open: seededCandle?.open ?? lastCandle.close,
-    high: Math.max(seededCandle?.high ?? lastCandle.close, livePrice),
-    low: Math.min(seededCandle?.low ?? lastCandle.close, livePrice),
+    open: seededCandle?.open ?? previousDisplayedClose,
+    high: Math.max(seededCandle?.high ?? previousDisplayedClose, livePrice),
+    low: Math.min(seededCandle?.low ?? previousDisplayedClose, livePrice),
     close: livePrice
   } satisfies CandlestickData<Time>;
 }

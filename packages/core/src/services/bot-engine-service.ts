@@ -407,8 +407,10 @@ export class BotEngineService {
       aggregate.config.levelCount,
       aggregate.config.gridType
     );
-    const crossed = latest?.currentPrice ? this.gridStrategyService.detectCrossedLevels(levels, latest.currentPrice, currentPrice)[0] ?? null : null;
-    const pendingSignal = this.resolvePendingSignal(aggregate, crossed, levels, currentPrice, now);
+    const crossedSignals = latest?.currentPrice
+      ? this.gridStrategyService.detectCrossedLevels(levels, latest.currentPrice, currentPrice)
+      : [];
+    const pendingSignal = this.resolvePendingSignal(aggregate, crossedSignals, levels, currentPrice, now);
     const availableBaseAmount = latest?.availableBaseAmount ?? aggregate.position?.baseAmount ?? 0;
     const availableQuoteAmount = latest?.availableQuoteAmount ?? aggregate.config.totalBudgetUsd;
     const openCostBasis = round(aggregate.openLots.reduce((sum, lot) => sum + lot.costQuote, 0), 8);
@@ -458,12 +460,13 @@ export class BotEngineService {
 
   private resolvePendingSignal(
     aggregate: BotAggregate,
-    crossed: TriggerSignal | null,
+    crossedSignals: TriggerSignal[],
     levels: Array<{ index: number; price: number }>,
     currentPrice: number,
     now: Date
   ) {
     const pending = aggregate.latestState?.metadata.pendingSignal;
+    const crossed = this.selectActionableCrossedSignal(aggregate, crossedSignals, now);
 
     if (crossed) {
       return {
@@ -492,6 +495,22 @@ export class BotEngineService {
       ...pending,
       lastObservedPrice: currentPrice
     };
+  }
+
+  private selectActionableCrossedSignal(aggregate: BotAggregate, crossedSignals: TriggerSignal[], now: Date) {
+    for (const signal of crossedSignals) {
+      const probeSignal: TriggerSignal = {
+        ...signal,
+        idempotencyKey: `probe:${aggregate.bot.id}:${signal.side}:${signal.levelIndex}:${now.getTime()}`,
+        triggeredAt: now
+      };
+
+      if (this.gridStrategyService.buildOrderIntent(aggregate, probeSignal)) {
+        return signal;
+      }
+    }
+
+    return null;
   }
 
   private priceStillConfirms(side: TradeSide, levelPrice: number, currentPrice: number) {

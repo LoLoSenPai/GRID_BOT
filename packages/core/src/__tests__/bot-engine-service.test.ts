@@ -352,6 +352,83 @@ describe("BotEngineService", () => {
     expect(alert.createAlert).not.toHaveBeenCalled();
   });
 
+  it("tracks the next actionable lower buy rail when a drop crosses an already occupied level", async () => {
+    const aggregate = createAggregate({
+      config: {
+        totalBudgetUsd: 50,
+        maxDeployableUsd: 40,
+        reserveQuoteAmount: 10,
+        lowPrice: 82,
+        highPrice: 85,
+        levelCount: 4,
+        gridType: GridType.Arithmetic,
+        minOrderQuoteAmount: 10,
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 83.2,
+        availableQuoteAmount: 40,
+        availableBaseAmount: 0.1204,
+        deployedQuoteAmount: 10,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {
+            "1": {
+              buyLevelIndex: 1,
+              sellLevelIndex: 2,
+              lotId: "lot-1",
+              openedAt: "2026-04-08T19:00:00.000Z",
+            },
+          },
+          recenterHistory: [],
+          recentExecutions: [],
+        },
+      },
+      openLots: [
+        {
+          id: "lot-1",
+          botId: "bot-1",
+          originalBaseAmount: 0.1204,
+          remainingBaseAmount: 0.1204,
+          entryPrice: 83.03,
+          costQuote: 10,
+          openedByExecutionId: "exec-1",
+          closedByExecutionId: null,
+          openedAt: new Date("2026-04-08T19:00:00.000Z"),
+          closedAt: null,
+        },
+      ],
+    });
+
+    const { engine, tradeRepository, botRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 82,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol",
+      },
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.createOrder).not.toHaveBeenCalled();
+    expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          pendingSignal: expect.objectContaining({
+            levelIndex: 0,
+            side: TradeSide.Buy,
+          }),
+        }),
+      }),
+    );
+  });
+
   it("creates a simulated execution and enters cooldown after a confirmed signal", async () => {
     const aggregate = createAggregate({
       latestState: {
