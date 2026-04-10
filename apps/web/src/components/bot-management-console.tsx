@@ -999,14 +999,14 @@ export function BotManagementConsole({
                     ) : null}
                     <div className="flex flex-wrap justify-between gap-2 border-t border-[var(--line)] pt-3">
                       <div className="flex flex-wrap gap-2">
-                        <button type="button" onClick={resetEditDraft} disabled={isPending || !editDraftChanges.length} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--line)] px-2.5 h-7 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--muted)] transition hover:bg-white/[0.04] disabled:pointer-events-none disabled:opacity-50">Revert</button>
+                        <button type="button" onClick={resetEditDraft} disabled={isPending || !editDraftChanges.length} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/12 hover:bg-white/[0.05] hover:text-white disabled:pointer-events-none disabled:opacity-50">Revert</button>
                         {selectedBot.mode === BotMode.Paper ? (
-                          <button type="button" onClick={handleEditPaperTurbo} disabled={isPending} className="inline-flex items-center gap-1.5 rounded-md border border-[color:rgba(248,200,108,0.18)] px-2.5 h-7 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--amber)] transition hover:bg-[color:rgba(248,200,108,0.08)] disabled:pointer-events-none disabled:opacity-50">
+                          <button type="button" onClick={handleEditPaperTurbo} disabled={isPending} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[color:rgba(248,200,108,0.18)] bg-[rgba(248,200,108,0.05)] px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--amber)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:bg-[color:rgba(248,200,108,0.1)] disabled:pointer-events-none disabled:opacity-50">
                             <FlaskConical className="h-3 w-3" />Turbo
                           </button>
                         ) : null}
                       </div>
-                      <button type="submit" disabled={editSubmitDisabled} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--line)] px-3 h-7 font-mono text-[10px] uppercase tracking-[0.12em] text-white transition hover:bg-white/[0.04] disabled:pointer-events-none disabled:opacity-50">
+                      <button type="submit" disabled={editSubmitDisabled} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--accent-line)] bg-[linear-gradient(180deg,rgba(121,184,255,0.18),rgba(121,184,255,0.1))] px-3.5 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--accent)] shadow-[0_10px_24px_rgba(58,120,255,0.16),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-[rgba(121,184,255,0.45)] hover:bg-[linear-gradient(180deg,rgba(121,184,255,0.24),rgba(121,184,255,0.14))] hover:text-white disabled:pointer-events-none disabled:opacity-50">
                         <PencilLine className="h-3 w-3" />{requiresPauseBeforeEdit ? "Pause + save" : "Save"}
                       </button>
                     </div>
@@ -1150,7 +1150,7 @@ export function BotManagementConsole({
                               setSelectedBotId(bot.id);
                               setDrawerBotId(bot.id);
                             }}
-                            className="rounded-md border border-[var(--line)] px-2 h-6 font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--muted)] transition hover:bg-white/[0.04] hover:text-white"
+                            className="inline-flex h-7 items-center rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] px-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/12 hover:bg-white/[0.05] hover:text-white"
                           >
                             Details
                           </button>
@@ -1461,12 +1461,12 @@ function CompactDeskButton({
 }) {
   const toneClass =
     tone === "positive"
-      ? "border-[var(--accent-line)] text-[var(--accent)] hover:bg-[var(--accent-soft)]"
+      ? "border-[var(--accent-line)] bg-[linear-gradient(180deg,rgba(121,184,255,0.16),rgba(121,184,255,0.08))] text-[var(--accent)] shadow-[0_8px_20px_rgba(58,120,255,0.12),inset_0_1px_0_rgba(255,255,255,0.05)] hover:border-[rgba(121,184,255,0.45)] hover:bg-[linear-gradient(180deg,rgba(121,184,255,0.22),rgba(121,184,255,0.12))] hover:text-white"
       : tone === "negative"
-        ? "border-[color:rgba(255,107,122,0.18)] text-[var(--red)] hover:bg-[color:rgba(255,107,122,0.08)]"
+        ? "border-[color:rgba(255,107,122,0.2)] bg-[linear-gradient(180deg,rgba(255,107,122,0.08),rgba(255,107,122,0.03))] text-[var(--red)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] hover:bg-[linear-gradient(180deg,rgba(255,107,122,0.12),rgba(255,107,122,0.05))] hover:border-[color:rgba(255,107,122,0.32)]"
         : tone === "amber"
-          ? "border-[color:rgba(248,200,108,0.18)] text-[var(--amber)] hover:bg-[color:rgba(248,200,108,0.08)]"
-          : "border-[var(--line)] text-[var(--muted)] hover:bg-white/[0.04] hover:text-white";
+          ? "border-[color:rgba(248,200,108,0.18)] bg-[rgba(248,200,108,0.05)] text-[var(--amber)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] hover:bg-[color:rgba(248,200,108,0.1)]"
+          : "border-[var(--line)] bg-[rgba(255,255,255,0.015)] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] hover:border-white/12 hover:bg-white/[0.05] hover:text-white";
 
   return (
     <button
@@ -1474,7 +1474,7 @@ function CompactDeskButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-md border px-2.5 h-7 font-mono text-[10px] uppercase tracking-[0.12em] transition disabled:pointer-events-none disabled:opacity-50",
+        "inline-flex h-8 items-center gap-1.5 rounded-md border px-3 font-mono text-[10px] uppercase tracking-[0.14em] transition disabled:pointer-events-none disabled:opacity-50",
         toneClass
       )}
     >
