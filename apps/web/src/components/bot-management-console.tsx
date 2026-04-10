@@ -28,6 +28,7 @@ import {
   type BotBehaviorPresetId,
   type BotPairPresetId
 } from "@/lib/bot-management";
+import { calculateBudgetRoiPct } from "@/lib/bot-metrics";
 import { calculateGridLevels, getNextGridTriggers, parsePendingSignal } from "@/lib/bot-runtime";
 import { formatGoalLabel, formatTradeDisplay } from "@/lib/trade-display";
 import { cn, formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/utils";
@@ -267,7 +268,14 @@ export function BotManagementConsole({
       status: selectedBot.status,
       lastProcessedAt: selectedBot.runtime.lastProcessedAt,
       lastExecutionAt: selectedBot.runtime.lastExecutionAt,
-      latestExecution: selectedTelemetry?.latestExecution ?? selectedBoard?.executions[0] ?? null
+      latestExecution: selectedTelemetry?.latestExecution ?? selectedBoard?.executions[0] ?? null,
+      availableQuoteAmount: selectedBot.runtime.availableQuoteAmount,
+      availableBaseAmount: selectedBot.runtime.availableBaseAmount,
+      deployedQuoteAmount: selectedBot.runtime.deployedQuoteAmount,
+      averageEntryPrice: selectedBot.runtime.averageEntryPrice,
+      realizedPnlUsd: selectedBot.runtime.realizedPnlUsd,
+      unrealizedPnlUsd: selectedBot.runtime.unrealizedPnlUsd,
+      totalEquityUsd: selectedBot.runtime.totalEquityUsd
     };
   }, [selectedBoard, selectedBot, selectedTelemetry]);
   const activePreviewDraft =
@@ -1078,7 +1086,7 @@ export function BotManagementConsole({
                   {runtimeBots.map((bot) => {
                     const isSelected = selectedBotId === bot.id;
                     const pnlValue = bot.metrics.pnl;
-                    const roiPct = bot.config.totalBudgetUsd > 0 ? (pnlValue / bot.config.totalBudgetUsd) * 100 : 0;
+                    const roiPct = calculateBudgetRoiPct(pnlValue, bot.config.totalBudgetUsd);
                     const latestTradeDisplay = bot.latestExecution
                       ? formatTradeDisplay({
                           side: bot.latestExecution.side,

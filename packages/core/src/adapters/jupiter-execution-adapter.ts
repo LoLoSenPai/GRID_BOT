@@ -49,8 +49,9 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       outputMint,
       inputAmount: amount,
       expectedOutputAmount: Number(order.outAmount),
-      estimatedFeeAmount:
-        (order.signatureFeeLamports ?? 0) + (order.prioritizationFeeLamports ?? 0) + (order.rentFeeLamports ?? 0),
+      // Jupiter returns network fees in lamports. Bot accounting expects quote-denominated fees,
+      // so treating lamports as quote units badly distorts equity on USDC bots.
+      estimatedFeeAmount: 0,
       priceImpactPct: Number(order.priceImpact ?? 0),
       requestId: order.requestId,
       route: order.router ?? null,
@@ -73,8 +74,7 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       outputMint: params.outputMint,
       inputAmount: params.amount,
       expectedOutputAmount: Number(order.outAmount) / 10 ** params.outputDecimals,
-      estimatedFeeAmount:
-        (order.signatureFeeLamports ?? 0) + (order.prioritizationFeeLamports ?? 0) + (order.rentFeeLamports ?? 0),
+      estimatedFeeAmount: 0,
       priceImpactPct: Number(order.priceImpact ?? 0),
       requestId: order.requestId,
       route: order.router ?? null,
@@ -126,9 +126,7 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       outputAmount: Number(order.outAmount) / 10 ** params.outputDecimals,
       effectivePrice:
         Number(order.outAmount) === 0 ? 0 : params.amount / (Number(order.outAmount) / 10 ** params.outputDecimals),
-      feeAmount:
-        ((order.signatureFeeLamports ?? 0) + (order.prioritizationFeeLamports ?? 0) + (order.rentFeeLamports ?? 0)) /
-        10 ** params.inputDecimals,
+      feeAmount: 0,
       rawReport: {
         order,
         executeResponse

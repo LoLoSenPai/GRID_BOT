@@ -421,6 +421,23 @@ export async function getBotRuntimePayload(id: string) {
         ? Number(latestState.currentPrice)
         : null,
     lastHeartbeatAt: bot.lastHeartbeatAt?.toISOString() ?? null,
+    runtime: latestState
+      ? {
+          availableQuoteAmount: Number(latestState.availableQuoteAmount),
+          availableBaseAmount: Number(latestState.availableBaseAmount),
+          deployedQuoteAmount: Number(latestState.deployedQuoteAmount),
+          averageEntryPrice: latestState.averageEntryPrice
+            ? Number(latestState.averageEntryPrice)
+            : null,
+          realizedPnlUsd: Number(latestState.realizedPnlUsd),
+          unrealizedPnlUsd: Number(latestState.unrealizedPnlUsd),
+          totalEquityUsd: Number(latestState.totalEquityUsd),
+          consecutiveFailures: latestState.consecutiveFailures,
+          lastProcessedAt: latestState.lastProcessedAt?.toISOString() ?? null,
+          lastExecutionAt: latestState.lastExecutionAt?.toISOString() ?? null,
+          pendingSignal: latestState.metadata,
+        }
+      : null,
     lastProcessedAt: latestState?.lastProcessedAt?.toISOString() ?? null,
     lastExecutionAt: latestState?.lastExecutionAt?.toISOString() ?? null,
     latestExecution: buildLatestExecution(bot.executions[0]),

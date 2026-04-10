@@ -9,6 +9,7 @@ import { SectionHeading } from "@/components/section-heading";
 import { StatusBadge } from "@/components/status-badge";
 import { SurfaceCard } from "@/components/surface-card";
 import { TimeRangeTabs } from "@/components/time-range-tabs";
+import { calculateBudgetRoiPct } from "@/lib/bot-metrics";
 import { HISTORY_RESOLUTION_OPTIONS, type CandlePoint, type HistoryResolution, bucketTimestamp, buildCandlesFromSnapshots } from "@/lib/charting";
 import type { BotFormDraft } from "@/lib/bot-management";
 import { calculateGridLevels } from "@/lib/bot-runtime";
@@ -161,10 +162,33 @@ export type BotDetailRuntimeData = {
   lastProcessedAt: string | null;
   lastExecutionAt: string | null;
   latestExecution: BotDetailViewData["executions"][number] | null;
+  availableQuoteAmount: number | null;
+  availableBaseAmount: number | null;
+  deployedQuoteAmount: number | null;
+  averageEntryPrice: number | null;
+  realizedPnlUsd: number | null;
+  unrealizedPnlUsd: number | null;
+  totalEquityUsd: number | null;
 };
 
 type BotOrderView = BotDetailViewData["orders"][number];
 type BotExecutionView = BotDetailViewData["executions"][number];
+type LiveRuntimeState = {
+  botId: string;
+  currentPrice: number | null;
+  lastHeartbeatAt: string | null;
+  status: string;
+  lastProcessedAt: string | null;
+  lastExecutionAt: string | null;
+  latestExecution: BotExecutionView | null;
+  availableQuoteAmount: number | null;
+  availableBaseAmount: number | null;
+  deployedQuoteAmount: number | null;
+  averageEntryPrice: number | null;
+  realizedPnlUsd: number | null;
+  unrealizedPnlUsd: number | null;
+  totalEquityUsd: number | null;
+};
 
 function isMarkerVisibleExecution(execution: BotExecutionView) {
   return execution.status === "submitted" || execution.status === "filled" || execution.status === "simulated";
@@ -414,20 +438,21 @@ export function BotDetailView({
   runtimeData?: BotDetailRuntimeData | null;
 }) {
   const initialResolution: HistoryResolution = embedded ? "1h" : "4h";
-  const [liveRuntime, setLiveRuntime] = useState<{
-    currentPrice: number | null;
-    lastHeartbeatAt: string | null;
-    status: string;
-    lastProcessedAt: string | null;
-    lastExecutionAt: string | null;
-    latestExecution: BotExecutionView | null;
-  }>({
+  const [liveRuntime, setLiveRuntime] = useState<LiveRuntimeState>({
+    botId: bot.id,
     currentPrice: bot.currentPrice,
     lastHeartbeatAt: bot.lastHeartbeatAt,
     status: bot.status,
     lastProcessedAt: null,
     lastExecutionAt: null,
-    latestExecution: bot.executions[0] ?? null
+    latestExecution: bot.executions[0] ?? null,
+    availableQuoteAmount: runtimeData?.availableQuoteAmount ?? null,
+    availableBaseAmount: runtimeData?.availableBaseAmount ?? (bot.position?.baseAmount ?? null),
+    deployedQuoteAmount: runtimeData?.deployedQuoteAmount ?? bot.metrics.deployedQuoteAmount,
+    averageEntryPrice: runtimeData?.averageEntryPrice ?? (bot.position?.averageEntryPrice ?? null),
+    realizedPnlUsd: runtimeData?.realizedPnlUsd ?? (bot.position?.realizedPnlUsd ?? null),
+    unrealizedPnlUsd: runtimeData?.unrealizedPnlUsd ?? (bot.position?.unrealizedPnlUsd ?? null),
+    totalEquityUsd: runtimeData?.totalEquityUsd ?? bot.metrics.inventoryValue + (runtimeData?.availableQuoteAmount ?? 0)
   });
   const [resolution, setResolution] = useState<HistoryResolution>(initialResolution);
   const fallbackCandles = useMemo(() => buildCandlesFromSnapshots(bot.priceSnapshots, resolution), [bot.priceSnapshots, resolution]);
@@ -486,25 +511,47 @@ export function BotDetailView({
 
   useEffect(() => {
     setLiveRuntime({
+      botId: bot.id,
       currentPrice: runtimeData?.currentPrice ?? bot.currentPrice,
       lastHeartbeatAt: runtimeData?.lastHeartbeatAt ?? bot.lastHeartbeatAt,
       status: runtimeData?.status ?? bot.status,
       lastProcessedAt: runtimeData?.lastProcessedAt ?? null,
       lastExecutionAt: runtimeData?.lastExecutionAt ?? null,
-      latestExecution: runtimeData?.latestExecution ?? bot.executions[0] ?? null
+      latestExecution: runtimeData?.latestExecution ?? bot.executions[0] ?? null,
+      availableQuoteAmount: runtimeData?.availableQuoteAmount ?? null,
+      availableBaseAmount: runtimeData?.availableBaseAmount ?? (bot.position?.baseAmount ?? null),
+      deployedQuoteAmount: runtimeData?.deployedQuoteAmount ?? bot.metrics.deployedQuoteAmount,
+      averageEntryPrice: runtimeData?.averageEntryPrice ?? (bot.position?.averageEntryPrice ?? null),
+      realizedPnlUsd: runtimeData?.realizedPnlUsd ?? (bot.position?.realizedPnlUsd ?? null),
+      unrealizedPnlUsd: runtimeData?.unrealizedPnlUsd ?? (bot.position?.unrealizedPnlUsd ?? null),
+      totalEquityUsd:
+        runtimeData?.totalEquityUsd ??
+        ((runtimeData?.availableQuoteAmount ?? 0) + (runtimeData?.availableBaseAmount ?? bot.position?.baseAmount ?? 0) * (runtimeData?.currentPrice ?? bot.currentPrice))
     });
   }, [
     bot.currentPrice,
     bot.executions,
     bot.id,
     bot.lastHeartbeatAt,
+    bot.metrics.deployedQuoteAmount,
+    bot.position?.averageEntryPrice,
+    bot.position?.baseAmount,
+    bot.position?.realizedPnlUsd,
+    bot.position?.unrealizedPnlUsd,
     bot.status,
+    runtimeData?.availableBaseAmount,
+    runtimeData?.availableQuoteAmount,
+    runtimeData?.averageEntryPrice,
     runtimeData?.currentPrice,
+    runtimeData?.deployedQuoteAmount,
     runtimeData?.lastHeartbeatAt,
     runtimeData?.status,
     runtimeData?.lastProcessedAt,
     runtimeData?.lastExecutionAt,
-    runtimeData?.latestExecution
+    runtimeData?.latestExecution,
+    runtimeData?.realizedPnlUsd,
+    runtimeData?.totalEquityUsd,
+    runtimeData?.unrealizedPnlUsd
   ]);
 
   useEffect(() => {
@@ -523,16 +570,33 @@ export function BotDetailView({
           status: string;
           lastProcessedAt: string | null;
           lastExecutionAt: string | null;
+          runtime: {
+            availableQuoteAmount: number;
+            availableBaseAmount: number;
+            deployedQuoteAmount: number;
+            averageEntryPrice: number | null;
+            realizedPnlUsd: number;
+            unrealizedPnlUsd: number;
+            totalEquityUsd: number;
+          } | null;
           latestExecution?: BotExecutionView | null;
         };
 
         setLiveRuntime({
+          botId: bot.id,
           currentPrice: payload.currentPrice,
           lastHeartbeatAt: payload.lastHeartbeatAt,
           status: payload.status,
           lastProcessedAt: payload.lastProcessedAt,
           lastExecutionAt: payload.lastExecutionAt,
-          latestExecution: payload.latestExecution ?? null
+          latestExecution: payload.latestExecution ?? null,
+          availableQuoteAmount: payload.runtime?.availableQuoteAmount ?? null,
+          availableBaseAmount: payload.runtime?.availableBaseAmount ?? null,
+          deployedQuoteAmount: payload.runtime?.deployedQuoteAmount ?? null,
+          averageEntryPrice: payload.runtime?.averageEntryPrice ?? null,
+          realizedPnlUsd: payload.runtime?.realizedPnlUsd ?? null,
+          unrealizedPnlUsd: payload.runtime?.unrealizedPnlUsd ?? null,
+          totalEquityUsd: payload.runtime?.totalEquityUsd ?? null
         });
       } catch {
         return;
@@ -625,8 +689,28 @@ export function BotDetailView({
       };
     });
   }, [bot.baseSymbol, fallbackCandles]);
+  const activeLiveRuntime = liveRuntime.botId === bot.id
+    ? liveRuntime
+    : {
+        botId: bot.id,
+        currentPrice: runtimeData?.currentPrice ?? bot.currentPrice,
+        lastHeartbeatAt: runtimeData?.lastHeartbeatAt ?? bot.lastHeartbeatAt,
+        status: runtimeData?.status ?? bot.status,
+        lastProcessedAt: runtimeData?.lastProcessedAt ?? null,
+        lastExecutionAt: runtimeData?.lastExecutionAt ?? null,
+        latestExecution: runtimeData?.latestExecution ?? bot.executions[0] ?? null,
+        availableQuoteAmount: runtimeData?.availableQuoteAmount ?? null,
+        availableBaseAmount: runtimeData?.availableBaseAmount ?? (bot.position?.baseAmount ?? null),
+        deployedQuoteAmount: runtimeData?.deployedQuoteAmount ?? bot.metrics.deployedQuoteAmount,
+        averageEntryPrice: runtimeData?.averageEntryPrice ?? (bot.position?.averageEntryPrice ?? null),
+        realizedPnlUsd: runtimeData?.realizedPnlUsd ?? (bot.position?.realizedPnlUsd ?? null),
+        unrealizedPnlUsd: runtimeData?.unrealizedPnlUsd ?? (bot.position?.unrealizedPnlUsd ?? null),
+        totalEquityUsd:
+          runtimeData?.totalEquityUsd ??
+          ((runtimeData?.availableQuoteAmount ?? 0) + (runtimeData?.availableBaseAmount ?? bot.position?.baseAmount ?? 0) * (runtimeData?.currentPrice ?? bot.currentPrice))
+      };
   const recentOrders = useMemo(() => bot.orders.slice(0, 12), [bot.orders]);
-  const latestExecution = liveRuntime.latestExecution ?? bot.executions[0] ?? null;
+  const latestExecution = activeLiveRuntime.latestExecution ?? bot.executions[0] ?? null;
   const visibleExecutions = useMemo(() => {
     const executionMap = new Map<string, BotExecutionView>();
     for (const execution of bot.executions) {
@@ -702,8 +786,8 @@ export function BotDetailView({
     [recentOrders]
   );
 
-  const liveSpotPrice = liveRuntime.currentPrice ?? bot.currentPrice;
-  const livePriceTime = liveRuntime.lastHeartbeatAt ?? bot.lastHeartbeatAt ?? bot.priceSnapshots.at(-1)?.time ?? null;
+  const liveSpotPrice = activeLiveRuntime.currentPrice ?? bot.currentPrice;
+  const livePriceTime = activeLiveRuntime.lastHeartbeatAt ?? bot.lastHeartbeatAt ?? bot.priceSnapshots.at(-1)?.time ?? null;
   const visibleCandles = useMemo(
     () => mergeLivePriceIntoCandles(activeHistoryState.candles, resolution, liveSpotPrice, livePriceTime),
     [activeHistoryState.candles, livePriceTime, liveSpotPrice, resolution]
@@ -734,6 +818,18 @@ export function BotDetailView({
       : bot.metrics.rangeProgress;
   const latestAlert = recentAlerts[0] ?? bot.alerts[0] ?? null;
   const activeResolutionLabel = HISTORY_RESOLUTION_OPTIONS.find((option) => option.value === resolution)?.label ?? initialResolution;
+  const displayBaseAmount = activeLiveRuntime.availableBaseAmount ?? bot.position?.baseAmount ?? 0;
+  const displayAverageEntryPrice = activeLiveRuntime.averageEntryPrice ?? bot.position?.averageEntryPrice ?? null;
+  const displayRealizedPnlUsd = activeLiveRuntime.realizedPnlUsd ?? bot.position?.realizedPnlUsd ?? 0;
+  const displayUnrealizedPnlUsd = activeLiveRuntime.unrealizedPnlUsd ?? bot.position?.unrealizedPnlUsd ?? 0;
+  const displayTotalPnlUsd = displayRealizedPnlUsd + displayUnrealizedPnlUsd;
+  const displayDeployedQuoteAmount = activeLiveRuntime.deployedQuoteAmount ?? bot.metrics.deployedQuoteAmount;
+  const displayInventoryValue = displayBaseAmount > 0 ? displayBaseAmount * currentPrice : 0;
+  const displayTotalEquityUsd =
+    activeLiveRuntime.totalEquityUsd ??
+    ((activeLiveRuntime.availableQuoteAmount ?? 0) + displayInventoryValue);
+  const displayBudgetUsd = previewDraft?.totalBudgetUsd ?? (bot.config.maxDeployableUsd + bot.config.reserveQuoteAmount);
+  const displayRoiPct = calculateBudgetRoiPct(displayTotalPnlUsd, displayBudgetUsd);
 
   const handleResolutionChange = (nextResolution: HistoryResolution) => {
     if (nextResolution === resolution) {
@@ -764,11 +860,6 @@ export function BotDetailView({
   };
 
   if (embedded) {
-    const totalPnl = bot.position ? bot.position.realizedPnlUsd + bot.position.unrealizedPnlUsd : 0;
-    const roiPct = bot.metrics.deployedQuoteAmount > 0 || (bot.position && bot.metrics.inventoryValue > 0)
-      ? (totalPnl / (bot.metrics.deployedQuoteAmount + bot.metrics.inventoryValue || 1)) * 100
-      : 0;
-
     return (
       <div className="flex h-full flex-col">
         {/* Metrics strip */}
@@ -780,26 +871,26 @@ export function BotDetailView({
             <EmbeddedInlineMetric label="Spot" value={currentPrice ? formatNumber(currentPrice, currentPrice >= 1000 ? 0 : 2) : "--"} />
             <EmbeddedInlineMetric
               label="PnL"
-              value={formatCurrency(totalPnl)}
-              tone={totalPnl < 0 ? "negative" : "positive"}
+              value={formatCurrency(displayTotalPnlUsd)}
+              tone={displayTotalPnlUsd < 0 ? "negative" : "positive"}
             />
             <EmbeddedInlineMetric
               label="ROI"
-              value={`${roiPct >= 0 ? "+" : ""}${formatNumber(roiPct, 2)}%`}
-              tone={roiPct < 0 ? "negative" : "positive"}
+              value={`${displayRoiPct >= 0 ? "+" : ""}${formatNumber(displayRoiPct, 2)}%`}
+              tone={displayRoiPct < 0 ? "negative" : "positive"}
             />
             {previewActive ? <BotChip label="draft" /> : null}
             <BotChip label={goalLabel} />
             <span className="ml-auto font-mono text-[10px] text-[var(--muted)]">
-              {formatNumber(effectiveConfig.lowPrice, effectiveConfig.lowPrice >= 1000 ? 0 : 2)}-{formatNumber(effectiveConfig.highPrice, effectiveConfig.highPrice >= 1000 ? 0 : 2)} · {effectiveConfig.levelCount} rails
+              {formatNumber(effectiveConfig.lowPrice, effectiveConfig.lowPrice >= 1000 ? 0 : 2)}-{formatNumber(effectiveConfig.highPrice, effectiveConfig.highPrice >= 1000 ? 0 : 2)} - {effectiveConfig.levelCount} rails
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-4">
-            <EmbeddedInlineMetric label="Deployed" value={formatCurrency(bot.metrics.deployedQuoteAmount)} />
-            <EmbeddedInlineMetric label={`${bot.baseSymbol}`} value={bot.position ? formatNumber(bot.position.baseAmount, 4) : "0"} />
-            <EmbeddedInlineMetric label="Avg entry" value={bot.position?.averageEntryPrice ? formatNumber(bot.position.averageEntryPrice, 2) : "--"} />
-            <EmbeddedInlineMetric label="Realized" value={formatCurrency(bot.position?.realizedPnlUsd ?? 0)} tone={(bot.position?.realizedPnlUsd ?? 0) < 0 ? "negative" : "positive"} />
-            <EmbeddedInlineMetric label="Unrealized" value={formatCurrency(bot.position?.unrealizedPnlUsd ?? 0)} tone={(bot.position?.unrealizedPnlUsd ?? 0) < 0 ? "negative" : "positive"} />
+            <EmbeddedInlineMetric label="Deployed" value={formatCurrency(displayDeployedQuoteAmount)} />
+            <EmbeddedInlineMetric label={`${bot.baseSymbol}`} value={formatNumber(displayBaseAmount, 4)} />
+            <EmbeddedInlineMetric label="Avg entry" value={displayAverageEntryPrice ? formatNumber(displayAverageEntryPrice, 2) : "--"} />
+            <EmbeddedInlineMetric label="Realized" value={formatCurrency(displayRealizedPnlUsd)} tone={displayRealizedPnlUsd < 0 ? "negative" : "positive"} />
+            <EmbeddedInlineMetric label="Unrealized" value={formatCurrency(displayUnrealizedPnlUsd)} tone={displayUnrealizedPnlUsd < 0 ? "negative" : "positive"} />
             <EmbeddedInlineMetric label="Occ" value={`${formatNumber(rangeProgress, 1)}%`} />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--muted)]">
@@ -818,7 +909,7 @@ export function BotDetailView({
               onChange={(next) => handleResolutionChange(next as HistoryResolution)}
             />
             <span className="font-mono text-[10px] text-[var(--muted)]">
-              {activeHistoryState.sourceLabel} · {liveRuntime.lastHeartbeatAt ? formatDateTime(liveRuntime.lastHeartbeatAt) : "--"}
+              {activeHistoryState.sourceLabel} - {activeLiveRuntime.lastHeartbeatAt ? formatDateTime(activeLiveRuntime.lastHeartbeatAt) : "--"}
             </span>
           </div>
 
@@ -831,7 +922,7 @@ export function BotDetailView({
             orderLines={orderLines}
             currentPrice={currentPrice || null}
             currentPriceTime={livePriceTime}
-            averageCost={bot.position ? bot.position.averageEntryPrice : null}
+            averageCost={displayAverageEntryPrice}
             loading={activeHistoryState.loading}
             resolutionLabel={activeResolutionLabel}
             sourceLabel={activeHistoryState.sourceLabel}
@@ -859,15 +950,15 @@ export function BotDetailView({
         />
         <StatCard
           label="Inventory"
-          value={bot.position ? `${formatNumber(bot.position.baseAmount, 5)} ${bot.baseSymbol}` : "--"}
-          hint={`Market value ${formatCurrency(bot.metrics.inventoryValue)}`}
+          value={displayBaseAmount > 0 ? `${formatNumber(displayBaseAmount, 5)} ${bot.baseSymbol}` : "--"}
+          hint={`Market value ${formatCurrency(displayInventoryValue)}`}
           tone="default"
         />
         <StatCard
           label="Unrealized PnL"
-          value={bot.position ? formatCurrency(bot.position.unrealizedPnlUsd) : "--"}
-          hint={bot.position ? `Avg cost ${formatNumber(bot.position.averageEntryPrice, 2)}` : "No open inventory"}
-          tone={(bot.position?.unrealizedPnlUsd ?? 0) >= 0 ? "positive" : "negative"}
+          value={displayBaseAmount > 0 ? formatCurrency(displayUnrealizedPnlUsd) : "--"}
+          hint={displayAverageEntryPrice ? `Avg cost ${formatNumber(displayAverageEntryPrice, 2)}` : "No open inventory"}
+          tone={displayUnrealizedPnlUsd >= 0 ? "positive" : "negative"}
         />
       </div>
 
@@ -886,7 +977,7 @@ export function BotDetailView({
                 icon={Radar}
                 actions={
                   <>
-                    <StatusBadge status={liveRuntime.status} />
+                    <StatusBadge status={activeLiveRuntime.status} />
                     {!embedded ? <BotControlButtons botId={bot.id} /> : null}
                   </>
                 }
@@ -926,7 +1017,7 @@ export function BotDetailView({
                 orderLines={orderLines}
                 currentPrice={currentPrice || null}
                 currentPriceTime={livePriceTime}
-                averageCost={bot.position ? bot.position.averageEntryPrice : null}
+                averageCost={displayAverageEntryPrice}
                 loading={activeHistoryState.loading}
                 resolutionLabel={activeResolutionLabel}
                 sourceLabel={activeHistoryState.sourceLabel}
@@ -958,7 +1049,7 @@ export function BotDetailView({
                 <SurfaceCard tone="muted" padding="sm">
                   <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">Feed health</div>
                   <div className="mt-2 text-sm font-medium text-white">
-                    {liveRuntime.lastHeartbeatAt ? `Worker ${formatDateTime(liveRuntime.lastHeartbeatAt)}` : "No worker heartbeat"}
+                    {activeLiveRuntime.lastHeartbeatAt ? `Worker ${formatDateTime(activeLiveRuntime.lastHeartbeatAt)}` : "No worker heartbeat"}
                   </div>
                   <div className="mt-3 text-sm text-[var(--muted)]">
                     {activeHistoryState.error ? `Fallback to local snapshots: ${activeHistoryState.error}` : "Historical feed loaded successfully"}
@@ -1134,11 +1225,11 @@ export function BotDetailView({
             <SectionHeading eyebrow="Runtime" title="Execution deck" description={embedded ? "Current runtime state." : "Current operating state for the selected bot."} icon={Gauge} />
 
             <div className="mt-5">
-              <InfoRow label="Status" value={liveRuntime.status.replaceAll("_", " ")} />
+              <InfoRow label="Status" value={activeLiveRuntime.status.replaceAll("_", " ")} />
               <InfoRow label="Mode" value={bot.mode} />
               <InfoRow label="Strategy" value={goalLabel} />
               <InfoRow label="Current price" value={currentPrice ? formatNumber(currentPrice, 2) : "--"} />
-              <InfoRow label="Average cost" value={bot.position ? formatNumber(bot.position.averageEntryPrice, 2) : "--"} />
+              <InfoRow label="Average cost" value={displayAverageEntryPrice ? formatNumber(displayAverageEntryPrice, 2) : "--"} />
               <InfoRow label="Range" value={`${formatNumber(bot.config.lowPrice, 2)} / ${formatNumber(bot.config.highPrice, 2)}`} />
               <InfoRow label="Last trade" value={latestExecutionBadge ?? "--"} />
             </div>
@@ -1148,12 +1239,13 @@ export function BotDetailView({
             <SectionHeading eyebrow="Exposure" title="Capital posture" description={embedded ? "Inventory and PnL." : "Inventory, reserve and PnL at a glance."} icon={Wallet2} />
 
             <div className="mt-5">
-              <InfoRow label="Base inventory" value={bot.position ? `${formatNumber(bot.position.baseAmount, 6)} ${bot.baseSymbol}` : "--"} />
-              <InfoRow label="Inventory value" value={formatCurrency(bot.metrics.inventoryValue)} />
-              <InfoRow label="Deployed quote" value={formatCurrency(bot.metrics.deployedQuoteAmount)} />
+              <InfoRow label="Base inventory" value={displayBaseAmount > 0 ? `${formatNumber(displayBaseAmount, 6)} ${bot.baseSymbol}` : "--"} />
+              <InfoRow label="Inventory value" value={formatCurrency(displayInventoryValue)} />
+              <InfoRow label="Deployed quote" value={formatCurrency(displayDeployedQuoteAmount)} />
               <InfoRow label="USDC reserve" value={formatCurrency(bot.config.reserveQuoteAmount)} />
-              <InfoRow label="Realized PnL" value={bot.position ? formatCurrency(bot.position.realizedPnlUsd) : "--"} />
-              <InfoRow label="Unrealized PnL" value={bot.position ? formatCurrency(bot.position.unrealizedPnlUsd) : "--"} />
+              <InfoRow label="Realized PnL" value={formatCurrency(displayRealizedPnlUsd)} />
+              <InfoRow label="Unrealized PnL" value={formatCurrency(displayUnrealizedPnlUsd)} />
+              <InfoRow label="Total equity" value={formatCurrency(displayTotalEquityUsd)} />
             </div>
           </SurfaceCard>
 
