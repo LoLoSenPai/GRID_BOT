@@ -98,7 +98,7 @@ export function ActionButton({
 }) {
   const toneClass =
     tone === "positive"
-      ? "border-[color:rgba(68,211,156,0.18)] text-[var(--green)] hover:bg-[color:rgba(68,211,156,0.08)]"
+      ? "border-[var(--accent-line)] text-[var(--accent)] hover:bg-[var(--accent-soft)]"
       : tone === "negative"
         ? "border-[color:rgba(255,107,122,0.18)] text-[var(--red)] hover:bg-[color:rgba(255,107,122,0.08)]"
         : tone === "amber"

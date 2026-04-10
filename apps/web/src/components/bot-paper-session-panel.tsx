@@ -200,7 +200,7 @@ function SessionMetric({
     <div className="border border-[var(--line)] bg-[var(--bg)] p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">{label}</div>
-        <Icon className="h-4 w-4 text-[var(--green)]" />
+        <Icon className="h-4 w-4 text-[var(--accent)]" />
       </div>
       <div className="mt-3 text-lg font-semibold text-white">{value}</div>
       <div className="mt-2 text-sm text-[var(--muted)]">{hint}</div>

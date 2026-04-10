@@ -111,7 +111,7 @@ export function BotDraftReview({
               changes.slice(0, 5).map((change) => (
                 <div key={change.field} className="border border-[var(--line)] bg-[var(--bg)] px-4 py-3 text-sm">
                   <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">
-                    <GitCompareArrows className="h-3.5 w-3.5 text-[var(--green)]" />
+                    <GitCompareArrows className="h-3.5 w-3.5 text-[var(--accent)]" />
                     {change.label}
                   </div>
                   <div className="mt-2 grid gap-2 md:grid-cols-2">
@@ -156,7 +156,7 @@ function SummaryTile({
     <div className="border border-[var(--line)] bg-[var(--panel-soft)] p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="font-mono text-[11px] uppercase tracking-[0.22em] text-[var(--muted)]">{label}</div>
-        <Icon className="h-4 w-4 text-[var(--green)]" />
+        <Icon className="h-4 w-4 text-[var(--accent)]" />
       </div>
       <div className={tone === "negative" ? "mt-3 text-2xl font-semibold text-[var(--red)]" : "mt-3 text-2xl font-semibold text-white"}>{value}</div>
       <div className="mt-2 text-sm text-[var(--muted)]">{hint}</div>

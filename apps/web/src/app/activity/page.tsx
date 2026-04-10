@@ -100,7 +100,7 @@ export default async function ActivityPage({
           <SurfaceCard padding="none" className="overflow-hidden">
             <div className="border-b border-[var(--line)] px-5 py-4">
               <div className="flex items-center gap-3">
-                <ShieldAlert className="h-4 w-4 text-[var(--green)]" />
+                <ShieldAlert className="h-4 w-4 text-[var(--accent)]" />
                 <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">Ops tape</div>
               </div>
               <div className="mt-2 text-sm text-[var(--muted)]">Chronological feed for logs, alerts, and execution outcomes.</div>

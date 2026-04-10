@@ -27,7 +27,7 @@ function DrawerTabButton({
       className={cn(
         "h-8 rounded-md border px-3 font-mono text-[10px] uppercase tracking-[0.12em] transition",
         active
-          ? "border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)] text-[var(--green)]"
+          ? "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]"
           : "border-[var(--line)] text-[var(--muted)] hover:bg-white/[0.04] hover:text-white"
       )}
     >
@@ -139,7 +139,7 @@ export function BotTradingDrawer({
                       <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-[var(--muted)]">
                         <span>{execution.provider}</span>
                         {execution.txId ? (
-                          <a className="inline-flex items-center gap-1 text-white hover:text-[var(--green)]" href={getTransactionUrl(execution.txId)} rel="noreferrer" target="_blank">
+                          <a className="inline-flex items-center gap-1 text-white hover:text-[var(--accent)]" href={getTransactionUrl(execution.txId)} rel="noreferrer" target="_blank">
                             Tx link <ArrowUpRight className="h-3 w-3" />
                           </a>
                         ) : (
@@ -191,7 +191,7 @@ export function BotTradingDrawer({
                         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-[var(--muted)]">
                           {order.execution.effectivePrice ? <span>@ {formatNumber(order.execution.effectivePrice, 2)}</span> : null}
                           {order.execution.txId ? (
-                            <a className="inline-flex items-center gap-1 text-white hover:text-[var(--green)]" href={getTransactionUrl(order.execution.txId)} rel="noreferrer" target="_blank">
+                            <a className="inline-flex items-center gap-1 text-white hover:text-[var(--accent)]" href={getTransactionUrl(order.execution.txId)} rel="noreferrer" target="_blank">
                               Tx link <ArrowUpRight className="h-3 w-3" />
                             </a>
                           ) : (

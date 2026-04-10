@@ -22,7 +22,7 @@ export function SectionHeading({
       <div className="flex items-start gap-3">
         {Icon ? (
           <div className="inline-flex h-10 w-10 items-center justify-center border border-[var(--line)] bg-white/[0.03]">
-            <Icon className="h-4 w-4 text-[var(--green)]" />
+            <Icon className="h-4 w-4 text-[var(--accent)]" />
           </div>
         ) : null}
         <div>

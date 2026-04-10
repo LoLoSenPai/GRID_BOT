@@ -7,6 +7,10 @@ export type TradeDisplayInput = {
   baseSymbol: string;
 };
 
+export type TradeMarkerDisplayInput = TradeDisplayInput & {
+  strategyMode: string;
+};
+
 export function formatGoalLabel(strategyMode: string) {
   switch (strategyMode) {
     case "accumulate_base":
@@ -49,6 +53,22 @@ export function formatTradeDisplay({
     compact,
     direction
   };
+}
+
+export function formatTradeMarkerLabel({
+  strategyMode,
+  ...input
+}: TradeMarkerDisplayInput) {
+  const display = formatTradeDisplay(input);
+
+  switch (strategyMode) {
+    case "accumulate_usdc":
+      return display.primary;
+    case "accumulate_base":
+      return display.secondary ?? display.primary;
+    default:
+      return display.compact;
+  }
 }
 
 export function formatTradeBadgeLabel(input: TradeDisplayInput) {

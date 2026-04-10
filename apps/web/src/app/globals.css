@@ -1,18 +1,21 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #060d14;
-  --panel: #0a121a;
-  --panel-strong: #0e1821;
-  --panel-soft: #081018;
-  --line: rgba(173, 197, 224, 0.12);
-  --line-strong: rgba(196, 214, 235, 0.2);
+  --bg: #040912;
+  --panel: #08111c;
+  --panel-strong: #0b1724;
+  --panel-soft: #07101a;
+  --line: rgba(166, 194, 228, 0.12);
+  --line-strong: rgba(188, 212, 240, 0.22);
   --text: #edf3fb;
-  --muted: #91a5bc;
+  --muted: #90a7c3;
   --green: #44d39c;
   --red: #ff6b7a;
   --amber: #f8c86c;
   --blue: #79b8ff;
+  --accent: #79b8ff;
+  --accent-soft: rgba(121, 184, 255, 0.1);
+  --accent-line: rgba(121, 184, 255, 0.22);
 }
 
 * {
@@ -25,8 +28,8 @@ body {
   background:
     linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(68, 211, 156, 0.035), transparent 22%),
-    linear-gradient(180deg, #060d14 0%, #06101a 54%, #040b12 100%);
+    radial-gradient(circle at top, rgba(121, 184, 255, 0.1), transparent 36%),
+    linear-gradient(180deg, #040912 0%, #07111b 52%, #03070f 100%);
   background-size: 28px 28px, 28px 28px, auto, auto;
   background-position: center;
   color: var(--text);

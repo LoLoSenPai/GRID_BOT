@@ -34,7 +34,7 @@ export function AppShell({
             <div className="font-mono text-[10px] uppercase tracking-[0.32em] text-[var(--muted)]">Grid bot</div>
             <div className="mt-2 text-lg font-semibold tracking-[-0.03em] text-white">Solo desk</div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className="border border-[var(--line)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--green)]">Spot</span>
+              <span className="border border-[var(--accent-line)] bg-[var(--accent-soft)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--accent)]">Spot</span>
               <span className="border border-[var(--line)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">Personal</span>
               <DeskModeToggle initialMode={deskMode} />
             </div>
@@ -49,7 +49,7 @@ export function AppShell({
                   href={buildDeskHref(item.href, deskMode)}
                   className={cn(
                     "mb-1 flex items-center gap-3 border border-transparent px-3 py-3 text-sm text-[var(--muted)] transition hover:border-[var(--line)] hover:bg-white/[0.03] hover:text-white",
-                    active && "border-[var(--line)] bg-white/[0.05] text-white shadow-[inset_2px_0_0_0_var(--green)]"
+                    active && "border-[var(--accent-line)] bg-[var(--accent-soft)] text-white shadow-[inset_2px_0_0_0_var(--accent)]"
                   )}
                 >
                   <Icon className="h-4 w-4" />

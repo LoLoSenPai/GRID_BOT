@@ -15,7 +15,7 @@ const actions = [
 const toneStyles: Record<(typeof actions)[number]["tone"], string> = {
   neutral: "border-[var(--line)] text-[var(--muted)] hover:bg-white/[0.03] hover:text-white",
   positive:
-    "border-[color:rgba(68,211,156,0.18)] text-[var(--green)] hover:bg-[color:rgba(68,211,156,0.08)]",
+    "border-[var(--accent-line)] text-[var(--accent)] hover:bg-[var(--accent-soft)]",
   negative:
     "border-[color:rgba(255,107,122,0.18)] text-[var(--red)] hover:bg-[color:rgba(255,107,122,0.08)]"
 };

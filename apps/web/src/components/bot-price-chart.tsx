@@ -598,7 +598,7 @@ export function BotPriceChart({
 
   return (
     <div className="space-y-4">
-      <div className="relative overflow-hidden border border-[var(--line)] bg-[radial-gradient(circle_at_top,rgba(127,245,196,0.05),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))]">
+      <div className="relative overflow-hidden border border-[var(--line)] bg-[radial-gradient(circle_at_top,rgba(121,184,255,0.08),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))]">
         <div className="pointer-events-none absolute left-4 top-4 z-10 flex flex-wrap gap-2">
           <span className="border border-[var(--line)] bg-white/[0.06] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-white">
             {resolutionLabel}

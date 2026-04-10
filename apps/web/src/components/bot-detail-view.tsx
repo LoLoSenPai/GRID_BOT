@@ -12,11 +12,12 @@ import { TimeRangeTabs } from "@/components/time-range-tabs";
 import { HISTORY_RESOLUTION_OPTIONS, type CandlePoint, type HistoryResolution, bucketTimestamp, buildCandlesFromSnapshots } from "@/lib/charting";
 import type { BotFormDraft } from "@/lib/bot-management";
 import { calculateGridLevels } from "@/lib/bot-runtime";
-import { formatGoalLabel, formatRailModelLabel, formatTradeBadgeLabel, formatTradeDisplay } from "@/lib/trade-display";
+import { formatGoalLabel, formatRailModelLabel, formatTradeBadgeLabel, formatTradeDisplay, formatTradeMarkerLabel } from "@/lib/trade-display";
 import { cn, formatCurrency, formatDateTime, formatNumber } from "@/lib/utils";
 
 const HISTORY_CACHE_TTL_MS = 5 * 60 * 1000;
 type HistoryCacheEntry = {
+  symbol: BotDetailViewData["baseSymbol"];
   candles: CandlePoint[];
   sourceLabel: string;
   cappedLabel: string | null;
@@ -224,6 +225,7 @@ async function requestHistory(symbol: BotDetailViewData["baseSymbol"], resolutio
     })
     .then((payload) => {
       const entry: HistoryCacheEntry = {
+        symbol,
         candles: payload.candles,
         sourceLabel: payload.meta.source,
         cappedLabel: payload.meta.cappedByResolution ? `${HISTORY_RESOLUTION_OPTIONS.find((option) => option.value === resolution)?.label} capped` : null,
@@ -432,12 +434,14 @@ export function BotDetailView({
   const fallbackCandlesRef = useRef(fallbackCandles);
   const initialCache = getFreshHistoryCacheEntry(bot.baseSymbol, resolution);
   const [historyState, setHistoryState] = useState<{
+    symbol: BotDetailViewData["baseSymbol"];
     candles: CandlePoint[];
     sourceLabel: string;
     cappedLabel: string | null;
     error: string | null;
     loading: boolean;
   }>({
+    symbol: bot.baseSymbol,
     candles: initialCache?.candles ?? bot.initialCandles,
     sourceLabel: initialCache?.sourceLabel ?? bot.initialHistorySourceLabel,
     cappedLabel: initialCache?.cappedLabel ?? null,
@@ -450,6 +454,7 @@ export function BotDetailView({
     const cached = historyCache.get(cacheKey);
     if (!cached || cached.candles.length < bot.initialCandles.length) {
       historyCache.set(cacheKey, {
+        symbol: bot.baseSymbol,
         candles: bot.initialCandles,
         sourceLabel: bot.initialHistorySourceLabel,
         cappedLabel: null,
@@ -461,6 +466,23 @@ export function BotDetailView({
   useEffect(() => {
     fallbackCandlesRef.current = fallbackCandles;
   }, [fallbackCandles]);
+
+  const activeHistoryState = useMemo(() => {
+    if (historyState.symbol === bot.baseSymbol) {
+      return historyState;
+    }
+
+    const cached = getFreshHistoryCacheEntry(bot.baseSymbol, resolution);
+
+    return {
+      symbol: bot.baseSymbol,
+      candles: cached?.candles ?? [],
+      sourceLabel: cached?.sourceLabel ?? "pyth-history",
+      cappedLabel: cached?.cappedLabel ?? null,
+      error: null,
+      loading: !cached
+    };
+  }, [bot.baseSymbol, historyState, resolution]);
 
   useEffect(() => {
     setLiveRuntime({
@@ -530,6 +552,7 @@ export function BotDetailView({
 
     if (cached) {
       setHistoryState({
+        symbol: bot.baseSymbol,
         candles: cached.candles,
         sourceLabel: cached.sourceLabel,
         cappedLabel: cached.cappedLabel,
@@ -542,7 +565,10 @@ export function BotDetailView({
     }
 
     setHistoryState((current) => ({
-      ...current,
+      symbol: bot.baseSymbol,
+      candles: current.symbol === bot.baseSymbol ? current.candles : [],
+      sourceLabel: current.symbol === bot.baseSymbol ? current.sourceLabel : "pyth-history",
+      cappedLabel: current.symbol === bot.baseSymbol ? current.cappedLabel : null,
       error: null,
       loading: true
     }));
@@ -554,6 +580,7 @@ export function BotDetailView({
         }
 
         const nextState = {
+          symbol: bot.baseSymbol,
           candles: entry.candles.length ? entry.candles : fallbackCandlesRef.current,
           sourceLabel: entry.sourceLabel,
           cappedLabel: entry.cappedLabel,
@@ -568,6 +595,7 @@ export function BotDetailView({
         }
 
         setHistoryState({
+          symbol: bot.baseSymbol,
           candles: fallbackCandlesRef.current,
           sourceLabel: "local snapshots",
           cappedLabel: null,
@@ -583,7 +611,7 @@ export function BotDetailView({
 
   useEffect(() => {
     setHistoryState((current) => {
-      if (current.loading || current.sourceLabel !== "local snapshots") {
+      if (current.symbol !== bot.baseSymbol || current.loading || current.sourceLabel !== "local snapshots") {
         return current;
       }
 
@@ -596,7 +624,7 @@ export function BotDetailView({
         candles: fallbackCandles
       };
     });
-  }, [fallbackCandles]);
+  }, [bot.baseSymbol, fallbackCandles]);
   const recentOrders = useMemo(() => bot.orders.slice(0, 12), [bot.orders]);
   const latestExecution = liveRuntime.latestExecution ?? bot.executions[0] ?? null;
   const visibleExecutions = useMemo(() => {
@@ -652,14 +680,15 @@ export function BotDetailView({
       visibleExecutions.map((execution) => ({
         time: execution.time,
         side: execution.side,
-        label: `${execution.side === "buy" ? "B" : "S"} ${formatTradeDisplay({
+        label: `${execution.side === "buy" ? "B" : "S"} ${formatTradeMarkerLabel({
+          strategyMode: bot.strategyMode,
           side: execution.side,
           quoteAmount: execution.quoteAmount,
           baseAmount: execution.baseAmount,
           baseSymbol: bot.baseSymbol
-        }).compact}`
+        })}`
       })),
-    [bot.baseSymbol, visibleExecutions]
+    [bot.baseSymbol, bot.strategyMode, visibleExecutions]
   );
 
   const orderLines = useMemo(
@@ -676,8 +705,8 @@ export function BotDetailView({
   const liveSpotPrice = liveRuntime.currentPrice ?? bot.currentPrice;
   const livePriceTime = liveRuntime.lastHeartbeatAt ?? bot.lastHeartbeatAt ?? bot.priceSnapshots.at(-1)?.time ?? null;
   const visibleCandles = useMemo(
-    () => mergeLivePriceIntoCandles(historyState.candles, resolution, liveSpotPrice, livePriceTime),
-    [historyState.candles, livePriceTime, liveSpotPrice, resolution]
+    () => mergeLivePriceIntoCandles(activeHistoryState.candles, resolution, liveSpotPrice, livePriceTime),
+    [activeHistoryState.candles, livePriceTime, liveSpotPrice, resolution]
   );
   const firstVisiblePrice = visibleCandles[0]?.open ?? liveSpotPrice ?? bot.currentPrice;
   const lastVisiblePrice = visibleCandles.at(-1)?.close ?? liveSpotPrice ?? bot.currentPrice;
@@ -715,6 +744,7 @@ export function BotDetailView({
     setHistoryState(
       cached
         ? {
+          symbol: bot.baseSymbol,
           candles: cached.candles,
           sourceLabel: cached.sourceLabel,
           cappedLabel: cached.cappedLabel,
@@ -722,6 +752,7 @@ export function BotDetailView({
           loading: false
         }
         : {
+          symbol: bot.baseSymbol,
           candles: [],
           sourceLabel: "pyth-history",
           cappedLabel: null,
@@ -783,27 +814,28 @@ export function BotDetailView({
             <TimeRangeTabs
               options={HISTORY_RESOLUTION_OPTIONS}
               value={resolution}
-              pending={historyState.loading && historyState.candles.length === 0}
+              pending={activeHistoryState.loading && activeHistoryState.candles.length === 0}
               onChange={(next) => handleResolutionChange(next as HistoryResolution)}
             />
             <span className="font-mono text-[10px] text-[var(--muted)]">
-              {historyState.sourceLabel} · {liveRuntime.lastHeartbeatAt ? formatDateTime(liveRuntime.lastHeartbeatAt) : "--"}
+              {activeHistoryState.sourceLabel} · {liveRuntime.lastHeartbeatAt ? formatDateTime(liveRuntime.lastHeartbeatAt) : "--"}
             </span>
           </div>
 
           <BotPriceChart
+            key={`embedded-chart-${bot.id}`}
             resolution={resolution}
-            candles={historyState.candles}
+            candles={activeHistoryState.candles}
             levels={chartLevels}
             markers={markers}
             orderLines={orderLines}
             currentPrice={currentPrice || null}
             currentPriceTime={livePriceTime}
             averageCost={bot.position ? bot.position.averageEntryPrice : null}
-            loading={historyState.loading}
+            loading={activeHistoryState.loading}
             resolutionLabel={activeResolutionLabel}
-            sourceLabel={historyState.sourceLabel}
-            cappedLabel={historyState.cappedLabel}
+            sourceLabel={activeHistoryState.sourceLabel}
+            cappedLabel={activeHistoryState.cappedLabel}
           />
         </div>
       </div>
@@ -876,7 +908,7 @@ export function BotDetailView({
                   <TimeRangeTabs
                     options={HISTORY_RESOLUTION_OPTIONS}
                     value={resolution}
-                    pending={historyState.loading && historyState.candles.length === 0}
+                    pending={activeHistoryState.loading && activeHistoryState.candles.length === 0}
                     onChange={(next) => handleResolutionChange(next as HistoryResolution)}
                   />
                 </div>
@@ -886,18 +918,19 @@ export function BotDetailView({
               </div>
 
               <BotPriceChart
+                key={`full-chart-${bot.id}`}
                 resolution={resolution}
-                candles={historyState.candles}
+                candles={activeHistoryState.candles}
                 levels={bot.levels}
                 markers={markers}
                 orderLines={orderLines}
                 currentPrice={currentPrice || null}
                 currentPriceTime={livePriceTime}
                 averageCost={bot.position ? bot.position.averageEntryPrice : null}
-                loading={historyState.loading}
+                loading={activeHistoryState.loading}
                 resolutionLabel={activeResolutionLabel}
-                sourceLabel={historyState.sourceLabel}
-                cappedLabel={historyState.cappedLabel}
+                sourceLabel={activeHistoryState.sourceLabel}
+                cappedLabel={activeHistoryState.cappedLabel}
               />
 
               <div className="grid gap-4 lg:grid-cols-3">
@@ -928,7 +961,7 @@ export function BotDetailView({
                     {liveRuntime.lastHeartbeatAt ? `Worker ${formatDateTime(liveRuntime.lastHeartbeatAt)}` : "No worker heartbeat"}
                   </div>
                   <div className="mt-3 text-sm text-[var(--muted)]">
-                    {historyState.error ? `Fallback to local snapshots: ${historyState.error}` : "Historical feed loaded successfully"}
+                    {activeHistoryState.error ? `Fallback to local snapshots: ${activeHistoryState.error}` : "Historical feed loaded successfully"}
                   </div>
                 </SurfaceCard>
               </div>
@@ -1154,7 +1187,7 @@ export function BotDetailView({
                   <div key={log.id} className="border border-[var(--line)] bg-[var(--panel-soft)] p-4">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2 text-sm font-medium">
-                        <Activity className="h-4 w-4 text-[var(--green)]" />
+                        <Activity className="h-4 w-4 text-[var(--accent)]" />
                         {log.category}
                       </div>
                       <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">{formatDateTime(log.createdAt)}</div>

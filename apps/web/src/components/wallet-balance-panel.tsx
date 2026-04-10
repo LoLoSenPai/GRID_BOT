@@ -108,7 +108,7 @@ export function WalletBalancePanel({ deskMode }: { deskMode: BotMode }) {
                     title={data.pubkey}
                 >
                     {truncatedPubkey}
-                    {copied ? <Check className="h-2.5 w-2.5 text-[var(--green)]" /> : <Copy className="h-2.5 w-2.5" />}
+                    {copied ? <Check className="h-2.5 w-2.5 text-[var(--accent)]" /> : <Copy className="h-2.5 w-2.5" />}
                 </button>
             </div>
 

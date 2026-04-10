@@ -143,7 +143,7 @@ export default async function DashboardPage({
 
             <SurfaceCard padding="lg">
               <div className="flex items-center gap-3">
-                <Zap className="h-4 w-4 text-[var(--green)]" />
+                <Zap className="h-4 w-4 text-[var(--accent)]" />
                 <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">Trade tape</div>
               </div>
 
@@ -151,7 +151,7 @@ export default async function DashboardPage({
                 {data.executions.slice(0, 6).map((execution) => (
                   <div key={execution.id} className="border border-[var(--line)] bg-[var(--panel-soft)] p-4">
                     <div className="flex items-center justify-between gap-3">
-                      <Link href={`/bots?deskMode=${deskMode}&botId=${execution.bot.id}`} className="text-sm font-medium text-white transition hover:text-[var(--green)]">
+                      <Link href={`/bots?deskMode=${deskMode}&botId=${execution.bot.id}`} className="text-sm font-medium text-white transition hover:text-[var(--accent)]">
                         {execution.bot.name}
                       </Link>
                       <ToneBadge

@@ -105,7 +105,7 @@ export function BotConfigFields({
                   className={cn(
                     "rounded-md border px-2.5 py-2 text-left transition",
                     active
-                      ? "border-[color:rgba(68,211,156,0.25)] bg-[color:rgba(68,211,156,0.08)]"
+                      ? "border-[var(--accent-line)] bg-[var(--accent-soft)]"
                       : "border-[var(--line)] bg-[var(--bg)] hover:bg-white/[0.04]"
                   )}
                 >
@@ -164,7 +164,7 @@ export function BotConfigFields({
             "mb-3 flex items-center justify-between rounded-md border px-2.5 py-1.5 font-mono text-[10px]",
             values.totalBudgetUsd > availableUsd
               ? "border-[color:rgba(239,68,68,0.25)] bg-[color:rgba(239,68,68,0.06)] text-[var(--red)]"
-              : "border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.04)] text-[var(--green)]"
+              : "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]"
           )}>
             <span className="uppercase tracking-[0.14em]">Available USDC</span>
             <span>{formatCurrency(availableUsd)}</span>

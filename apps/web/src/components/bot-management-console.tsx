@@ -963,7 +963,7 @@ export function BotManagementConsole({
                           </button>
                         ) : null}
                       </div>
-                      <button type="submit" disabled={createSubmitDisabled} className="inline-flex items-center gap-1.5 rounded-md border border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)] px-3 h-7 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--green)] transition hover:bg-[color:rgba(68,211,156,0.14)] disabled:pointer-events-none disabled:opacity-50">
+                      <button type="submit" disabled={createSubmitDisabled} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--accent-line)] bg-[var(--accent-soft)] px-3 h-7 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--accent)] transition hover:bg-[color:rgba(121,184,255,0.16)] disabled:pointer-events-none disabled:opacity-50">
                         <Plus className="h-3 w-3" />Create
                       </button>
                     </div>
@@ -1094,7 +1094,7 @@ export function BotManagementConsole({
                         className={cn(
                           "cursor-pointer border-b border-[var(--line)] transition",
                           isSelected
-                            ? "bg-[color:rgba(68,211,156,0.06)]"
+                            ? "bg-[var(--accent-soft)]"
                             : "hover:bg-white/[0.02]"
                         )}
                       >
@@ -1230,7 +1230,7 @@ export function BotManagementConsole({
                   <button
                     type="submit"
                     disabled={createSubmitDisabled}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)] px-3 h-7 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--green)] transition hover:bg-[color:rgba(68,211,156,0.14)] disabled:pointer-events-none disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-[var(--accent-line)] bg-[var(--accent-soft)] px-3 h-7 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--accent)] transition hover:bg-[color:rgba(121,184,255,0.16)] disabled:pointer-events-none disabled:opacity-50"
                   >
                     <Plus className="h-3 w-3" />
                     Create
@@ -1410,7 +1410,7 @@ function PanelTabButton({ active, label, onClick }: { active: boolean; label: st
       onClick={onClick}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-md border px-3 h-8 font-mono text-[10px] uppercase tracking-[0.14em] transition",
-        active ? "border-[color:rgba(68,211,156,0.25)] bg-[color:rgba(68,211,156,0.08)] text-[var(--green)]" : "border-[var(--line)] text-[var(--muted)] hover:bg-white/[0.04] hover:text-white"
+        active ? "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]" : "border-[var(--line)] text-[var(--muted)] hover:bg-white/[0.04] hover:text-white"
       )}
     >
       {label}
@@ -1469,7 +1469,7 @@ function CompactDeskButton({
 }) {
   const toneClass =
     tone === "positive"
-      ? "border-[color:rgba(68,211,156,0.18)] text-[var(--green)] hover:bg-[color:rgba(68,211,156,0.08)]"
+      ? "border-[var(--accent-line)] text-[var(--accent)] hover:bg-[var(--accent-soft)]"
       : tone === "negative"
         ? "border-[color:rgba(255,107,122,0.18)] text-[var(--red)] hover:bg-[color:rgba(255,107,122,0.08)]"
         : tone === "amber"
