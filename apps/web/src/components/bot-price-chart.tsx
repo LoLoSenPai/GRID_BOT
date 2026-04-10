@@ -609,14 +609,6 @@ export function BotPriceChart({
           <span className="border border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.08)] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--red)]">
             Sell rails
           </span>
-          <span className="border border-[var(--line)] bg-white/[0.06] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">
-            {sourceLabel}
-          </span>
-          {cappedLabel ? (
-            <span className="border border-[color:rgba(248,200,108,0.18)] bg-[color:rgba(248,200,108,0.08)] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--amber)]">
-              {cappedLabel}
-            </span>
-          ) : null}
         </div>
 
         {loading && candles.length === 0 ? (

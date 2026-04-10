@@ -13,7 +13,7 @@ import { calculateBudgetRoiPct } from "@/lib/bot-metrics";
 import { HISTORY_RESOLUTION_OPTIONS, type CandlePoint, type HistoryResolution, bucketTimestamp, buildCandlesFromSnapshots } from "@/lib/charting";
 import type { BotFormDraft } from "@/lib/bot-management";
 import { calculateGridLevels } from "@/lib/bot-runtime";
-import { formatGoalLabel, formatRailModelLabel, formatTradeBadgeLabel, formatTradeDisplay, formatTradeMarkerLabel } from "@/lib/trade-display";
+import { formatGoalLabel, formatTradeDisplay, formatTradeMarkerLabel } from "@/lib/trade-display";
 import { cn, formatCurrency, formatDateTime, formatNumber } from "@/lib/utils";
 
 const HISTORY_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -803,15 +803,6 @@ export function BotDetailView({
   const visibleDeltaPct = firstVisiblePrice ? ((lastVisiblePrice - firstVisiblePrice) / firstVisiblePrice) * 100 : 0;
   const currentPrice = liveSpotPrice || lastVisiblePrice;
   const goalLabel = formatGoalLabel(bot.strategyMode);
-  const railModelLabel = formatRailModelLabel(effectiveConfig.levelCount);
-  const latestExecutionBadge = latestExecution
-    ? formatTradeBadgeLabel({
-        side: latestExecution.side,
-        quoteAmount: latestExecution.quoteAmount,
-        baseAmount: latestExecution.baseAmount,
-        baseSymbol: bot.baseSymbol
-      })
-    : null;
   const rangeProgress =
     effectiveConfig.highPrice > effectiveConfig.lowPrice
       ? Math.max(0, Math.min(100, ((currentPrice - effectiveConfig.lowPrice) / (effectiveConfig.highPrice - effectiveConfig.lowPrice)) * 100))
@@ -893,10 +884,6 @@ export function BotDetailView({
             <EmbeddedInlineMetric label="Unrealized" value={formatCurrency(displayUnrealizedPnlUsd)} tone={displayUnrealizedPnlUsd < 0 ? "negative" : "positive"} />
             <EmbeddedInlineMetric label="Occ" value={`${formatNumber(rangeProgress, 1)}%`} />
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--muted)]">
-            <span>{railModelLabel}</span>
-            {latestExecutionBadge ? <span className="text-white">{latestExecutionBadge}</span> : null}
-          </div>
         </div>
 
         {/* Chart area */}
@@ -909,7 +896,7 @@ export function BotDetailView({
               onChange={(next) => handleResolutionChange(next as HistoryResolution)}
             />
             <span className="font-mono text-[10px] text-[var(--muted)]">
-              {activeHistoryState.sourceLabel} - {activeLiveRuntime.lastHeartbeatAt ? formatDateTime(activeLiveRuntime.lastHeartbeatAt) : "--"}
+              {activeLiveRuntime.lastHeartbeatAt ? formatDateTime(activeLiveRuntime.lastHeartbeatAt) : "--"}
             </span>
           </div>
 
@@ -1217,7 +1204,6 @@ export function BotDetailView({
 
             <SurfaceCard tone="muted" padding="sm" className="mt-5">
               <div className="text-sm text-[var(--muted)]">{bot.behavior.operatorHint}</div>
-              <div className="mt-2 text-xs text-[var(--muted)]">{railModelLabel}</div>
             </SurfaceCard>
           </SurfaceCard>
 
@@ -1231,7 +1217,6 @@ export function BotDetailView({
               <InfoRow label="Current price" value={currentPrice ? formatNumber(currentPrice, 2) : "--"} />
               <InfoRow label="Average cost" value={displayAverageEntryPrice ? formatNumber(displayAverageEntryPrice, 2) : "--"} />
               <InfoRow label="Range" value={`${formatNumber(bot.config.lowPrice, 2)} / ${formatNumber(bot.config.highPrice, 2)}`} />
-              <InfoRow label="Last trade" value={latestExecutionBadge ?? "--"} />
             </div>
           </SurfaceCard>
 

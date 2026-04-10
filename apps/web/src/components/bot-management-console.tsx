@@ -1087,14 +1087,6 @@ export function BotManagementConsole({
                     const isSelected = selectedBotId === bot.id;
                     const pnlValue = bot.metrics.pnl;
                     const roiPct = calculateBudgetRoiPct(pnlValue, bot.config.totalBudgetUsd);
-                    const latestTradeDisplay = bot.latestExecution
-                      ? formatTradeDisplay({
-                          side: bot.latestExecution.side,
-                          quoteAmount: bot.latestExecution.quoteAmount,
-                          baseAmount: bot.latestExecution.baseAmount,
-                          baseSymbol: bot.pairLabel.split("/")[0] ?? "SOL"
-                        })
-                      : null;
                     return (
                       <tr
                         key={bot.id}
@@ -1112,17 +1104,9 @@ export function BotManagementConsole({
                             <span>{BOT_BEHAVIOR_PRESETS[inferBehaviorPresetId(bot.config)].label}</span>
                             <span>{formatGoalLabel(bot.strategyMode)}</span>
                           </div>
-                          {latestTradeDisplay && bot.latestExecution?.time ? (
-                            <div className="mt-1 text-xs text-[var(--muted)]">
-                              {latestTradeDisplay.direction} {latestTradeDisplay.compact} | {formatDateTime(bot.latestExecution.time)}
-                            </div>
-                          ) : null}
                         </td>
                         <td className="px-4 py-3 text-white">
                           <div>{bot.pairLabel}</div>
-                          <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--muted)]">
-                            {bot.config.levelCount} rails = {Math.max(bot.config.levelCount - 1, 0)} cycles
-                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <span className={cn(
