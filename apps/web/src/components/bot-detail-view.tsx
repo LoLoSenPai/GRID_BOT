@@ -777,13 +777,30 @@ export function BotDetailView({
 
   const orderLines = useMemo(
     () =>
-      recentOrders.slice(0, 8).map((order) => ({
-        id: order.id,
-        side: order.side,
-        price: order.targetPrice,
-        label: `${order.side === "buy" ? "B" : "S"}${String(order.levelIndex).padStart(2, "0")}`
-      })),
-    [recentOrders]
+      bot.openCycles
+        .flatMap((cycle) => {
+          const lines: Array<{ id: string; side: "buy" | "sell"; price: number; label: string }> = [
+            {
+              id: `${cycle.id}-buy`,
+              side: "buy",
+              price: cycle.buyPrice,
+              label: `B${String(cycle.buyLevelIndex).padStart(2, "0")}`
+            }
+          ];
+
+          if (cycle.sellLevelIndex !== null && cycle.sellPrice !== null) {
+            lines.push({
+              id: `${cycle.id}-sell`,
+              side: "sell",
+              price: cycle.sellPrice,
+              label: `S${String(cycle.sellLevelIndex).padStart(2, "0")}`
+            });
+          }
+
+          return lines;
+        })
+        .sort((left, right) => left.price - right.price),
+    [bot.openCycles]
   );
 
   const liveSpotPrice = activeLiveRuntime.currentPrice ?? bot.currentPrice;
