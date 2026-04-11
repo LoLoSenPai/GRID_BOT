@@ -14,14 +14,13 @@ import {
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
   type LogicalRange,
-  type MouseEventParams,
   type SeriesMarker,
   type Time,
   type UTCTimestamp
 } from "lightweight-charts";
 
 import { bucketTimestamp, type CandlePoint, type HistoryResolution } from "@/lib/charting";
-import { formatCurrency, formatDateTime, formatNumber } from "@/lib/utils";
+import { formatCurrency } from "@/lib/utils";
 
 type GridMarker = {
   time: string;
@@ -61,6 +60,11 @@ function toUnixTimestamp(value: Time | undefined) {
 
   const businessDay = value as BusinessDay;
   return Math.floor(Date.UTC(businessDay.year, businessDay.month - 1, businessDay.day, 0, 0, 0, 0) / 1000);
+}
+
+function toTimestampMs(value: Time | undefined) {
+  const unixTimestamp = toUnixTimestamp(value);
+  return unixTimestamp === null ? null : unixTimestamp * 1000;
 }
 
 function buildLiveCandle(
@@ -148,14 +152,12 @@ export function BotPriceChart({
   cappedLabel?: string | null;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const tooltipRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const markerPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const staticPriceLinesRef = useRef<IPriceLine[]>([]);
   const spotPriceLineRef = useRef<IPriceLine | null>(null);
   const liveCandleRef = useRef<CandlestickData<Time> | null>(null);
-  const markerLookupRef = useRef<Record<number, GridMarker[]>>({});
   const visibleLogicalRangeRef = useRef<LogicalRange | null>(null);
   const isSyncingViewportRef = useRef(false);
   const isPinnedToRealtimeRef = useRef(true);
@@ -180,6 +182,16 @@ export function BotPriceChart({
     () => buildLiveCandle(candles, resolution, currentPrice, currentPriceTime, liveCandleRef.current),
     [candles, currentPrice, currentPriceTime, resolution]
   );
+  const markerAnchorTimes = useMemo(() => {
+    const anchors = orderedCandles.map((candle) => new Date(candle.time).getTime());
+    const liveAnchorMs = toTimestampMs(liveCandle?.time);
+
+    if (liveAnchorMs !== null && !anchors.includes(liveAnchorMs)) {
+      anchors.push(liveAnchorMs);
+    }
+
+    return anchors.sort((left, right) => left - right);
+  }, [liveCandle?.time, orderedCandles]);
   const latestHistorical = orderedCandles.at(-1);
   const latestDisplay = liveCandle ?? latestHistorical ?? null;
   const staticBaselinePrice = latestHistorical?.close ?? currentPrice ?? null;
@@ -196,6 +208,19 @@ export function BotPriceChart({
         return accumulator;
       }, []),
     [orderLines]
+  );
+  const levelIndexesWithOrderOverlay = useMemo(
+    () =>
+      new Set(
+        levels.reduce<number[]>((accumulator, level, index) => {
+          if (visibleOrderLines.some((line) => Math.abs(line.price - level) < 0.000001)) {
+            accumulator.push(index);
+          }
+
+          return accumulator;
+        }, [])
+      ),
+    [levels, visibleOrderLines]
   );
   const nearestLevelIndex = useMemo(
     () =>
@@ -311,54 +336,7 @@ export function BotPriceChart({
       priceLineVisible: false
     });
 
-    const tooltip = tooltipRef.current;
     const timeScale = chart.timeScale();
-    const handleCrosshairMove = (param: MouseEventParams<Time>) => {
-      if (!tooltip || !containerRef.current || !param.point || !param.time || !seriesRef.current) {
-        if (tooltip) {
-          tooltip.style.opacity = "0";
-        }
-        return;
-      }
-
-      if (
-        param.point.x < 0 ||
-        param.point.y < 0 ||
-        param.point.x > containerRef.current.clientWidth ||
-        param.point.y > 430
-      ) {
-        tooltip.style.opacity = "0";
-        return;
-      }
-
-      const candle = param.seriesData.get(seriesRef.current);
-      const unixTime = toUnixTimestamp(param.time);
-
-      if (!candle || unixTime === null) {
-        tooltip.style.opacity = "0";
-        return;
-      }
-
-      const typedCandle = candle as CandlestickData<Time>;
-      const marker = markerLookupRef.current[unixTime]?.[0];
-
-      tooltip.style.opacity = "1";
-      tooltip.style.left = `${Math.max(18, Math.min(param.point.x + 14, containerRef.current.clientWidth - 220))}px`;
-      tooltip.style.top = `${Math.max(18, Math.min(param.point.y + 14, 300))}px`;
-      tooltip.innerHTML = `
-        <div class="text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">${formatDateTime(new Date(unixTime * 1000).toISOString())}</div>
-        <div class="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-sm">
-          <span class="text-[var(--muted)]">O</span><span>${formatNumber(typedCandle.open, 2)}</span>
-          <span class="text-[var(--muted)]">H</span><span>${formatNumber(typedCandle.high, 2)}</span>
-          <span class="text-[var(--muted)]">L</span><span>${formatNumber(typedCandle.low, 2)}</span>
-          <span class="text-[var(--muted)]">C</span><span>${formatNumber(typedCandle.close, 2)}</span>
-        </div>
-        ${marker
-          ? `<div class="${marker.side === "buy" ? "mt-3 border border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--green)]" : "mt-3 border border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.08)] px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--red)]"}">${marker.label}</div>`
-          : ""
-        }
-      `;
-    };
     const handleVisibleLogicalRangeChange = (range: LogicalRange | null) => {
       if (!range || isSyncingViewportRef.current) {
         return;
@@ -380,14 +358,12 @@ export function BotPriceChart({
     seriesRef.current = series;
     markerPluginRef.current = createSeriesMarkers(series, []);
 
-    chart.subscribeCrosshairMove(handleCrosshairMove);
     timeScale.subscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
     resize();
     window.addEventListener("resize", resize);
 
     return () => {
       window.removeEventListener("resize", resize);
-      chart.unsubscribeCrosshairMove(handleCrosshairMove);
       timeScale.unsubscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
       markerPluginRef.current?.detach();
       markerPluginRef.current = null;
@@ -396,7 +372,6 @@ export function BotPriceChart({
       seriesRef.current = null;
       staticPriceLinesRef.current = [];
       spotPriceLineRef.current = null;
-      markerLookupRef.current = {};
       visibleLogicalRangeRef.current = null;
       isSyncingViewportRef.current = false;
       isPinnedToRealtimeRef.current = true;
@@ -466,25 +441,31 @@ export function BotPriceChart({
       return;
     }
 
-    const snappedMarkerEntries: Array<{ snappedTime: number; marker: GridMarker }> = [];
     const snappedMarkers = markers.reduce<SeriesMarker<Time>[]>((accumulator, marker) => {
-      const markerTime = new Date(marker.time).getTime();
-      let nearest: CandlePoint | null = null;
-      let nearestDistance = Number.POSITIVE_INFINITY;
-
-      for (const candle of orderedCandles) {
-        const candidateDistance = Math.abs(new Date(candle.time).getTime() - markerTime);
-        if (candidateDistance < nearestDistance) {
-          nearest = candle;
-          nearestDistance = candidateDistance;
-        }
-      }
-
-      if (!nearest) {
+      if (!markerAnchorTimes.length) {
         return accumulator;
       }
 
-      const snappedTime = Math.floor(new Date(nearest.time).getTime() / 1000) as UTCTimestamp;
+      const markerTime = new Date(marker.time).getTime();
+      const targetBucket = bucketTimestamp(markerTime, resolution);
+      let snappedAnchorTime = markerAnchorTimes.find((anchor) => anchor === targetBucket) ?? null;
+      let nearestDistance = Number.POSITIVE_INFINITY;
+
+      if (snappedAnchorTime === null) {
+        for (const anchor of markerAnchorTimes) {
+          const candidateDistance = Math.abs(anchor - targetBucket);
+          if (candidateDistance < nearestDistance) {
+            snappedAnchorTime = anchor;
+            nearestDistance = candidateDistance;
+          }
+        }
+      }
+
+      if (snappedAnchorTime === null) {
+        return accumulator;
+      }
+
+      const snappedTime = Math.floor(snappedAnchorTime / 1000) as UTCTimestamp;
       accumulator.push({
         time: snappedTime,
         position: marker.side === "buy" ? "belowBar" : "aboveBar",
@@ -492,19 +473,11 @@ export function BotPriceChart({
         color: marker.side === "buy" ? "#7ff5c4" : "#ff7f8e",
         text: marker.label
       });
-      snappedMarkerEntries.push({ snappedTime, marker });
       return accumulator;
     }, []);
 
-    markerLookupRef.current = snappedMarkerEntries.reduce<Record<number, GridMarker[]>>((accumulator, entry) => {
-      const bucket = accumulator[entry.snappedTime] ?? [];
-      bucket.push(entry.marker);
-      accumulator[entry.snappedTime] = bucket;
-      return accumulator;
-    }, {});
-
     markerPluginRef.current.setMarkers(snappedMarkers);
-  }, [markers, orderedCandles]);
+  }, [markerAnchorTimes, markers, resolution]);
 
   useEffect(() => {
     if (!seriesRef.current) {
@@ -536,9 +509,12 @@ export function BotPriceChart({
               ? "rgba(68,211,156,0.14)"
               : "rgba(248,200,108,0.16)",
         lineStyle: LineStyle.Dashed,
-        lineWidth: index === nearestLevelIndex ? 2 : 1,
-        axisLabelVisible: labeledLevelIndexes.includes(index),
-        title: labeledLevelIndexes.includes(index) ? `L${String(index + 1).padStart(2, "0")}` : ""
+        lineWidth: 1,
+        axisLabelVisible: labeledLevelIndexes.includes(index) && !levelIndexesWithOrderOverlay.has(index),
+        title:
+          labeledLevelIndexes.includes(index) && !levelIndexesWithOrderOverlay.has(index)
+            ? `L${String(index + 1).padStart(2, "0")}`
+            : ""
       })
     );
 
@@ -569,7 +545,7 @@ export function BotPriceChart({
     });
 
     staticPriceLinesRef.current = nextPriceLines;
-  }, [averageCost, labeledLevelIndexes, levels, nearestLevelIndex, staticBaselinePrice, visibleOrderLines]);
+  }, [averageCost, labeledLevelIndexes, levelIndexesWithOrderOverlay, levels, staticBaselinePrice, visibleOrderLines]);
 
   useEffect(() => {
     if (!seriesRef.current) {
@@ -616,11 +592,6 @@ export function BotPriceChart({
             Loading market history
           </div>
         ) : null}
-
-        <div
-          ref={tooltipRef}
-          className="pointer-events-none absolute z-20 w-[200px] border border-[var(--line)] bg-[rgba(6,10,16,0.94)] p-3 shadow-[0_18px_40px_rgba(0,0,0,0.28)] opacity-0 transition-opacity"
-        />
 
         <div ref={containerRef} className="h-[460px] w-full" />
       </div>
