@@ -2,12 +2,12 @@
 
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { ArrowUpRight, CircleOff, FlaskConical, PencilLine, Play, Plus, Square, Trash2 } from "lucide-react";
+import { ArrowUpRight, FlaskConical, Pause, PencilLine, Play, Plus, Square, Trash2 } from "lucide-react";
 import { BotMode, type StrategyMode } from "@grid-bot/core/enums";
 import { useRouter } from "next/navigation";
 
 
-import { BotConfigFields } from "@/components/bot-config-fields";
+import { BotConfigFields, type ConfigSectionId } from "@/components/bot-config-fields";
 import { BotDetailView, type BotDetailRuntimeData, type BotDetailViewData } from "@/components/bot-detail-view";
 import { BotTradingDrawer } from "@/components/bot-trading-drawer";
 
@@ -208,6 +208,8 @@ export function BotManagementConsole({
   const [selectedBotId, setSelectedBotId] = useState<string | null>(initialSelectedBotId ?? bots[0]?.id ?? null);
   const [panelKind, setPanelKind] = useState<PanelKind>(null);
   const [panelTab, setPanelTab] = useState<PanelTab>("setup");
+  const [createOpenSection, setCreateOpenSection] = useState<ConfigSectionId | null>("core");
+  const [editOpenSection, setEditOpenSection] = useState<ConfigSectionId | null>(null);
   const [createDraft, setCreateDraft] = useState<BotFormDraft>(() => normalizeBotDraftCapital(createDraftFromPreset("SOL_USDC", deskMode)));
   const [editDraft, setEditDraft] = useState<BotFormDraft | null>(() => (bots[0] ? cloneDraft(bots[0].config) : null));
   const [feedback, setFeedback] = useState<FeedbackState>(null);
@@ -469,6 +471,7 @@ export function BotManagementConsole({
     if (!hasBots) {
       setPanelKind("create");
       setPanelTab("setup");
+      setCreateOpenSection("core");
       hydratedBotIdRef.current = null;
     }
   }, [hasBots]);
@@ -634,6 +637,7 @@ export function BotManagementConsole({
     setCreateDraft((current) => normalizeBotDraftCapital({ ...current, mode: deskMode }));
     setPanelKind("create");
     setPanelTab("setup");
+    setCreateOpenSection("core");
   }
 
   function openEditPanel(botId: string, tab: PanelTab = "setup") {
@@ -641,6 +645,15 @@ export function BotManagementConsole({
     hydratedBotIdRef.current = null;
     setPanelKind("edit");
     setPanelTab(tab);
+    setEditOpenSection(null);
+  }
+
+  function toggleCreateSection(section: ConfigSectionId) {
+    setCreateOpenSection((current) => (current === section ? null : section));
+  }
+
+  function toggleEditSection(section: ConfigSectionId) {
+    setEditOpenSection((current) => (current === section ? null : section));
   }
 
   function resetCreateDraftToPreset() {
@@ -927,7 +940,7 @@ export function BotManagementConsole({
               <div className="border-b border-[var(--line)] px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
-                    <PanelTabButton active={panelKind !== "create"} onClick={() => { if (selectedBot) { setPanelKind("edit"); setPanelTab("setup"); } }} label="Configure" />
+                    <PanelTabButton active={panelKind !== "create"} onClick={() => { if (selectedBot) { openEditPanel(selectedBot.id); } }} label="Configure" />
                     <PanelTabButton active={panelKind === "create"} onClick={openCreatePanel} label="+New" />
                   </div>
                 </div>
@@ -956,6 +969,8 @@ export function BotManagementConsole({
                       onApplyBehaviorPreset={applyCreateBehaviorPreset}
                       mode="create"
                       pairLabel={BOT_PAIR_PRESETS[createDraft.presetId].label}
+                      openSection={createOpenSection}
+                      onToggleSection={toggleCreateSection}
                     />
                     <CompactDraftStatus
                       analysis={createDraftAnalysis}
@@ -986,6 +1001,8 @@ export function BotManagementConsole({
                       onApplyBehaviorPreset={applyEditBehaviorPreset}
                       mode="edit"
                       pairLabel={selectedBot.pairLabel}
+                      openSection={editOpenSection}
+                      onToggleSection={toggleEditSection}
                     />
                     {editDraftAnalysis ? (
                       <CompactDraftStatus
@@ -1016,10 +1033,11 @@ export function BotManagementConsole({
                       <div className="flex flex-wrap gap-2">
                         <CompactDeskButton
                           label={isRunning ? "Pause" : "Resume"}
-                          icon={isRunning ? CircleOff : Play}
+                          icon={isRunning ? Pause : Play}
                           onClick={() => handleStatusAction(selectedBot.id, isRunning ? "pause" : "resume")}
                           disabled={Boolean(busyKey && busyKey !== `pause-${selectedBot.id}` && busyKey !== `resume-${selectedBot.id}`)}
                           tone={isRunning ? "neutral" : "positive"}
+                          iconOnly
                         />
                         <CompactDeskButton
                           label="Stop"
@@ -1027,6 +1045,7 @@ export function BotManagementConsole({
                           onClick={() => handleStatusAction(selectedBot.id, "stop")}
                           disabled={Boolean(busyKey && busyKey !== `stop-${selectedBot.id}`)}
                           tone="negative"
+                          iconOnly
                         />
                         <CompactDeskButton
                           label="Delete"
@@ -1034,6 +1053,7 @@ export function BotManagementConsole({
                           onClick={handleDeleteBot}
                           disabled={selectedBot.status !== "stopped" || isPending || busyKey === `delete-${selectedBot.id}`}
                           tone="negative"
+                          iconOnly
                         />
                       </div>
                       {selectedBot.mode === BotMode.Paper ? (
@@ -1090,7 +1110,7 @@ export function BotManagementConsole({
                     return (
                       <tr
                         key={bot.id}
-                        onClick={() => { setSelectedBotId(bot.id); setPanelKind("edit"); setPanelTab("setup"); }}
+                        onClick={() => { openEditPanel(bot.id); }}
                         className={cn(
                           "cursor-pointer border-b border-[var(--line)] transition",
                           isSelected
@@ -1199,6 +1219,8 @@ export function BotManagementConsole({
                   onApplyBehaviorPreset={applyCreateBehaviorPreset}
                   mode="create"
                   pairLabel={BOT_PAIR_PRESETS[createDraft.presetId].label}
+                  openSection={createOpenSection}
+                  onToggleSection={toggleCreateSection}
                 />
                 <CompactDraftStatus
                   analysis={createDraftAnalysis}
@@ -1451,13 +1473,15 @@ function CompactDeskButton({
   icon: Icon,
   onClick,
   disabled,
-  tone
+  tone,
+  iconOnly = false
 }: {
   label: string;
   icon: typeof Plus;
   onClick: () => void;
   disabled?: boolean;
   tone: "neutral" | "positive" | "negative" | "amber";
+  iconOnly?: boolean;
 }) {
   const toneClass =
     tone === "positive"
@@ -1473,13 +1497,16 @@ function CompactDeskButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
+      title={label}
+      aria-label={label}
       className={cn(
-        "inline-flex h-8 items-center gap-1.5 rounded-md border px-3 font-mono text-[10px] uppercase tracking-[0.14em] transition disabled:pointer-events-none disabled:opacity-50",
+        "inline-flex h-8 items-center gap-1.5 rounded-md border font-mono text-[10px] uppercase tracking-[0.14em] transition disabled:pointer-events-none disabled:opacity-50",
+        iconOnly ? "w-8 justify-center px-0" : "px-3",
         toneClass
       )}
     >
       <Icon className="h-3 w-3 shrink-0" />
-      {label}
+      {iconOnly ? null : label}
     </button>
   );
 }

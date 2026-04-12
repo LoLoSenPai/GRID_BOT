@@ -19,6 +19,8 @@ import {
 import { Field, NumberField, SelectField, TextField, formControlClass } from "@/components/bot-console-primitives";
 import { cn, formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 
+export type ConfigSectionId = "core" | "grid" | "capital" | "execution" | "advanced";
+
 export function BotConfigFields({
   values,
   botMode,
@@ -27,7 +29,9 @@ export function BotConfigFields({
   onApplyBehaviorPreset,
   mode,
   pairLabel,
-  availableUsd
+  availableUsd,
+  openSection,
+  onToggleSection
 }: {
   values: BotFormDraft;
   botMode: BotMode;
@@ -37,6 +41,8 @@ export function BotConfigFields({
   mode: "create" | "edit";
   pairLabel: string;
   availableUsd?: number | null;
+  openSection: ConfigSectionId | null;
+  onToggleSection: (section: ConfigSectionId) => void;
 }) {
   const activeBehaviorPreset = inferBehaviorPresetId(values);
   const activePreset = BOT_BEHAVIOR_PRESETS[activeBehaviorPreset];
@@ -55,7 +61,7 @@ export function BotConfigFields({
 
   return (
     <div className="space-y-3">
-      <ConfigSection title="Core" defaultOpen>
+      <ConfigSection id="core" title="Core" open={openSection === "core"} onToggle={onToggleSection}>
         <div className="grid gap-3 sm:grid-cols-2">
           {mode === "create" ? (
             <Field label="Pair">
@@ -74,19 +80,6 @@ export function BotConfigFields({
           )}
 
           <TextField label="Name" value={values.name} onChange={(value) => onChange("name", value)} />
-        </div>
-
-        <div className="mt-3 grid gap-3 sm:grid-cols-2">
-          <Field label="Mode">
-            <div className="flex h-8 items-center rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white">
-              {botMode === BotMode.Live ? "live / jupiter" : "paper / paper"}
-            </div>
-          </Field>
-          <Field label="Execution">
-            <div className="flex h-8 items-center rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white">
-              {botMode === BotMode.Live ? "jupiter" : "paper"}
-            </div>
-          </Field>
         </div>
 
         <div className="mt-3">
@@ -123,7 +116,7 @@ export function BotConfigFields({
         </div>
       </ConfigSection>
 
-      <ConfigSection title="Grid" defaultOpen>
+      <ConfigSection id="grid" title="Grid" open={openSection === "grid"} onToggle={onToggleSection}>
         <div className="grid gap-3 sm:grid-cols-2">
           <NumberField label="Range low" value={values.lowPrice} onChange={(value) => onChange("lowPrice", value)} min={0.000001} step="any" />
           <NumberField label="Range high" value={values.highPrice} onChange={(value) => onChange("highPrice", value)} min={0.000001} step="any" />
@@ -158,7 +151,7 @@ export function BotConfigFields({
         </div>
       </ConfigSection>
 
-      <ConfigSection title="Capital" defaultOpen>
+      <ConfigSection id="capital" title="Capital" open={openSection === "capital"} onToggle={onToggleSection}>
         {availableUsd != null && botMode === BotMode.Live ? (
           <div className={cn(
             "mb-3 flex items-center justify-between rounded-md border px-2.5 py-1.5 font-mono text-[10px]",
@@ -188,7 +181,7 @@ export function BotConfigFields({
         </div>
       </ConfigSection>
 
-      <ConfigSection title="Execution">
+      <ConfigSection id="execution" title="Execution" open={openSection === "execution"} onToggle={onToggleSection}>
         <div className="grid gap-3 sm:grid-cols-2">
           <NumberField label="Confirmation delay" hint="How long a touch must persist before it becomes a signal." value={values.priceConfirmationWindowMs} onChange={(value) => onChange("priceConfirmationWindowMs", value)} min={0} step={1000} />
           <NumberField label="Rail cooldown" hint="How long a used rail stays blocked before it can arm again." value={values.levelLockMs} onChange={(value) => onChange("levelLockMs", value)} min={0} step={1000} />
@@ -199,7 +192,7 @@ export function BotConfigFields({
         </div>
       </ConfigSection>
 
-      <ConfigSection title="Advanced">
+      <ConfigSection id="advanced" title="Advanced" open={openSection === "advanced"} onToggle={onToggleSection}>
         <div className="grid gap-3 sm:grid-cols-2">
           <NumberField
             label="Min order size"
@@ -239,22 +232,30 @@ export function BotConfigFields({
 }
 
 function ConfigSection({
+  id,
   title,
   children,
-  defaultOpen = false
+  open,
+  onToggle
 }: {
+  id: ConfigSectionId;
   title: string;
   children: React.ReactNode;
-  defaultOpen?: boolean;
+  open: boolean;
+  onToggle: (section: ConfigSectionId) => void;
 }) {
   return (
-    <details open={defaultOpen} className="group rounded-md border border-[var(--line)] bg-[var(--panel-soft)]">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-3 py-2">
+    <section className="rounded-md border border-[var(--line)] bg-[var(--panel-soft)]">
+      <button
+        type="button"
+        onClick={() => onToggle(id)}
+        className="flex w-full items-center justify-between gap-4 px-3 py-2 text-left"
+      >
         <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">{title}</div>
-        <ChevronDown className="h-3.5 w-3.5 text-[var(--muted)] transition group-open:rotate-180" />
-      </summary>
-      <div className="border-t border-[var(--line)] px-3 py-3">{children}</div>
-    </details>
+        <ChevronDown className={cn("h-3.5 w-3.5 text-[var(--muted)] transition", open ? "rotate-180" : "")} />
+      </button>
+      {open ? <div className="border-t border-[var(--line)] px-3 py-3">{children}</div> : null}
+    </section>
   );
 }
 
