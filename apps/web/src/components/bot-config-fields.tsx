@@ -20,6 +20,7 @@ import { Field, NumberField, SelectField, TextField, formControlClass } from "@/
 import { cn, formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 
 export type ConfigSectionId = "core" | "grid" | "capital" | "execution" | "advanced";
+export type MinOrderMode = "auto" | "manual";
 
 export function BotConfigFields({
   values,
@@ -30,6 +31,8 @@ export function BotConfigFields({
   mode,
   pairLabel,
   availableUsd,
+  minOrderMode,
+  onMinOrderModeChange,
   openSection,
   onToggleSection
 }: {
@@ -41,6 +44,8 @@ export function BotConfigFields({
   mode: "create" | "edit";
   pairLabel: string;
   availableUsd?: number | null;
+  minOrderMode: MinOrderMode;
+  onMinOrderModeChange: (mode: MinOrderMode) => void;
   openSection: ConfigSectionId | null;
   onToggleSection: (section: ConfigSectionId) => void;
 }) {
@@ -177,7 +182,11 @@ export function BotConfigFields({
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
           <CompactMetric label="Active budget" value={formatCurrency(values.totalBudgetUsd)} hint="The whole bot budget is active by default" />
           <CompactMetric label="Per cycle" value={formatCurrency(budgetPerCycle)} hint={tradeCycleCount > 0 ? `${tradeCycleCount} adjacent cycles` : "Needs 2 rails"} />
-          <CompactMetric label="Auto min order" value={formatCurrency(suggestedMinOrder)} hint="Override manually in Advanced if needed" />
+          <CompactMetric
+            label={minOrderMode === "auto" ? "Auto min order" : "Manual min order"}
+            value={formatCurrency(minOrderMode === "auto" ? suggestedMinOrder : values.minOrderQuoteAmount)}
+            hint={minOrderMode === "auto" ? "Follows budget and rails" : `Auto target ${formatCurrency(suggestedMinOrder)}`}
+          />
         </div>
       </ConfigSection>
 
@@ -194,14 +203,49 @@ export function BotConfigFields({
 
       <ConfigSection id="advanced" title="Advanced" open={openSection === "advanced"} onToggle={onToggleSection}>
         <div className="grid gap-3 sm:grid-cols-2">
-          <NumberField
-            label="Min order size"
-            hint={`Auto target ~${formatCurrency(suggestedMinOrder)} from budget and cycles. You can override it.`}
-            value={values.minOrderQuoteAmount}
-            onChange={(value) => onChange("minOrderQuoteAmount", value)}
-            min={1}
-            step={5}
-          />
+          <div className="space-y-2">
+            <Field label="Min order mode" hint="Auto tracks budget and rails. Manual lets you force a fixed order size.">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => onMinOrderModeChange("auto")}
+                  className={cn(
+                    "rounded-md border px-2.5 py-2 text-[11px] font-medium transition",
+                    minOrderMode === "auto"
+                      ? "border-[var(--accent-line)] bg-[var(--accent-soft)] text-white"
+                      : "border-[var(--line)] bg-[var(--bg)] text-[var(--muted)] hover:bg-white/[0.04] hover:text-white"
+                  )}
+                >
+                  Auto
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onMinOrderModeChange("manual")}
+                  className={cn(
+                    "rounded-md border px-2.5 py-2 text-[11px] font-medium transition",
+                    minOrderMode === "manual"
+                      ? "border-[var(--accent-line)] bg-[var(--accent-soft)] text-white"
+                      : "border-[var(--line)] bg-[var(--bg)] text-[var(--muted)] hover:bg-white/[0.04] hover:text-white"
+                  )}
+                >
+                  Manual
+                </button>
+              </div>
+            </Field>
+            <NumberField
+              label="Min order size"
+              hint={
+                minOrderMode === "auto"
+                  ? `Auto target ${formatCurrency(suggestedMinOrder)} from budget and rails. Switch to Manual to override.`
+                  : `Manual override active. Auto target is ${formatCurrency(suggestedMinOrder)}.`
+              }
+              value={values.minOrderQuoteAmount}
+              onChange={(value) => onChange("minOrderQuoteAmount", value)}
+              min={1}
+              step={5}
+              disabled={minOrderMode === "auto"}
+            />
+          </div>
           <NumberField label="Max failures" value={values.maxConsecutiveFailures} onChange={(value) => onChange("maxConsecutiveFailures", value)} min={1} max={20} step={1} />
           <SelectField
             label="Recenter"

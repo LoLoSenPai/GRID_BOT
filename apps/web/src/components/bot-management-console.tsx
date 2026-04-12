@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 
 
 import { BotConfigFields, type ConfigSectionId } from "@/components/bot-config-fields";
+import type { MinOrderMode } from "@/components/bot-config-fields";
 import { BotDetailView, type BotDetailRuntimeData, type BotDetailViewData } from "@/components/bot-detail-view";
 import { BotTradingDrawer } from "@/components/bot-trading-drawer";
 
@@ -20,6 +21,7 @@ import {
   analyzeBotDraft,
   createDraftFromPreset,
   diffBotDraft,
+  getSuggestedMinOrderQuoteAmount,
   inferBehaviorPresetId,
   normalizeBotDraftCapital,
   type BotDraftAnalysis,
@@ -210,7 +212,13 @@ export function BotManagementConsole({
   const [panelTab, setPanelTab] = useState<PanelTab>("setup");
   const [createOpenSection, setCreateOpenSection] = useState<ConfigSectionId | null>("core");
   const [editOpenSection, setEditOpenSection] = useState<ConfigSectionId | null>(null);
-  const [createDraft, setCreateDraft] = useState<BotFormDraft>(() => normalizeBotDraftCapital(createDraftFromPreset("SOL_USDC", deskMode)));
+  const [createMinOrderMode, setCreateMinOrderMode] = useState<MinOrderMode>("auto");
+  const [editMinOrderMode, setEditMinOrderMode] = useState<MinOrderMode>(() =>
+    bots[0] ? inferMinOrderMode(bots[0].config) : "auto"
+  );
+  const [createDraft, setCreateDraft] = useState<BotFormDraft>(() =>
+    syncDraftMinOrder(normalizeBotDraftCapital(createDraftFromPreset("SOL_USDC", deskMode)), "auto")
+  );
   const [editDraft, setEditDraft] = useState<BotFormDraft | null>(() => (bots[0] ? cloneDraft(bots[0].config) : null));
   const [feedback, setFeedback] = useState<FeedbackState>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -342,8 +350,8 @@ export function BotManagementConsole({
 
 
   useEffect(() => {
-    setCreateDraft((current) => ({ ...current, mode: deskMode }));
-  }, [deskMode]);
+    setCreateDraft((current) => syncDraftMinOrder({ ...current, mode: deskMode }, createMinOrderMode));
+  }, [createMinOrderMode, deskMode]);
 
   useEffect(() => {
     botStatusRef.current = bots.reduce<Record<string, string>>((accumulator, bot) => {
@@ -459,9 +467,11 @@ export function BotManagementConsole({
         return;
       }
 
+      setEditMinOrderMode(inferMinOrderMode(selectedBot.config));
       setEditDraft(cloneDraft(selectedBot.config));
       hydratedBotIdRef.current = selectedBot.id;
     } else {
+      setEditMinOrderMode("auto");
       setEditDraft(null);
       hydratedBotIdRef.current = null;
     }
@@ -472,6 +482,7 @@ export function BotManagementConsole({
       setPanelKind("create");
       setPanelTab("setup");
       setCreateOpenSection("core");
+      setCreateMinOrderMode("auto");
       hydratedBotIdRef.current = null;
     }
   }, [hasBots]);
@@ -531,8 +542,12 @@ export function BotManagementConsole({
   const paperBots = runtimeBots.filter((bot) => bot.mode === BotMode.Paper).length;
   const createDraftAnalysis = useMemo(() => analyzeBotDraft(createDraft, liveTradingEnabled), [createDraft, liveTradingEnabled]);
   const createDraftChanges = useMemo(
-    () => diffBotDraft(createDraftFromPreset(createDraft.presetId, createDraft.mode), createDraft),
-    [createDraft],
+    () =>
+      diffBotDraft(
+        syncDraftMinOrder(createDraftFromPreset(createDraft.presetId, createDraft.mode), createMinOrderMode),
+        createDraft
+      ),
+    [createDraft, createMinOrderMode],
   );
   const editDraftAnalysis = useMemo(() => (editDraft ? analyzeBotDraft(editDraft, liveTradingEnabled) : null), [editDraft, liveTradingEnabled]);
   const editDraftChanges = useMemo(() => (selectedBot && editDraft ? diffBotDraft(selectedBot.config, editDraft) : []), [selectedBot, editDraft]);
@@ -607,34 +622,39 @@ export function BotManagementConsole({
 
   function updateCreateDraft<K extends keyof BotFormDraft>(key: K, value: BotFormDraft[K]) {
     if (key === "presetId") {
+      setCreateMinOrderMode("auto");
       setCreateDraft((current) => {
         const nextDraft = createDraftFromPreset(
           value as BotPairPresetId,
           current.mode,
         );
-        return normalizeBotDraftCapital(applyBehaviorPreset(nextDraft, inferBehaviorPresetId(current)));
+        return syncDraftMinOrder(
+          normalizeBotDraftCapital(applyBehaviorPreset(nextDraft, inferBehaviorPresetId(current))),
+          "auto"
+        );
       });
       return;
     }
 
-    setCreateDraft((current) => normalizeBotDraftCapital({ ...current, [key]: value }));
+    setCreateDraft((current) => syncDraftMinOrder({ ...current, [key]: value }, createMinOrderMode));
   }
 
   function updateEditDraft<K extends keyof BotFormDraft>(key: K, value: BotFormDraft[K]) {
-    setEditDraft((current) => (current ? normalizeBotDraftCapital({ ...current, [key]: value }) : current));
+    setEditDraft((current) => (current ? syncDraftMinOrder({ ...current, [key]: value }, editMinOrderMode) : current));
   }
 
   function applyCreateBehaviorPreset(presetId: BotBehaviorPresetId) {
-    setCreateDraft((current) => normalizeBotDraftCapital(applyBehaviorPreset(current, presetId)));
+    setCreateDraft((current) => syncDraftMinOrder(applyBehaviorPreset(current, presetId), createMinOrderMode));
   }
 
   function applyEditBehaviorPreset(presetId: BotBehaviorPresetId) {
-    setEditDraft((current) => (current ? normalizeBotDraftCapital(applyBehaviorPreset(current, presetId)) : current));
+    setEditDraft((current) => (current ? syncDraftMinOrder(applyBehaviorPreset(current, presetId), editMinOrderMode) : current));
   }
 
   function openCreatePanel() {
     setFeedback(null);
-    setCreateDraft((current) => normalizeBotDraftCapital({ ...current, mode: deskMode }));
+    setCreateMinOrderMode("auto");
+    setCreateDraft((current) => syncDraftMinOrder({ ...current, mode: deskMode }, "auto"));
     setPanelKind("create");
     setPanelTab("setup");
     setCreateOpenSection("core");
@@ -657,16 +677,20 @@ export function BotManagementConsole({
   }
 
   function resetCreateDraftToPreset() {
+    setCreateMinOrderMode("auto");
     setCreateDraft((current) =>
-      normalizeBotDraftCapital(applyBehaviorPreset(
-        createDraftFromPreset(current.presetId, current.mode),
-        inferBehaviorPresetId(current),
-      )),
+      syncDraftMinOrder(
+        applyBehaviorPreset(
+          createDraftFromPreset(current.presetId, current.mode),
+          inferBehaviorPresetId(current),
+        ),
+        "auto"
+      ),
     );
   }
 
   function handleCreatePaperTurbo() {
-    setCreateDraft((current) => normalizeBotDraftCapital(applyPaperTurbo(current)));
+    setCreateDraft((current) => syncDraftMinOrder(applyPaperTurbo(current), createMinOrderMode));
   }
 
   function resetEditDraft() {
@@ -674,6 +698,7 @@ export function BotManagementConsole({
       return;
     }
 
+    setEditMinOrderMode(inferMinOrderMode(selectedBot.config));
     setEditDraft(cloneDraft(selectedBot.config));
   }
 
@@ -682,7 +707,17 @@ export function BotManagementConsole({
       return;
     }
 
-    setEditDraft(normalizeBotDraftCapital(applyPaperTurbo(editDraft, selectedBot.currentPrice)));
+    setEditDraft(syncDraftMinOrder(applyPaperTurbo(editDraft, selectedBot.currentPrice), editMinOrderMode));
+  }
+
+  function handleCreateMinOrderModeChange(nextMode: MinOrderMode) {
+    setCreateMinOrderMode(nextMode);
+    setCreateDraft((current) => syncDraftMinOrder(current, nextMode));
+  }
+
+  function handleEditMinOrderModeChange(nextMode: MinOrderMode) {
+    setEditMinOrderMode(nextMode);
+    setEditDraft((current) => (current ? syncDraftMinOrder(current, nextMode) : current));
   }
 
   async function handleCreateSubmit(event: FormEvent<HTMLFormElement>) {
@@ -969,6 +1004,8 @@ export function BotManagementConsole({
                       onApplyBehaviorPreset={applyCreateBehaviorPreset}
                       mode="create"
                       pairLabel={BOT_PAIR_PRESETS[createDraft.presetId].label}
+                      minOrderMode={createMinOrderMode}
+                      onMinOrderModeChange={handleCreateMinOrderModeChange}
                       openSection={createOpenSection}
                       onToggleSection={toggleCreateSection}
                     />
@@ -1001,6 +1038,8 @@ export function BotManagementConsole({
                       onApplyBehaviorPreset={applyEditBehaviorPreset}
                       mode="edit"
                       pairLabel={selectedBot.pairLabel}
+                      minOrderMode={editMinOrderMode}
+                      onMinOrderModeChange={handleEditMinOrderModeChange}
                       openSection={editOpenSection}
                       onToggleSection={toggleEditSection}
                     />
@@ -1219,6 +1258,8 @@ export function BotManagementConsole({
                   onApplyBehaviorPreset={applyCreateBehaviorPreset}
                   mode="create"
                   pairLabel={BOT_PAIR_PRESETS[createDraft.presetId].label}
+                  minOrderMode={createMinOrderMode}
+                  onMinOrderModeChange={handleCreateMinOrderModeChange}
                   openSection={createOpenSection}
                   onToggleSection={toggleCreateSection}
                 />
@@ -1262,6 +1303,24 @@ export function BotManagementConsole({
 
 function cloneDraft(draft: BotFormDraft): BotFormDraft {
   return normalizeBotDraftCapital({ ...draft });
+}
+
+function inferMinOrderMode(draft: BotFormDraft): MinOrderMode {
+  const normalizedDraft = normalizeBotDraftCapital({ ...draft });
+  const suggestedMinOrder = getSuggestedMinOrderQuoteAmount(normalizedDraft);
+  return Math.abs(normalizedDraft.minOrderQuoteAmount - suggestedMinOrder) < 0.000001 ? "auto" : "manual";
+}
+
+function syncDraftMinOrder(draft: BotFormDraft, minOrderMode: MinOrderMode): BotFormDraft {
+  const normalizedDraft = normalizeBotDraftCapital(draft);
+  if (minOrderMode === "manual") {
+    return normalizedDraft;
+  }
+
+  return {
+    ...normalizedDraft,
+    minOrderQuoteAmount: getSuggestedMinOrderQuoteAmount(normalizedDraft)
+  };
 }
 
 function buildCreatePreviewBoard(source: BotDetailViewData, draft: BotFormDraft): BotDetailViewData {

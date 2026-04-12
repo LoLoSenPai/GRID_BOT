@@ -146,6 +146,7 @@ export function NumberField({
   hint,
   value,
   onChange,
+  disabled,
   min,
   max,
   step
@@ -154,6 +155,7 @@ export function NumberField({
   hint?: string;
   value: number;
   onChange: (value: number) => void;
+  disabled?: boolean;
   min?: number;
   max?: number;
   step?: number | "any";
@@ -185,6 +187,10 @@ export function NumberField({
           }
         }}
         onBlur={() => {
+          if (disabled) {
+            return;
+          }
+
           const parsed = parseNumericDraft(draftValue);
 
           if (parsed === null) {
@@ -198,8 +204,9 @@ export function NumberField({
           }
           setDraftValue(formatNumericDraft(normalized));
         }}
-        className={formControlClass}
+        className={cn(formControlClass, disabled && "cursor-not-allowed opacity-50")}
         aria-label={label}
+        disabled={disabled}
       />
     </Field>
   );
