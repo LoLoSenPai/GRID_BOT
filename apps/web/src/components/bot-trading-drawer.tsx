@@ -6,6 +6,7 @@ import { AlertTriangle, ArrowUpRight, ClipboardList, X } from "lucide-react";
 import type { BotDetailViewData } from "@/components/bot-detail-view";
 import { StatusBadge } from "@/components/status-badge";
 import { SurfaceCard } from "@/components/surface-card";
+import { formatLevelLabel } from "@/lib/bot-runtime";
 import { formatGoalLabel, formatRailModelLabel, formatTradeDisplay } from "@/lib/trade-display";
 import { cn, formatCurrency, formatDateTime, formatNumber } from "@/lib/utils";
 
@@ -123,7 +124,7 @@ export function BotTradingDrawer({
                           >
                             {execution.side}
                           </span>
-                          <span className="text-sm font-medium text-white">L{String(execution.levelIndex).padStart(2, "0")}</span>
+                          <span className="text-sm font-medium text-white">{formatLevelLabel(execution.levelIndex)}</span>
                         </div>
                         <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">{execution.status}</div>
                       </div>
@@ -175,7 +176,7 @@ export function BotTradingDrawer({
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-medium text-white">
-                            {order.side === "buy" ? "Buy" : "Sell"} L{String(order.levelIndex).padStart(2, "0")}
+                            {order.side === "buy" ? "Buy" : "Sell"} {formatLevelLabel(order.levelIndex)}
                           </span>
                           <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">{order.status}</span>
                         </div>
@@ -217,7 +218,7 @@ export function BotTradingDrawer({
                   <SurfaceCard key={cycle.id} tone="muted" padding="sm">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <span className="text-sm font-medium text-white">
-                        L{String(cycle.buyLevelIndex).padStart(2, "0")} {"->"} {cycle.sellLevelIndex !== null ? `L${String(cycle.sellLevelIndex).padStart(2, "0")}` : "open exit"}
+                        {formatLevelLabel(cycle.buyLevelIndex)} {"->"} {cycle.sellLevelIndex !== null ? formatLevelLabel(cycle.sellLevelIndex) : "open exit"}
                       </span>
                       <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">{cycle.lotId}</span>
                     </div>

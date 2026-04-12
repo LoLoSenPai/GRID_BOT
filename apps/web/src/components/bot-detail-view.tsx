@@ -12,7 +12,7 @@ import { TimeRangeTabs } from "@/components/time-range-tabs";
 import { calculateBudgetRoiPct } from "@/lib/bot-metrics";
 import { HISTORY_RESOLUTION_OPTIONS, type CandlePoint, type HistoryResolution, bucketTimestamp, buildCandlesFromSnapshots } from "@/lib/charting";
 import type { BotFormDraft } from "@/lib/bot-management";
-import { calculateGridLevels } from "@/lib/bot-runtime";
+import { calculateGridLevels, formatLevelCode, formatLevelLabel } from "@/lib/bot-runtime";
 import { formatGoalLabel, formatTradeDisplay, formatTradeMarkerLabel } from "@/lib/trade-display";
 import { cn, formatCurrency, formatDateTime, formatNumber } from "@/lib/utils";
 
@@ -784,7 +784,7 @@ export function BotDetailView({
               id: `${cycle.id}-buy`,
               side: "buy",
               price: cycle.buyPrice,
-              label: `B${String(cycle.buyLevelIndex).padStart(2, "0")}`
+              label: `B${formatLevelCode(cycle.buyLevelIndex)}`
             }
           ];
 
@@ -793,7 +793,7 @@ export function BotDetailView({
               id: `${cycle.id}-sell`,
               side: "sell",
               price: cycle.sellPrice,
-              label: `S${String(cycle.sellLevelIndex).padStart(2, "0")}`
+              label: `S${formatLevelCode(cycle.sellLevelIndex)}`
             });
           }
 
@@ -1087,7 +1087,7 @@ export function BotDetailView({
                           >
                             {order.side}
                           </span>
-                          <div className="text-sm font-medium">Level {order.levelIndex}</div>
+                          <div className="text-sm font-medium">Level {order.levelIndex + 1}</div>
                         </div>
                         <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">{order.status}</div>
                       </div>
@@ -1161,8 +1161,8 @@ export function BotDetailView({
                     <div key={cycle.id} className="border border-[var(--line)] bg-[var(--panel-soft)] p-4">
                       <div className="flex items-center justify-between gap-3">
                         <div className="text-sm font-medium">
-                          Buy L{String(cycle.buyLevelIndex).padStart(2, "0")}
-                          {cycle.sellLevelIndex !== null ? ` -> Sell L${String(cycle.sellLevelIndex).padStart(2, "0")}` : " -> Exit open"}
+                          Buy {formatLevelLabel(cycle.buyLevelIndex)}
+                          {cycle.sellLevelIndex !== null ? ` -> Sell ${formatLevelLabel(cycle.sellLevelIndex)}` : " -> Exit open"}
                         </div>
                         <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">cycle</div>
                       </div>

@@ -77,7 +77,7 @@ export class GridStrategyService {
         requestedBaseAmount: round(requestedQuoteAmount / signal.levelPrice, 8),
         requestedQuoteAmount: Math.min(requestedQuoteAmount, round(spendableQuote, 2)),
         status: OrderStatus.Created,
-        reason: `${bot.bot.strategyMode}: buy level ${signal.levelIndex}`
+        reason: `${bot.bot.strategyMode}: buy level ${signal.levelIndex + 1}`
       };
     }
 
@@ -95,7 +95,7 @@ export class GridStrategyService {
       requestedBaseAmount: sellPlan.requestedBaseAmount,
       requestedQuoteAmount: sellPlan.requestedQuoteAmount,
       status: OrderStatus.Created,
-      reason: `${bot.bot.strategyMode}: sell level ${signal.levelIndex}`,
+      reason: `${bot.bot.strategyMode}: sell level ${signal.levelIndex + 1}`,
       matchedLotIds: sellPlan.matchedLotIds
     };
   }

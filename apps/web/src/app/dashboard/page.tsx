@@ -7,6 +7,7 @@ import { ManualRefresh } from "@/components/manual-refresh";
 import { StatusBadge } from "@/components/status-badge";
 import { SurfaceCard } from "@/components/surface-card";
 import { requireSession } from "@/lib/auth";
+import { formatLevelLabel } from "@/lib/bot-runtime";
 import { DESK_MODE_COOKIE, parseDeskMode } from "@/lib/desk-mode";
 import { getDashboardData } from "@/lib/data";
 import { formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/utils";
@@ -160,7 +161,7 @@ export default async function DashboardPage({
                       />
                     </div>
                     <div className="mt-2 text-sm text-[var(--muted)]">
-                      {execution.order.side.toUpperCase()} L{String(execution.order.levelIndex).padStart(2, "0")} | {formatCurrency(Number(execution.order.requestedQuoteAmount))}
+                      {execution.order.side.toUpperCase()} {formatLevelLabel(execution.order.levelIndex)} | {formatCurrency(Number(execution.order.requestedQuoteAmount))}
                     </div>
                     <div className="mt-3 flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">
                       <Clock3 className="h-3.5 w-3.5" />

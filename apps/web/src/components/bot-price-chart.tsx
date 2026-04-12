@@ -557,7 +557,7 @@ export function BotPriceChart({
       );
     }
 
-    visibleOrderLines.slice(-8).forEach((line) => {
+    visibleOrderLines.forEach((line) => {
       nextPriceLines.push(
         series.createPriceLine({
           price: line.price,

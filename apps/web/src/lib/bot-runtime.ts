@@ -54,6 +54,14 @@ export function getNextGridTriggers(
   };
 }
 
+export function formatLevelCode(levelIndex: number) {
+  return String(levelIndex + 1).padStart(2, "0");
+}
+
+export function formatLevelLabel(levelIndex: number) {
+  return `L${formatLevelCode(levelIndex)}`;
+}
+
 export function parsePendingSignal(
   metadata: unknown,
   confirmationWindowMs: number,
