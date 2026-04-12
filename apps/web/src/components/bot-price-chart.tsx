@@ -35,6 +35,13 @@ type GridOrderLine = {
   label: string;
 };
 
+type VisibleGridOrderLine = {
+  id: string;
+  side: "buy" | "sell" | "mixed";
+  price: number;
+  label: string;
+};
+
 const DEFAULT_VISIBLE_BARS: Record<HistoryResolution, number> = {
   "5m": 96,
   "30m": 96,
@@ -197,18 +204,37 @@ export function BotPriceChart({
   const staticBaselinePrice = latestHistorical?.close ?? currentPrice ?? null;
   const currentToneColor =
     latestDisplay && latestDisplay.close >= latestDisplay.open ? "#44d39c" : latestDisplay ? "#ff6b7a" : "#44d39c";
-  const visibleOrderLines = useMemo(
-    () =>
-      orderLines.reduce<GridOrderLine[]>((accumulator, line) => {
-        if (accumulator.some((entry) => entry.side === line.side && Math.abs(entry.price - line.price) < 0.000001)) {
-          return accumulator;
-        }
+  const visibleOrderLines = useMemo<VisibleGridOrderLine[]>(() => {
+    const grouped = orderLines.reduce<Map<string, { price: number; labels: string[]; sides: Set<"buy" | "sell"> }>>((accumulator, line) => {
+      const key = line.price.toFixed(8);
+      const existing = accumulator.get(key);
 
-        accumulator.push(line);
+      if (existing) {
+        existing.sides.add(line.side);
+        if (!existing.labels.includes(line.label)) {
+          existing.labels.push(line.label);
+        }
         return accumulator;
-      }, []),
-    [orderLines]
-  );
+      }
+
+      accumulator.set(key, {
+        price: line.price,
+        labels: [line.label],
+        sides: new Set([line.side])
+      });
+
+      return accumulator;
+    }, new Map());
+
+    return [...grouped.entries()]
+      .map(([key, entry]) => ({
+        id: key,
+        side: (entry.sides.size > 1 ? "mixed" : [...entry.sides][0] ?? "buy") as VisibleGridOrderLine["side"],
+        price: entry.price,
+        label: entry.labels.join(" / ")
+      }))
+      .sort((left, right) => left.price - right.price);
+  }, [orderLines]);
   const levelIndexesWithOrderOverlay = useMemo(
     () =>
       new Set(
@@ -535,8 +561,13 @@ export function BotPriceChart({
       nextPriceLines.push(
         series.createPriceLine({
           price: line.price,
-          color: line.side === "buy" ? "rgba(68,211,156,0.86)" : "rgba(255,107,122,0.88)",
-          lineStyle: LineStyle.Dotted,
+          color:
+            line.side === "buy"
+              ? "rgba(68,211,156,0.86)"
+              : line.side === "sell"
+                ? "rgba(255,107,122,0.88)"
+                : "rgba(121,184,255,0.9)",
+          lineStyle: line.side === "mixed" ? LineStyle.LargeDashed : LineStyle.Dotted,
           lineWidth: 2,
           axisLabelVisible: true,
           title: line.label
