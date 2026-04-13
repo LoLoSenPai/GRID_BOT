@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -172,8 +172,12 @@ export function BotPriceChart({
   const hasUserNavigatedRef = useRef(false);
   const resolutionKeyRef = useRef(resolution);
   const sourceKeyRef = useRef(sourceLabel);
+  const [liveMarkerAnchorBuckets, setLiveMarkerAnchorBuckets] = useState<number[]>([]);
 
   const orderedCandles = useMemo(() => [...candles].sort((left, right) => new Date(left.time).getTime() - new Date(right.time).getTime()), [candles]);
+  const latestHistoricalCandleTime = orderedCandles.at(-1)?.time ?? null;
+  const latestHistoricalBucket =
+    latestHistoricalCandleTime === null ? null : bucketTimestamp(new Date(latestHistoricalCandleTime).getTime(), resolution);
   const chartData = useMemo<CandlestickData<Time>[]>(
     () =>
       orderedCandles.map((candle) => ({
@@ -190,15 +194,12 @@ export function BotPriceChart({
     [candles, currentPrice, currentPriceTime, resolution]
   );
   const markerAnchorTimes = useMemo(() => {
-    const anchors = orderedCandles.map((candle) => new Date(candle.time).getTime());
-    const liveAnchorMs = toTimestampMs(liveCandle?.time);
-
-    if (liveAnchorMs !== null && !anchors.includes(liveAnchorMs)) {
-      anchors.push(liveAnchorMs);
+    const anchors = new Set<number>(orderedCandles.map((candle) => new Date(candle.time).getTime()));
+    for (const anchor of liveMarkerAnchorBuckets) {
+      anchors.add(anchor);
     }
-
-    return anchors.sort((left, right) => left - right);
-  }, [liveCandle?.time, orderedCandles]);
+    return [...anchors].sort((left, right) => left - right);
+  }, [liveMarkerAnchorBuckets, orderedCandles]);
   const latestHistorical = orderedCandles.at(-1);
   const latestDisplay = liveCandle ?? latestHistorical ?? null;
   const staticBaselinePrice = latestHistorical?.close ?? currentPrice ?? null;
@@ -308,7 +309,38 @@ export function BotPriceChart({
 
   useEffect(() => {
     liveCandleRef.current = null;
-  }, [resolution, orderedCandles.at(-1)?.time]);
+  }, [resolution, latestHistoricalCandleTime]);
+
+  useEffect(() => {
+    setLiveMarkerAnchorBuckets([]);
+  }, [resolution]);
+
+  useEffect(() => {
+    setLiveMarkerAnchorBuckets((currentAnchors) => {
+      const prunedAnchors =
+        latestHistoricalBucket === null ? currentAnchors : currentAnchors.filter((anchor) => anchor > latestHistoricalBucket);
+
+      if (!currentPriceTime) {
+        return prunedAnchors;
+      }
+
+      const liveTimestamp = new Date(currentPriceTime).getTime();
+      if (Number.isNaN(liveTimestamp)) {
+        return prunedAnchors;
+      }
+
+      const liveBucket = bucketTimestamp(liveTimestamp, resolution);
+      if (latestHistoricalBucket !== null && liveBucket <= latestHistoricalBucket) {
+        return prunedAnchors;
+      }
+
+      if (prunedAnchors.includes(liveBucket)) {
+        return prunedAnchors;
+      }
+
+      return [...prunedAnchors, liveBucket].sort((left, right) => left - right);
+    });
+  }, [currentPriceTime, latestHistoricalBucket, resolution]);
 
   useEffect(() => {
     liveCandleRef.current = liveCandle;
