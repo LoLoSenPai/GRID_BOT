@@ -47,6 +47,10 @@ function getHistoryCacheKey(symbol: keyof typeof SYMBOL_MAP, resolution: History
   return `${symbol}:${resolution}`;
 }
 
+function getLookbackHistoryCacheKey(symbol: keyof typeof SYMBOL_MAP, resolution: HistoryResolution, lookbackDays: number) {
+  return `${symbol}:${resolution}:lookback:${lookbackDays}`;
+}
+
 function getFreshHistory(symbol: keyof typeof SYMBOL_MAP, resolution: HistoryResolution) {
   const cacheKey = getHistoryCacheKey(symbol, resolution);
   const cached = historyCache.get(cacheKey);
@@ -85,9 +89,58 @@ export async function fetchMarketHistory(symbol: keyof typeof SYMBOL_MAP, resolu
 async function fetchMarketHistoryUncached(symbol: keyof typeof SYMBOL_MAP, resolution: HistoryResolution): Promise<MarketHistoryResult> {
   const env = getEnv();
   const { from, to, cappedByResolution } = getHistoryWindow(symbol, resolution);
+  return fetchHistoryWindow(symbol, resolution, { from, to, cappedByResolution, cacheKey: getHistoryCacheKey(symbol, resolution), env });
+}
+
+export async function fetchMarketHistoryLookback(
+  symbol: keyof typeof SYMBOL_MAP,
+  resolution: HistoryResolution,
+  lookbackDays: number
+): Promise<MarketHistoryResult> {
+  const normalizedLookbackDays = Math.max(1, Math.floor(lookbackDays));
+  const cacheKey = getLookbackHistoryCacheKey(symbol, resolution, normalizedLookbackDays);
+  const cached = historyCache.get(cacheKey);
+
+  if (cached && Date.now() - cached.fetchedAt <= HISTORY_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const inFlight = inFlightHistoryRequests.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const env = getEnv();
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - normalizedLookbackDays * 24 * 60 * 60;
+  const request = fetchHistoryWindow(symbol, resolution, {
+    from,
+    to,
+    cappedByResolution: false,
+    cacheKey,
+    env
+  }).finally(() => {
+    inFlightHistoryRequests.delete(cacheKey);
+  });
+
+  inFlightHistoryRequests.set(cacheKey, request);
+  return request;
+}
+
+async function fetchHistoryWindow(
+  symbol: keyof typeof SYMBOL_MAP,
+  resolution: HistoryResolution,
+  input: {
+    from: number;
+    to: number;
+    cappedByResolution: boolean;
+    cacheKey: string;
+    env: ReturnType<typeof getEnv>;
+  }
+): Promise<MarketHistoryResult> {
   const resolutionParam = getResolutionParam(resolution);
   const marketSymbol = SYMBOL_MAP[symbol];
-  const url = `${env.PYTH_HISTORY_BASE_URL}/fixed_rate@200ms/history?symbol=${encodeURIComponent(marketSymbol)}&from=${from}&to=${to}&resolution=${resolutionParam}`;
+  const url = `${input.env.PYTH_HISTORY_BASE_URL}/fixed_rate@200ms/history?symbol=${encodeURIComponent(marketSymbol)}&from=${input.from}&to=${input.to}&resolution=${resolutionParam}`;
 
   const response = await fetch(url, {
     headers: {
@@ -119,14 +172,14 @@ async function fetchMarketHistoryUncached(symbol: keyof typeof SYMBOL_MAP, resol
     meta: {
       symbol,
       resolution,
-      cappedByResolution,
-      from: new Date(from * 1000).toISOString(),
-      to: new Date(to * 1000).toISOString(),
+      cappedByResolution: input.cappedByResolution,
+      from: new Date(input.from * 1000).toISOString(),
+      to: new Date(input.to * 1000).toISOString(),
       source: "pyth-history"
     }
   };
 
-  historyCache.set(getHistoryCacheKey(symbol, resolution), {
+  historyCache.set(input.cacheKey, {
     data: result,
     fetchedAt: Date.now()
   });

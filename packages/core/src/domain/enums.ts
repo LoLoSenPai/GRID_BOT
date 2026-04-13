@@ -28,6 +28,11 @@ export enum RecenterMode {
   Auto = "auto_recenter"
 }
 
+export enum MinOrderMode {
+  Auto = "auto",
+  Manual = "manual"
+}
+
 export enum ExecutionProvider {
   Jupiter = "jupiter",
   Paper = "paper",

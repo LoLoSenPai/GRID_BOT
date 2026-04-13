@@ -6,6 +6,7 @@ export * from "./domain/contracts";
 export * from "./domain/enums";
 export * from "./domain/types";
 export * from "./services/alert-service";
+export * from "./services/backtest-lab-service";
 export * from "./services/bot-engine-service";
 export * from "./services/execution-service";
 export * from "./services/grid-strategy-service";

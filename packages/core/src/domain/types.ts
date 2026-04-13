@@ -5,6 +5,7 @@ import type {
   ExecutionProvider,
   ExecutionStatus,
   GridType,
+  MinOrderMode,
   LogLevel,
   OrderStatus,
   RecenterMode,
@@ -161,6 +162,146 @@ export interface OrderIntent {
   status: OrderStatus;
   reason: string;
   matchedLotIds?: string[];
+}
+
+export interface HistoricalCandle {
+  timestamp: Date;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+export interface BacktestMarketSeries {
+  symbol: string;
+  pair: string;
+  resolution?: string;
+  candles: HistoricalCandle[];
+}
+
+export interface BacktestConfig {
+  budgetUsd: number;
+  lowPrice: number;
+  highPrice: number;
+  levelCount: number;
+  gridType: GridType;
+  strategyMode: StrategyMode;
+  minOrderMode: MinOrderMode;
+  minOrderQuoteAmount: number;
+  maxSlippageBps: number;
+  cooldownMs: number;
+  maxOrdersPerHour: number;
+  maxDrawdownPct: number;
+  maxConsecutiveFailures: number;
+  levelLockMs: number;
+  priceConfirmationWindowMs: number;
+  recenterMode: RecenterMode;
+  outOfRangePause: boolean;
+}
+
+export interface BacktestReplayExecution {
+  id: string;
+  orderKey: string;
+  phase: "train" | "validation";
+  side: TradeSide;
+  levelIndex: number;
+  targetPrice: number;
+  fillPrice: number;
+  inputAmount: number;
+  outputAmount: number;
+  realizedPnlDelta: number;
+  status: OrderStatus;
+  reason: string;
+  blockedReasons?: string[];
+  timestamp: Date;
+  matchedLotIds?: string[];
+}
+
+export interface BacktestReplayPoint {
+  timestamp: Date;
+  price: number;
+  phase: "train" | "validation";
+  status: BotStatus;
+  availableQuoteAmount: number;
+  availableBaseAmount: number;
+  deployedQuoteAmount: number;
+  realizedPnlUsd: number;
+  unrealizedPnlUsd: number;
+  totalEquityUsd: number;
+  drawdownPct: number;
+  occupancyPct: number;
+}
+
+export interface BacktestMetrics {
+  sampleCount: number;
+  startingBudgetUsd: number;
+  endingEquityUsd: number;
+  realizedPnlUsd: number;
+  unrealizedPnlUsd: number;
+  totalPnlUsd: number;
+  returnPct: number;
+  maxDrawdownPct: number;
+  maxOccupancyPct: number;
+  timeInRangePct: number;
+  timeOutOfRangePct: number;
+  closedCycleCount: number;
+  openCycleCount: number;
+  executedBuyCount: number;
+  executedSellCount: number;
+  blockedOrderCount: number;
+}
+
+export interface BacktestRunMeta {
+  symbol: string;
+  pair: string;
+  resolution?: string;
+  candleCount: number;
+  trainCandleCount: number;
+  validationCandleCount: number;
+  splitRatio: number;
+  startAt: Date;
+  trainEndAt: Date;
+  endAt: Date;
+  estimatedIntervalMs: number;
+}
+
+export interface BacktestRunResult {
+  series: BacktestMarketSeries;
+  config: BacktestConfig;
+  replayPoints: BacktestReplayPoint[];
+  executions: BacktestReplayExecution[];
+  trainMetrics: BacktestMetrics;
+  validationMetrics: BacktestMetrics;
+  overallMetrics: BacktestMetrics;
+  meta: BacktestRunMeta;
+}
+
+export interface BacktestLeaderboardEntry {
+  rank: number;
+  config: BacktestConfig;
+  trainMetrics: BacktestMetrics;
+  validationMetrics: BacktestMetrics;
+}
+
+export interface BacktestOperatorGuidance {
+  status: "Healthy" | "Caution" | "Fragile";
+  summary: string;
+  stopRule: string;
+  timeInRangePct: number;
+  maxOccupancyPct: number;
+}
+
+export interface BacktestRecommendation {
+  bestConfig: BacktestConfig;
+  leaderboard: BacktestLeaderboardEntry[];
+  bestReplay: BacktestRunResult;
+  trainMetrics: BacktestMetrics;
+  validationMetrics: BacktestMetrics;
+  operatorGuidance: BacktestOperatorGuidance;
+  meta: BacktestRunMeta & {
+    candidateCount: number;
+    evaluatedCount: number;
+  };
 }
 
 export interface ExecutionQuote {

@@ -14,6 +14,7 @@ vi.mock("../services/wallet-service", () => ({
 }));
 
 import { JupiterExecutionAdapter } from "../adapters/jupiter-execution-adapter";
+import { TradeSide } from "../domain/enums";
 
 describe("JupiterExecutionAdapter", () => {
   const originalFetch = globalThis.fetch;
@@ -52,7 +53,7 @@ describe("JupiterExecutionAdapter", () => {
       inputMint: "USDC",
       outputMint: "SOL",
       amount: 10,
-      tradeSide: "buy",
+      tradeSide: TradeSide.Buy,
       inputDecimals: 6,
       outputDecimals: 9,
       slippageBps: 50,

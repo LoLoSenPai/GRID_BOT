@@ -155,12 +155,13 @@ function buildMarketPreviewBoard(
 export default async function BotsPage({
   searchParams
 }: {
-  searchParams?: Promise<{ botId?: string; deskMode?: string }>;
+  searchParams?: Promise<{ botId?: string; deskMode?: string; surface?: string }>;
 }) {
   await requireSession();
   const params = (await searchParams) ?? {};
   const cookieStore = await cookies();
   const deskMode = parseDeskMode(params.deskMode ?? cookieStore.get(DESK_MODE_COOKIE)?.value);
+  const initialSurfaceMode = params.surface === "lab" ? "lab" : "online";
   const bots = await getBotsOverview(deskMode);
   const liveTradingEnabled = getEnv().LIVE_TRADING_ENABLED;
   const botSymbols = new Set(bots.map((bot) => bot.baseSymbol as PreviewSymbol));
@@ -522,6 +523,7 @@ export default async function BotsPage({
         deskMode={deskMode}
         liveTradingEnabled={liveTradingEnabled}
         initialSelectedBotId={initialSelectedBotId}
+        initialSurfaceMode={initialSurfaceMode}
         botBoards={botBoards}
         marketPreviewBoards={marketPreviewBoards}
       />
