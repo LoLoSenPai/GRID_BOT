@@ -360,7 +360,7 @@ export function BacktestLabConsole({
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_400px]">
         <div className="min-w-0 border-r border-[var(--line)]">
           <div className="border-b border-[var(--line)] px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -429,21 +429,21 @@ export function BacktestLabConsole({
           </div>
         </div>
 
-        <aside className="flex max-h-[calc(100vh-160px)] flex-col overflow-hidden bg-[var(--panel-soft)]/60">
+        <aside className="flex max-h-[calc(100vh-160px)] min-w-0 flex-col overflow-hidden bg-[var(--panel-soft)]/60">
           <div className="border-b border-[var(--line)] px-4 py-3">
             <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">Lab scope</div>
-            <div className="mt-1 text-sm text-white">Use the selected live bot as a starting point, but keep the Lab hypothetical.</div>
+            <div className="mt-1 text-sm text-white">Use a live bot as a starting point, then test hypothetical setups before touching production.</div>
           </div>
 
           <div className="flex-1 overflow-y-auto px-4 py-3">
             <div className="space-y-3">
-              <LabSection title="Scope" defaultOpen>
+              <LabSection title="Setup" defaultOpen>
                 <div className="grid gap-3">
                   <LabField label="Prefill from">
                     <select
                       value={selectedBot?.id ?? ""}
                       onChange={(event) => onSelectBotId(event.currentTarget.value || null)}
-                      className="h-8 rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white"
+                      className="h-9 w-full min-w-0 rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white"
                     >
                       {!bots.length ? <option value="">Custom</option> : null}
                       {bots.map((bot) => (
@@ -454,7 +454,7 @@ export function BacktestLabConsole({
                     </select>
                   </LabField>
 
-                  <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-3">
                     <LabField label="Pair">
                       <div className="grid grid-cols-2 gap-2">
                         {LAB_PAIR_OPTIONS.map((option) => (
@@ -463,7 +463,7 @@ export function BacktestLabConsole({
                             type="button"
                             onClick={() => setPair(option)}
                             className={cn(
-                              "rounded-md border px-2.5 py-2 text-[11px] font-medium transition",
+                              "min-w-0 rounded-md border px-2.5 py-2 text-[11px] font-medium transition",
                               pair === option
                                 ? "border-[var(--accent-line)] bg-[var(--accent-soft)] text-white"
                                 : "border-[var(--line)] bg-[var(--bg)] text-[var(--muted)] hover:bg-white/[0.04] hover:text-white"
@@ -481,12 +481,12 @@ export function BacktestLabConsole({
                         step={10}
                         value={budgetUsd}
                         onChange={(event) => setBudgetUsd(Number(event.currentTarget.value) || 0)}
-                        className="h-8 rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white"
+                        className="h-9 w-full min-w-0 rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white"
                       />
                     </LabField>
                   </div>
 
-                  <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-3">
                     <LabField label="Lookback">
                       <TimeRangeTabs
                         options={LAB_LOOKBACK_OPTIONS.map((value) => ({ label: `${value}D`, value: String(value) }))}
@@ -495,45 +495,53 @@ export function BacktestLabConsole({
                         onChange={(next) => setLookbackDays(Number(next) as LabLookbackDays)}
                       />
                     </LabField>
-                    <LabField label="Search scope">
+                    <LabField label="Optimization mode">
                       <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
-                        Searches all current strategies and both spacing modes. No live execution knobs in v1.
+                        Tests the current strategies and both spacing modes, then ranks on validation. No live execution tweaks in v1.
                       </div>
                     </LabField>
                   </div>
 
-                  <div className="flex flex-wrap gap-2">
+                  <div className="space-y-2">
                     <button
                       type="button"
                       onClick={runRecommendation}
                       disabled={isPending || budgetUsd <= 0}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--accent-line)] bg-[linear-gradient(180deg,rgba(121,184,255,0.18),rgba(121,184,255,0.1))] px-3.5 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--accent)] shadow-[0_10px_24px_rgba(58,120,255,0.16),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-[rgba(121,184,255,0.45)] hover:bg-[linear-gradient(180deg,rgba(121,184,255,0.24),rgba(121,184,255,0.14))] hover:text-white disabled:pointer-events-none disabled:opacity-50"
+                      className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--accent-line)] bg-[linear-gradient(180deg,rgba(121,184,255,0.18),rgba(121,184,255,0.1))] px-3.5 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--accent)] shadow-[0_10px_24px_rgba(58,120,255,0.16),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-[rgba(121,184,255,0.45)] hover:bg-[linear-gradient(180deg,rgba(121,184,255,0.24),rgba(121,184,255,0.14))] hover:text-white disabled:pointer-events-none disabled:opacity-50"
                     >
-                      <FlaskConical className="h-3 w-3" />
-                      {isPending ? "Running…" : "Recommend best config"}
+                      <FlaskConical className="h-3.5 w-3.5 shrink-0" />
+                      {isPending ? "Running…" : "Find best setup"}
                     </button>
+                    <div className="text-[11px] leading-4 text-[var(--muted)]">
+                      Search the current grid model on the selected history window and rank the winner on validation, not train.
+                    </div>
                     {selectedBotReplayConfig ? (
                       <button
                         type="button"
                         onClick={() => replayConfig(selectedBotReplayConfig)}
                         disabled={isPending}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/12 hover:bg-white/[0.05] hover:text-white disabled:pointer-events-none disabled:opacity-50"
+                        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] px-3 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/12 hover:bg-white/[0.05] hover:text-white disabled:pointer-events-none disabled:opacity-50"
                       >
-                        <Play className="h-3 w-3" />
-                        Replay selected bot
+                        <Play className="h-3.5 w-3.5 shrink-0" />
+                        Replay current setup
                       </button>
+                    ) : null}
+                    {selectedBotReplayConfig ? (
+                      <div className="text-[11px] leading-4 text-[var(--muted)]">
+                        Run one backtest with the selected bot config as-is, without searching for a better one.
+                      </div>
                     ) : null}
                   </div>
                 </div>
               </LabSection>
 
-              <LabSection title="Best config" defaultOpen>
+              <LabSection title="Best setup found" defaultOpen>
                 {recommendation ? (
                   <div className="space-y-3">
-                    <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="grid grid-cols-1 gap-2">
                       <LabMetric label="Goal" value={formatGoalLabel(recommendation.bestConfig.strategyMode)} hint="Current live strategy family" />
                       <LabMetric label="Spacing" value={formatSpacingLabel(recommendation.bestConfig.gridType)} hint={`${recommendation.bestConfig.levelCount} rails`} />
-                      <LabMetric label="Range" value={`${formatNumber(recommendation.bestConfig.lowPrice, recommendation.bestConfig.lowPrice >= 1000 ? 0 : 2)} → ${formatNumber(recommendation.bestConfig.highPrice, recommendation.bestConfig.highPrice >= 1000 ? 0 : 2)}`} hint="Optimizer proposed on train closes" />
+                      <LabMetric label="Range" value={`${formatNumber(recommendation.bestConfig.lowPrice, recommendation.bestConfig.lowPrice >= 1000 ? 0 : 2)} -> ${formatNumber(recommendation.bestConfig.highPrice, recommendation.bestConfig.highPrice >= 1000 ? 0 : 2)}`} hint="Optimizer proposed on train closes" />
                       <LabMetric label="Min order" value={formatCurrency(recommendation.bestConfig.minOrderQuoteAmount)} hint={`${recommendation.bestConfig.levelCount - 1} cycles`} />
                     </div>
                     <div className={cn("border px-3 py-2 text-sm", formatHealthTone(recommendation.operatorGuidance.status))}>
@@ -543,20 +551,20 @@ export function BacktestLabConsole({
                     </div>
                   </div>
                 ) : (
-                  <div className="text-sm text-[var(--muted)]">Run the optimizer to get a concrete recommendation for this pair, budget, and window.</div>
+                  <div className="text-sm text-[var(--muted)]">Use Find best setup to search the current strategy space and surface one concrete recommendation for this pair, budget, and window.</div>
                 )}
               </LabSection>
 
-              <LabSection title="Selected replay" defaultOpen>
+              <LabSection title="Current replay" defaultOpen>
                 {displayedReplay ? (
-                  <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-2">
                     <LabMetric label="Train PnL" value={formatCurrency(displayedReplay.trainMetrics.totalPnlUsd)} hint={formatPercent(displayedReplay.trainMetrics.returnPct, 2)} />
                     <LabMetric label="Validation PnL" value={formatCurrency(displayedReplay.validationMetrics.totalPnlUsd)} hint={formatPercent(displayedReplay.validationMetrics.returnPct, 2)} />
                     <LabMetric label="Overall PnL" value={formatCurrency(displayedReplay.overallMetrics.totalPnlUsd)} hint={formatPercent(displayedReplay.overallMetrics.returnPct, 2)} />
                     <LabMetric label="Max occupancy" value={formatPercent(displayedReplay.validationMetrics.maxOccupancyPct, 1)} hint="Validation window" />
                   </div>
                 ) : (
-                  <div className="text-sm text-[var(--muted)]">No replay selected yet.</div>
+                  <div className="text-sm text-[var(--muted)]">No replay yet. Run Replay current setup to test the selected bot config, or Find best setup to search for a better one first.</div>
                 )}
               </LabSection>
             </div>
