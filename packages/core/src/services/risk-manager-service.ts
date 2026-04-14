@@ -19,7 +19,11 @@ export class RiskManagerService {
       reasons.push(`bot is ${bot.bot.status}`);
     }
 
-    if (bot.bot.status === BotStatus.OutOfRange && bot.config.recenterMode === "manual_recenter") {
+    if (
+      bot.bot.status === BotStatus.OutOfRange &&
+      bot.config.recenterMode === "manual_recenter" &&
+      signal.side === TradeSide.Buy
+    ) {
       reasons.push("bot is out of range");
     }
 
