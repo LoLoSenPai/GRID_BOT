@@ -386,6 +386,102 @@ describe("BotEngineService", () => {
     );
   });
 
+  it("sells the terminal open cycle before marking the bot out_of_range above the upper bound", async () => {
+    const aggregate = createAggregate({
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 159,
+        availableQuoteAmount: 1450,
+        availableBaseAmount: 0.4,
+        deployedQuoteAmount: 50,
+        averageEntryPrice: 125,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {
+            "5": {
+              buyLevelIndex: 5,
+              sellLevelIndex: 6,
+              lotId: "lot-top",
+              openedAt: "2026-04-02T00:00:00.000Z"
+            }
+          },
+          recenterHistory: [],
+          recentExecutions: []
+        }
+      },
+      position: {
+        baseAmount: 0.4,
+        quoteSpent: 50,
+        averageEntryPrice: 125,
+        realizedPnlUsd: 10,
+        unrealizedPnlUsd: 14,
+        totalFeesQuote: 0.1
+      },
+      openLots: [
+        {
+          id: "lot-top",
+          botId: "bot-1",
+          originalBaseAmount: 0.4,
+          remainingBaseAmount: 0.4,
+          entryPrice: 125,
+          costQuote: 50,
+          openedByExecutionId: "exec-buy-1",
+          closedByExecutionId: null,
+          openedAt: new Date("2026-04-02T00:00:00.000Z"),
+          closedAt: null
+        }
+      ],
+      config: {
+        priceConfirmationWindowMs: 0
+      }
+    });
+
+    const { engine, tradeRepository, botRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 161,
+        confidence: 0.2,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol"
+      },
+      executionReport: {
+        provider: ExecutionProvider.Paper,
+        status: ExecutionStatus.Simulated,
+        executionId: "sim-sell-top",
+        txId: null,
+        inputAmount: 0.35625,
+        outputAmount: 57,
+        effectivePrice: 160,
+        feeAmount: 0.05
+      }
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.createOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        side: TradeSide.Sell,
+        levelIndex: 6,
+        targetPrice: 160
+      })
+    );
+    expect(botRepository.updateBotStatus).toHaveBeenCalledWith(aggregate.bot.id, BotStatus.Cooldown);
+    expect(botRepository.updateBotStatus).not.toHaveBeenCalledWith(aggregate.bot.id, BotStatus.OutOfRange);
+    expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: BotStatus.Cooldown,
+        currentPrice: 161,
+        metadata: expect.objectContaining({
+          gridCycles: {}
+        })
+      })
+    );
+  });
+
   it("tracks the next actionable lower buy rail when a drop crosses an already occupied level", async () => {
     const aggregate = createAggregate({
       config: {

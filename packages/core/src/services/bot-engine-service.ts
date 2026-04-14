@@ -16,7 +16,7 @@ import type {
   SystemLogRepository,
   TradeRepository
 } from "../domain/contracts";
-import type { BotAggregate, BotRuntimeMetadata, GridCycle, PositionLot, TriggerSignal } from "../domain/types";
+import type { BotAggregate, BotRuntimeMetadata, GridCycle, MarketPrice, PositionLot, TriggerSignal } from "../domain/types";
 import { AlertService } from "./alert-service";
 import { ExecutionService } from "./execution-service";
 import { GridStrategyService } from "./grid-strategy-service";
@@ -229,13 +229,7 @@ export class BotEngineService {
   private async executeConfirmedSignal(
     aggregate: BotAggregate,
     signal: TriggerSignal,
-    marketPrice: {
-      pair: string;
-      source: string;
-      price: number;
-      confidence: number;
-      feedId: string;
-    },
+    marketPrice: MarketPrice,
     now: Date,
     levels: Array<{ index: number; price: number }>,
     crossedSignals: TriggerSignal[]
