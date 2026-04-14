@@ -100,6 +100,25 @@ export class BotEngineService {
         }
 
         if (this.isOutOfRange(aggregate, marketPrice.price)) {
+          const upperBoundarySellSignal =
+            marketPrice.price > aggregate.config.highPrice
+              ? this.getConfirmedSignalFromState(aggregate, marketPrice.price, now, levels, crossedSignals)
+              : null;
+
+          if (upperBoundarySellSignal?.side === TradeSide.Sell) {
+            const handledUpperBoundarySell = await this.executeConfirmedSignal(
+              aggregate,
+              upperBoundarySellSignal,
+              marketPrice,
+              now,
+              levels,
+              crossedSignals
+            );
+            if (handledUpperBoundarySell) {
+              return;
+            }
+          }
+
           await this.persistPriceSnapshot(botId, marketPrice, now);
           await this.handleOutOfRange(aggregate, marketPrice.price, now);
           return;
@@ -112,151 +131,13 @@ export class BotEngineService {
           return;
         }
 
-        const orderIntent = this.gridStrategyService.buildOrderIntent(aggregate, signal);
-        if (!orderIntent) {
+        const handledSignal = await this.executeConfirmedSignal(aggregate, signal, marketPrice, now, levels, crossedSignals);
+        if (!handledSignal) {
           await this.persistPassivePriceSnapshot(aggregate, marketPrice, now);
           await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null }, undefined, undefined, levels, crossedSignals);
           return;
         }
-
-        const risk = this.riskManagerService.evaluate(aggregate, signal, orderIntent, marketPrice, now);
-        if (!risk.allowed) {
-          await this.persistPriceSnapshot(botId, marketPrice, now);
-          const blockedOrder = await this.tradeRepository.createOrder({
-            ...orderIntent,
-            status: OrderStatus.Blocked
-          });
-          await this.tradeRepository.markOrderStatus(blockedOrder.id, OrderStatus.Blocked, risk.reasons.join(", "));
-          if (risk.nextStatus) {
-            await this.botRepository.updateBotStatus(botId, risk.nextStatus);
-          }
-          if (risk.alertType) {
-            await this.alertService.emit({
-              botId,
-              type: risk.alertType,
-              severity: "warning",
-              title: "Risk rule triggered",
-              message: risk.reasons.join(", ")
-            });
-          }
-          await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null }, undefined, undefined, levels, crossedSignals);
-          return;
-        }
-
-        await this.persistPriceSnapshot(botId, marketPrice, now);
-        const order = await this.tradeRepository.createOrder(orderIntent);
-        const execution = await this.tradeRepository.createExecution({
-          orderId: order.id,
-          botId,
-          provider: aggregate.bot.mode === "paper" ? ExecutionProvider.Paper : aggregate.bot.executionProvider,
-          mode: aggregate.bot.mode,
-          status: ExecutionStatus.Pending,
-          executionRef: orderIntent.orderKey,
-          txId: null,
-          quotePrice: signal.levelPrice,
-          expectedOutputAmount: null,
-          expectedFeeAmount: null,
-          executedInputAmount: null,
-          executedOutputAmount: null,
-          executedFeeAmount: null,
-          errorCode: null,
-          errorMessage: null,
-          rawReport: null,
-          completedAt: null
-        });
-
-        const report = await this.executionService.executeSwap(aggregate.bot, {
-          botId,
-          inputMint: signal.side === TradeSide.Buy ? aggregate.bot.quoteMint : aggregate.bot.baseMint,
-          outputMint: signal.side === TradeSide.Buy ? aggregate.bot.baseMint : aggregate.bot.quoteMint,
-          amount: signal.side === TradeSide.Buy ? orderIntent.requestedQuoteAmount : orderIntent.requestedBaseAmount,
-          tradeSide: signal.side,
-          inputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.quoteDecimals : aggregate.bot.baseDecimals,
-          outputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.baseDecimals : aggregate.bot.quoteDecimals,
-          slippageBps: aggregate.config.maxSlippageBps,
-          clientOrderId: orderIntent.orderKey,
-          referencePrice: orderIntent.targetPrice
-        });
-
-        await this.tradeRepository.finalizeExecution(execution.id, report, null);
-        await this.tradeRepository.markOrderStatus(
-          order.id,
-          report.status === ExecutionStatus.Failed
-            ? OrderStatus.Failed
-            : aggregate.bot.mode === "paper"
-              ? OrderStatus.Simulated
-              : OrderStatus.Submitted
-        );
-
-        if (report.status === ExecutionStatus.Failed) {
-          await this.botRepository.updateBotStatus(botId, BotStatus.Error);
-          await this.alertService.emit({
-            botId,
-            type: AlertType.ExecutionFailed,
-            severity: "critical",
-            title: `${aggregate.bot.name} execution failed`,
-            message: "Execution adapter returned a failed status."
-          });
-          await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null }, BotStatus.Error);
-          return;
-        }
-
-        const lotUpdate = this.applyExecutionToLots(aggregate.openLots, aggregate.bot.id, signal.side, report, orderIntent, orderIntent.targetPrice);
-        const nextState = this.computePortfolioState(aggregate, signal.side, report, marketPrice.price, lotUpdate.lots, lotUpdate.realizedPnlDelta);
-        const nextGridCycles = this.applyExecutionToGridCycles(aggregate, signal, lotUpdate.openedLotId, orderIntent);
-        await this.tradeRepository.replaceLots(botId, lotUpdate.lots);
-        await this.tradeRepository.upsertPosition({
-          botId,
-          baseAmount: nextState.availableBaseAmount,
-          quoteSpent: nextState.deployedQuoteAmount,
-          averageEntryPrice: nextState.averageEntryPrice ?? 0,
-          realizedPnlUsd: nextState.realizedPnlUsd,
-          unrealizedPnlUsd: nextState.unrealizedPnlUsd,
-          totalFeesQuote: round((aggregate.position?.totalFeesQuote ?? 0) + report.feeAmount, 8)
-        });
-        await this.tradeRepository.createInventorySnapshot({
-          botId,
-          baseAmount: nextState.availableBaseAmount,
-          quoteAmount: nextState.availableQuoteAmount,
-          reservedBaseAmount: 0,
-          reservedQuoteAmount: aggregate.config.reserveQuoteAmount,
-          averageCost: nextState.averageEntryPrice
-        });
-        await this.tradeRepository.createPnlSnapshot({
-          botId,
-          realizedPnlUsd: nextState.realizedPnlUsd,
-          unrealizedPnlUsd: nextState.unrealizedPnlUsd,
-          totalPnlUsd: nextState.realizedPnlUsd + nextState.unrealizedPnlUsd,
-          equityUsd: nextState.totalEquityUsd,
-          price: marketPrice.price
-        });
-        await this.botRepository.updateBotStatus(botId, BotStatus.Cooldown);
-        await this.botRepository.createStateSnapshot({
-          botId,
-          status: BotStatus.Cooldown,
-          currentPrice: marketPrice.price,
-          availableQuoteAmount: nextState.availableQuoteAmount,
-          availableBaseAmount: nextState.availableBaseAmount,
-          deployedQuoteAmount: nextState.deployedQuoteAmount,
-          averageEntryPrice: nextState.averageEntryPrice,
-          realizedPnlUsd: nextState.realizedPnlUsd,
-          unrealizedPnlUsd: nextState.unrealizedPnlUsd,
-          totalEquityUsd: nextState.totalEquityUsd,
-          consecutiveFailures: 0,
-          lastExecutionAt: now,
-          lastProcessedAt: now,
-          lastRecenterAt: aggregate.latestState?.lastRecenterAt ?? null,
-          metadata: {
-            levelLocks: {
-              ...(aggregate.latestState?.metadata.levelLocks ?? {}),
-              [String(signal.levelIndex)]: new Date(now.getTime() + aggregate.config.levelLockMs).toISOString()
-            },
-            pendingSignal: null,
-            gridCycles: nextGridCycles,
-            recenterHistory: aggregate.latestState?.metadata.recenterHistory ?? [],
-            recentExecutions: [...(aggregate.latestState?.metadata.recentExecutions ?? []), now.toISOString()].slice(-50)
-          }
-        });
+        return;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown bot engine error";
         await this.logRepository.writeLog({
@@ -343,6 +224,168 @@ export class BotEngineService {
 
   private isOutOfRange(aggregate: BotAggregate, price: number): boolean {
     return price < aggregate.config.lowPrice || price > aggregate.config.highPrice;
+  }
+
+  private async executeConfirmedSignal(
+    aggregate: BotAggregate,
+    signal: TriggerSignal,
+    marketPrice: {
+      pair: string;
+      source: string;
+      price: number;
+      confidence: number;
+      feedId: string;
+    },
+    now: Date,
+    levels: Array<{ index: number; price: number }>,
+    crossedSignals: TriggerSignal[]
+  ): Promise<boolean> {
+    const botId = aggregate.bot.id;
+    const orderIntent = this.gridStrategyService.buildOrderIntent(aggregate, signal);
+    if (!orderIntent) {
+      return false;
+    }
+
+    const risk = this.riskManagerService.evaluate(aggregate, signal, orderIntent, marketPrice, now);
+    if (!risk.allowed) {
+      await this.persistPriceSnapshot(botId, marketPrice, now);
+      const blockedOrder = await this.tradeRepository.createOrder({
+        ...orderIntent,
+        status: OrderStatus.Blocked
+      });
+      await this.tradeRepository.markOrderStatus(blockedOrder.id, OrderStatus.Blocked, risk.reasons.join(", "));
+      if (risk.nextStatus) {
+        await this.botRepository.updateBotStatus(botId, risk.nextStatus);
+      }
+      if (risk.alertType) {
+        await this.alertService.emit({
+          botId,
+          type: risk.alertType,
+          severity: "warning",
+          title: "Risk rule triggered",
+          message: risk.reasons.join(", ")
+        });
+      }
+      await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null }, undefined, undefined, levels, crossedSignals);
+      return true;
+    }
+
+    await this.persistPriceSnapshot(botId, marketPrice, now);
+    const order = await this.tradeRepository.createOrder(orderIntent);
+    const execution = await this.tradeRepository.createExecution({
+      orderId: order.id,
+      botId,
+      provider: aggregate.bot.mode === "paper" ? ExecutionProvider.Paper : aggregate.bot.executionProvider,
+      mode: aggregate.bot.mode,
+      status: ExecutionStatus.Pending,
+      executionRef: orderIntent.orderKey,
+      txId: null,
+      quotePrice: signal.levelPrice,
+      expectedOutputAmount: null,
+      expectedFeeAmount: null,
+      executedInputAmount: null,
+      executedOutputAmount: null,
+      executedFeeAmount: null,
+      errorCode: null,
+      errorMessage: null,
+      rawReport: null,
+      completedAt: null
+    });
+
+    const report = await this.executionService.executeSwap(aggregate.bot, {
+      botId,
+      inputMint: signal.side === TradeSide.Buy ? aggregate.bot.quoteMint : aggregate.bot.baseMint,
+      outputMint: signal.side === TradeSide.Buy ? aggregate.bot.baseMint : aggregate.bot.quoteMint,
+      amount: signal.side === TradeSide.Buy ? orderIntent.requestedQuoteAmount : orderIntent.requestedBaseAmount,
+      tradeSide: signal.side,
+      inputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.quoteDecimals : aggregate.bot.baseDecimals,
+      outputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.baseDecimals : aggregate.bot.quoteDecimals,
+      slippageBps: aggregate.config.maxSlippageBps,
+      clientOrderId: orderIntent.orderKey,
+      referencePrice: orderIntent.targetPrice
+    });
+
+    await this.tradeRepository.finalizeExecution(execution.id, report, null);
+    await this.tradeRepository.markOrderStatus(
+      order.id,
+      report.status === ExecutionStatus.Failed
+        ? OrderStatus.Failed
+        : aggregate.bot.mode === "paper"
+          ? OrderStatus.Simulated
+          : OrderStatus.Submitted
+    );
+
+    if (report.status === ExecutionStatus.Failed) {
+      await this.botRepository.updateBotStatus(botId, BotStatus.Error);
+      await this.alertService.emit({
+        botId,
+        type: AlertType.ExecutionFailed,
+        severity: "critical",
+        title: `${aggregate.bot.name} execution failed`,
+        message: "Execution adapter returned a failed status."
+      });
+      await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null }, BotStatus.Error);
+      return true;
+    }
+
+    const lotUpdate = this.applyExecutionToLots(aggregate.openLots, aggregate.bot.id, signal.side, report, orderIntent, orderIntent.targetPrice);
+    const nextState = this.computePortfolioState(aggregate, signal.side, report, marketPrice.price, lotUpdate.lots, lotUpdate.realizedPnlDelta);
+    const nextGridCycles = this.applyExecutionToGridCycles(aggregate, signal, lotUpdate.openedLotId, orderIntent);
+    await this.tradeRepository.replaceLots(botId, lotUpdate.lots);
+    await this.tradeRepository.upsertPosition({
+      botId,
+      baseAmount: nextState.availableBaseAmount,
+      quoteSpent: nextState.deployedQuoteAmount,
+      averageEntryPrice: nextState.averageEntryPrice ?? 0,
+      realizedPnlUsd: nextState.realizedPnlUsd,
+      unrealizedPnlUsd: nextState.unrealizedPnlUsd,
+      totalFeesQuote: round((aggregate.position?.totalFeesQuote ?? 0) + report.feeAmount, 8)
+    });
+    await this.tradeRepository.createInventorySnapshot({
+      botId,
+      baseAmount: nextState.availableBaseAmount,
+      quoteAmount: nextState.availableQuoteAmount,
+      reservedBaseAmount: 0,
+      reservedQuoteAmount: aggregate.config.reserveQuoteAmount,
+      averageCost: nextState.averageEntryPrice
+    });
+    await this.tradeRepository.createPnlSnapshot({
+      botId,
+      realizedPnlUsd: nextState.realizedPnlUsd,
+      unrealizedPnlUsd: nextState.unrealizedPnlUsd,
+      totalPnlUsd: nextState.realizedPnlUsd + nextState.unrealizedPnlUsd,
+      equityUsd: nextState.totalEquityUsd,
+      price: marketPrice.price
+    });
+    await this.botRepository.updateBotStatus(botId, BotStatus.Cooldown);
+    await this.botRepository.createStateSnapshot({
+      botId,
+      status: BotStatus.Cooldown,
+      currentPrice: marketPrice.price,
+      availableQuoteAmount: nextState.availableQuoteAmount,
+      availableBaseAmount: nextState.availableBaseAmount,
+      deployedQuoteAmount: nextState.deployedQuoteAmount,
+      averageEntryPrice: nextState.averageEntryPrice,
+      realizedPnlUsd: nextState.realizedPnlUsd,
+      unrealizedPnlUsd: nextState.unrealizedPnlUsd,
+      totalEquityUsd: nextState.totalEquityUsd,
+      consecutiveFailures: 0,
+      lastExecutionAt: now,
+      lastProcessedAt: now,
+      lastRecenterAt: aggregate.latestState?.lastRecenterAt ?? null,
+      metadata: {
+        levelLocks: {
+          ...(aggregate.latestState?.metadata.levelLocks ?? {}),
+          [String(signal.levelIndex)]: new Date(now.getTime() + aggregate.config.levelLockMs).toISOString()
+        },
+        pendingSignal: null,
+        gridCycles: nextGridCycles,
+        recenterHistory: aggregate.latestState?.metadata.recenterHistory ?? [],
+        recentExecutions: [...(aggregate.latestState?.metadata.recentExecutions ?? []), now.toISOString()].slice(-50)
+      }
+    });
+
+    return true;
   }
 
   private async handleOutOfRange(aggregate: BotAggregate, price: number, now: Date): Promise<void> {
