@@ -3,20 +3,111 @@ import { getEnv } from "@grid-bot/common";
 import { WalletService } from "@grid-bot/core";
 import { prisma } from "@grid-bot/db";
 
-export async function getAllocatedBudgetUsd(
+type ReservedQuoteSource = {
+  totalBudgetUsd: number;
+  availableQuoteAmount?: number | null;
+};
+
+export function calculateReservedQuoteUsd(
+  sources: ReservedQuoteSource[],
+): number {
+  return sources.reduce((total, source) => {
+    const fallbackBudget = Math.max(0, source.totalBudgetUsd);
+    const reservedQuote =
+      source.availableQuoteAmount == null
+        ? fallbackBudget
+        : Math.max(0, source.availableQuoteAmount);
+
+    return total + reservedQuote;
+  }, 0);
+}
+
+export function calculateAvailableBudgetUsd({
+  walletUsdc,
+  reservedQuoteUsd,
+  currentBotNonQuoteEquityUsd = 0,
+}: {
+  walletUsdc: number;
+  reservedQuoteUsd: number;
+  currentBotNonQuoteEquityUsd?: number;
+}): number {
+  return Math.max(
+    0,
+    walletUsdc - reservedQuoteUsd + currentBotNonQuoteEquityUsd,
+  );
+}
+
+export async function getReservedQuoteUsd(
   excludeBotId?: string,
 ): Promise<number> {
-  const result = await prisma.botConfig.aggregate({
-    _sum: { totalBudgetUsd: true },
+  const bots = await prisma.bot.findMany({
     where: {
-      bot: {
-        mode: BotMode.Live as never,
-        status: { notIn: ["stopped"] },
-        ...(excludeBotId ? { id: { not: excludeBotId } } : {}),
+      mode: BotMode.Live as never,
+      status: { notIn: ["stopped"] },
+      ...(excludeBotId ? { id: { not: excludeBotId } } : {}),
+    },
+    select: {
+      config: {
+        select: {
+          totalBudgetUsd: true,
+        },
+      },
+      stateSnapshots: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          availableQuoteAmount: true,
+        },
       },
     },
   });
-  return result._sum.totalBudgetUsd?.toNumber() ?? 0;
+
+  return calculateReservedQuoteUsd(
+    bots.map((bot) => ({
+      totalBudgetUsd: bot.config?.totalBudgetUsd.toNumber() ?? 0,
+      availableQuoteAmount:
+        bot.stateSnapshots[0]?.availableQuoteAmount.toNumber() ?? null,
+    })),
+  );
+}
+
+export async function getAllocatedBudgetUsd(
+  excludeBotId?: string,
+): Promise<number> {
+  return getReservedQuoteUsd(excludeBotId);
+}
+
+async function getCurrentBotNonQuoteEquityUsd(
+  botId?: string,
+): Promise<number> {
+  if (!botId) {
+    return 0;
+  }
+
+  const bot = await prisma.bot.findUnique({
+    where: { id: botId },
+    select: {
+      stateSnapshots: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          availableQuoteAmount: true,
+          totalEquityUsd: true,
+        },
+      },
+    },
+  });
+
+  const snapshot = bot?.stateSnapshots[0];
+  if (!snapshot) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    snapshot.totalEquityUsd.toNumber() -
+      snapshot.availableQuoteAmount.toNumber(),
+  );
 }
 
 export async function validateBudgetAllocation(
@@ -39,12 +130,18 @@ export async function validateBudgetAllocation(
 
   try {
     const wallet = WalletService.fromEnv();
-    const [balances, allocated] = await Promise.all([
-      wallet.getBalances(),
-      getAllocatedBudgetUsd(excludeBotId),
-    ]);
+    const [balances, reservedQuote, currentBotNonQuoteEquity] =
+      await Promise.all([
+        wallet.getBalances(),
+        getReservedQuoteUsd(excludeBotId),
+        getCurrentBotNonQuoteEquityUsd(excludeBotId),
+      ]);
 
-    const available = Math.max(0, balances.usdc - allocated);
+    const available = calculateAvailableBudgetUsd({
+      walletUsdc: balances.usdc,
+      reservedQuoteUsd: reservedQuote,
+      currentBotNonQuoteEquityUsd: currentBotNonQuoteEquity,
+    });
 
     if (totalBudgetUsd > available) {
       return {

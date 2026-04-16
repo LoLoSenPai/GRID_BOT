@@ -11,6 +11,7 @@ type WalletData = {
     usdc: number;
     wbtc: number;
     allocatedUsd: number;
+    reservedUsd?: number;
     availableUsd: number;
 };
 
@@ -119,7 +120,11 @@ export function WalletBalancePanel({ deskMode }: { deskMode: BotMode }) {
             </div>
 
             <div className="mt-2.5 border-t border-[var(--line)] pt-2 space-y-1">
-                <BalanceRow label="Allocated" value={`$${formatNumber(data.allocatedUsd, 2)}`} muted />
+                <BalanceRow
+                    label="Reserved"
+                    value={`$${formatNumber(data.reservedUsd ?? data.allocatedUsd, 2)}`}
+                    muted
+                />
                 <BalanceRow
                     label="Available"
                     value={`$${formatNumber(data.availableUsd, 2)}`}

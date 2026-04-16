@@ -3,7 +3,10 @@ import { getEnv } from "@grid-bot/common";
 import { WalletService } from "@grid-bot/core";
 
 import { readSession } from "@/lib/auth";
-import { getAllocatedBudgetUsd } from "@/lib/wallet-budget";
+import {
+  calculateAvailableBudgetUsd,
+  getReservedQuoteUsd,
+} from "@/lib/wallet-budget";
 
 export async function GET() {
   const session = await readSession();
@@ -21,9 +24,9 @@ export async function GET() {
 
   try {
     const wallet = WalletService.fromEnv();
-    const [balances, allocated] = await Promise.all([
+    const [balances, reservedQuote] = await Promise.all([
       wallet.getBalances(),
-      getAllocatedBudgetUsd(),
+      getReservedQuoteUsd(),
     ]);
 
     return NextResponse.json(
@@ -32,8 +35,12 @@ export async function GET() {
         sol: balances.sol,
         usdc: balances.usdc,
         wbtc: balances.wbtc,
-        allocatedUsd: allocated,
-        availableUsd: Math.max(0, balances.usdc - allocated),
+        allocatedUsd: reservedQuote,
+        reservedUsd: reservedQuote,
+        availableUsd: calculateAvailableBudgetUsd({
+          walletUsdc: balances.usdc,
+          reservedQuoteUsd: reservedQuote,
+        }),
       },
       { headers: { "Cache-Control": "no-store" } },
     );
