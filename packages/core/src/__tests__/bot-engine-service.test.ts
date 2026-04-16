@@ -577,7 +577,7 @@ describe("BotEngineService", () => {
     );
   });
 
-  it("tracks the next actionable lower buy rail when a drop crosses an already occupied level", async () => {
+  it("executes the next actionable lower buy rail immediately when a drop crosses an already occupied level", async () => {
     const aggregate = createAggregate({
       config: {
         totalBudgetUsd: 50,
@@ -626,7 +626,7 @@ describe("BotEngineService", () => {
       ],
     });
 
-    const { engine, tradeRepository, botRepository } = createEngine({
+    const { engine, tradeRepository } = createEngine({
       aggregate,
       marketPrice: {
         symbol: "SOL",
@@ -641,20 +641,16 @@ describe("BotEngineService", () => {
 
     await engine.runBot(aggregate.bot.id);
 
-    expect(tradeRepository.createOrder).not.toHaveBeenCalled();
-    expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
+    expect(tradeRepository.createOrder).toHaveBeenCalledWith(
       expect.objectContaining({
-        metadata: expect.objectContaining({
-          pendingSignal: expect.objectContaining({
-            levelIndex: 0,
-            side: TradeSide.Buy,
-          }),
-        }),
+        side: TradeSide.Buy,
+        levelIndex: 0,
+        targetPrice: 82,
       }),
     );
   });
 
-  it("executes an actionable crossed buy on the same tick when confirmation is disabled", async () => {
+  it("executes an actionable crossed buy on the same tick even when confirmation is enabled", async () => {
     const aggregate = createAggregate({
       config: {
         totalBudgetUsd: 50,
@@ -665,7 +661,7 @@ describe("BotEngineService", () => {
         levelCount: 4,
         gridType: GridType.Arithmetic,
         minOrderQuoteAmount: 10,
-        priceConfirmationWindowMs: 0,
+        priceConfirmationWindowMs: 10_000,
       },
       latestState: {
         ...createAggregate().latestState,
@@ -705,6 +701,95 @@ describe("BotEngineService", () => {
         side: TradeSide.Buy,
         levelIndex: 0,
         targetPrice: 82,
+      }),
+    );
+  });
+
+  it("executes an actionable crossed sell immediately even when confirmation is enabled", async () => {
+    const aggregate = createAggregate({
+      config: {
+        totalBudgetUsd: 50,
+        maxDeployableUsd: 40,
+        reserveQuoteAmount: 0,
+        lowPrice: 82,
+        highPrice: 85,
+        levelCount: 4,
+        gridType: GridType.Arithmetic,
+        minOrderQuoteAmount: 10,
+        priceConfirmationWindowMs: 10_000,
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 83.8,
+        availableQuoteAmount: 30,
+        availableBaseAmount: 0.1204,
+        deployedQuoteAmount: 10,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {
+            "1": {
+              buyLevelIndex: 1,
+              sellLevelIndex: 2,
+              lotId: "lot-1",
+              openedAt: "2026-04-08T19:00:00.000Z",
+            },
+          },
+          recenterHistory: [],
+          recentExecutions: [],
+        },
+      },
+      position: {
+        baseAmount: 0.1204,
+        quoteSpent: 10,
+        averageEntryPrice: 83.03,
+      },
+      openLots: [
+        {
+          id: "lot-1",
+          botId: "bot-1",
+          originalBaseAmount: 0.1204,
+          remainingBaseAmount: 0.1204,
+          entryPrice: 83.03,
+          costQuote: 10,
+          openedByExecutionId: "exec-1",
+          closedByExecutionId: null,
+          openedAt: new Date("2026-04-08T19:00:00.000Z"),
+          closedAt: null,
+        },
+      ],
+    });
+
+    const { engine, tradeRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 84.2,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol",
+      },
+      executionReport: {
+        provider: ExecutionProvider.Paper,
+        status: ExecutionStatus.Simulated,
+        executionId: "sim-sell-1",
+        txId: null,
+        inputAmount: 0.1204,
+        outputAmount: 10.11,
+        effectivePrice: 84,
+        feeAmount: 0,
+      },
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.createOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        side: TradeSide.Sell,
+        levelIndex: 2,
+        targetPrice: 84,
       }),
     );
   });

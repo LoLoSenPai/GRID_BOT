@@ -161,3 +161,51 @@ export async function validateBudgetAllocation(
     };
   }
 }
+
+export async function validateAdditionalBudgetAllocation(
+  additionalBudgetUsd: number,
+  mode: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (mode !== BotMode.Live || additionalBudgetUsd <= 0) {
+    return { ok: true };
+  }
+
+  const env = getEnv();
+  if (!env.EXECUTION_WALLET_SECRET_KEY_PATH) {
+    return {
+      ok: false,
+      error:
+        "Live wallet is not configured. Set EXECUTION_WALLET_SECRET_KEY_PATH before adding live bot budget.",
+    };
+  }
+
+  try {
+    const wallet = WalletService.fromEnv();
+    const [balances, reservedQuote] = await Promise.all([
+      wallet.getBalances(),
+      getReservedQuoteUsd(),
+    ]);
+
+    const available = calculateAvailableBudgetUsd({
+      walletUsdc: balances.usdc,
+      reservedQuoteUsd: reservedQuote,
+    });
+
+    if (additionalBudgetUsd > available) {
+      return {
+        ok: false,
+        error: `Insufficient unreserved USDC. Available: $${available.toFixed(2)}, additional budget requested: $${additionalBudgetUsd.toFixed(2)}. Fund your wallet (${balances.pubkey}) or reduce the top-up.`,
+      };
+    }
+
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      error:
+        error instanceof Error
+          ? `Live wallet check failed: ${error.message}`
+          : "Live wallet check failed.",
+    };
+  }
+}

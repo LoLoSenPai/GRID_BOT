@@ -452,20 +452,26 @@ export class BotEngineService {
     crossedSignals: TriggerSignal[]
   ): TriggerSignal | null {
     const pending = aggregate.latestState?.metadata.pendingSignal;
-    const immediateSignal =
-      aggregate.config.priceConfirmationWindowMs === 0
-        ? this.selectActionableCrossedSignal(aggregate, crossedSignals, now)
-        : null;
+    const actionableSignal = this.selectActionableCrossedSignal(aggregate, crossedSignals, now);
+    const recoveringFromOutOfRange =
+      aggregate.bot.status === BotStatus.OutOfRange ||
+      aggregate.latestState?.status === BotStatus.OutOfRange;
 
-    if (immediateSignal) {
+    if (
+      actionableSignal &&
+      !(recoveringFromOutOfRange && actionableSignal.side === TradeSide.Buy)
+    ) {
       return {
-        ...immediateSignal,
-        idempotencyKey: `${aggregate.bot.id}:${immediateSignal.side}:${immediateSignal.levelIndex}:${now.getTime()}`,
+        ...actionableSignal,
+        idempotencyKey: `${aggregate.bot.id}:${actionableSignal.side}:${actionableSignal.levelIndex}:${now.getTime()}`,
         triggeredAt: now
       };
     }
 
     if (!pending) {
+      return null;
+    }
+    if (recoveringFromOutOfRange && pending.side === TradeSide.Buy) {
       return null;
     }
     const pendingLevel = levels.find((level) => level.index === pending.levelIndex);
