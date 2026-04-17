@@ -1,6 +1,12 @@
 import "server-only";
 
-import { IndicatorService, type BacktestMarketSeries, type IndicatorSummary } from "@grid-bot/core";
+import {
+  IndicatorService,
+  MarketRegimeService,
+  type BacktestMarketSeries,
+  type IndicatorSummary,
+  type MarketRegimeAssessment
+} from "@grid-bot/core";
 
 import type { HistoryResolution } from "@/lib/charting";
 import { type LabLookbackDays, type LabPair, type LabResolution } from "@/lib/backtest-lab";
@@ -12,7 +18,12 @@ export async function fetchBacktestSeries(input: {
   pair: LabPair;
   resolution: LabResolution;
   lookbackDays: LabLookbackDays;
-}): Promise<{ series: BacktestMarketSeries; indicators: LabIndicatorSummary; historyWindow: { from: string; to: string; source: string } }> {
+}): Promise<{
+  series: BacktestMarketSeries;
+  indicators: LabIndicatorSummary;
+  marketRegime: MarketRegimeAssessment;
+  historyWindow: { from: string; to: string; source: string };
+}> {
   const history = await fetchMarketHistoryLookback(input.pair, input.resolution as HistoryResolution, input.lookbackDays);
   const series = {
     symbol: input.pair,
@@ -29,6 +40,7 @@ export async function fetchBacktestSeries(input: {
   };
 
   const indicators = new IndicatorService().compute(series.candles);
+  const marketRegime = new MarketRegimeService().assess(series.candles, indicators);
 
   return {
     series,
@@ -36,6 +48,7 @@ export async function fetchBacktestSeries(input: {
       latest: indicators.latest,
       hasVolume: indicators.hasVolume
     },
+    marketRegime,
     historyWindow: {
       from: history.meta.from,
       to: history.meta.to,

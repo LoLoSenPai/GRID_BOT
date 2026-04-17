@@ -246,6 +246,23 @@ export interface IndicatorSummary {
   hasVolume: boolean;
 }
 
+export type MarketRegime = "RANGE" | "TREND_UP" | "TREND_DOWN" | "CHAOTIC_HIGH_VOL";
+
+export interface MarketRegimeScores {
+  range: number;
+  trendUp: number;
+  trendDown: number;
+  chaoticHighVol: number;
+}
+
+export interface MarketRegimeAssessment {
+  regime: MarketRegime;
+  confidence: number;
+  scores: MarketRegimeScores;
+  reasons: string[];
+  evaluatedAt: Date;
+}
+
 export interface BacktestConfig {
   budgetUsd: number;
   lowPrice: number;

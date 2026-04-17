@@ -90,11 +90,25 @@ type SerializedIndicatorSummary = {
   hasVolume: boolean;
 };
 
+type SerializedMarketRegime = {
+  regime: "RANGE" | "TREND_UP" | "TREND_DOWN" | "CHAOTIC_HIGH_VOL";
+  confidence: number;
+  scores: {
+    range: number;
+    trendUp: number;
+    trendDown: number;
+    chaoticHighVol: number;
+  };
+  reasons: string[];
+  evaluatedAt: string;
+};
+
 type SerializedBacktestRunResult = {
   config: SerializedBacktestConfig;
   replayPoints: SerializedBacktestReplayPoint[];
   executions: SerializedBacktestReplayExecution[];
   indicators?: SerializedIndicatorSummary;
+  marketRegime?: SerializedMarketRegime;
   trainMetrics: SerializedBacktestMetrics;
   validationMetrics: SerializedBacktestMetrics;
   overallMetrics: SerializedBacktestMetrics;
@@ -126,6 +140,7 @@ type SerializedBacktestRunResult = {
 type SerializedBacktestRecommendation = {
   bestConfig: SerializedBacktestConfig;
   indicators?: SerializedIndicatorSummary;
+  marketRegime?: SerializedMarketRegime;
   leaderboard: Array<{
     rank: number;
     config: SerializedBacktestConfig;
@@ -244,6 +259,36 @@ function formatAdxHint(value: number | null | undefined) {
   return "Range-friendly";
 }
 
+function formatRegimeLabel(regime: SerializedMarketRegime["regime"]) {
+  switch (regime) {
+    case "TREND_UP":
+      return "Trend up";
+    case "TREND_DOWN":
+      return "Trend down";
+    case "CHAOTIC_HIGH_VOL":
+      return "High vol";
+    default:
+      return "Range";
+  }
+}
+
+function formatRegimeTone(regime: SerializedMarketRegime["regime"]) {
+  switch (regime) {
+    case "RANGE":
+      return "border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)] text-[var(--green)]";
+    case "TREND_UP":
+      return "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]";
+    case "TREND_DOWN":
+      return "border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.08)] text-[var(--red)]";
+    default:
+      return "border-[color:rgba(248,200,108,0.18)] bg-[color:rgba(248,200,108,0.08)] text-[var(--amber)]";
+  }
+}
+
+function formatRegimeScore(value: number) {
+  return formatNumber(value, value % 1 === 0 ? 0 : 1);
+}
+
 export function BacktestLabConsole({
   bots,
   selectedBotId,
@@ -282,6 +327,7 @@ export function BacktestLabConsole({
   const displayedGuidance = recommendation?.operatorGuidance ?? null;
   const displayedIndicators = displayedReplay?.indicators ?? recommendation?.indicators ?? null;
   const latestIndicators = displayedIndicators?.latest ?? null;
+  const displayedRegime = displayedReplay?.marketRegime ?? recommendation?.marketRegime ?? null;
   const chartLevels = useMemo(
     () =>
       displayedReplay
@@ -620,6 +666,42 @@ export function BacktestLabConsole({
                   </div>
                 ) : (
                   <div className="text-sm text-[var(--muted)]">No replay yet. Run Replay current setup to test the selected bot config, or Find best setup to search for a better one first.</div>
+                )}
+              </LabSection>
+
+              <LabSection title="Market regime" defaultOpen>
+                {displayedRegime ? (
+                  <div className="space-y-3">
+                    <div className={cn("rounded-md border px-3 py-2", formatRegimeTone(displayedRegime.regime))}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="font-mono text-[10px] uppercase tracking-[0.16em]">Detected regime</div>
+                          <div className="mt-1 text-base font-medium text-white">{formatRegimeLabel(displayedRegime.regime)}</div>
+                        </div>
+                        <div className="text-right font-mono text-[11px] uppercase tracking-[0.12em]">
+                          {formatPercent(displayedRegime.confidence * 100, 0)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <LabMetric label="Range" value={formatRegimeScore(displayedRegime.scores.range)} hint="Sideways score" />
+                      <LabMetric label="Trend up" value={formatRegimeScore(displayedRegime.scores.trendUp)} hint="Momentum score" />
+                      <LabMetric label="Trend down" value={formatRegimeScore(displayedRegime.scores.trendDown)} hint="Momentum score" />
+                      <LabMetric label="High vol" value={formatRegimeScore(displayedRegime.scores.chaoticHighVol)} hint="Risk score" />
+                    </div>
+                    <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
+                      <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">Reasons</div>
+                      <div className="mt-2 space-y-1.5">
+                        {displayedRegime.reasons.map((reason) => (
+                          <div key={reason} className="text-[11px] leading-4 text-[var(--muted)]">
+                            {reason}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-[var(--muted)]">Run a replay or recommendation to classify the market regime for this window.</div>
                 )}
               </LabSection>
 

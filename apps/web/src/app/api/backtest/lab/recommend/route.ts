@@ -13,7 +13,7 @@ export async function POST(request: Request) {
 
   try {
     const body = parseBacktestRecommendRequest(await request.json());
-    const { series, indicators, historyWindow } = await fetchBacktestSeries({
+    const { series, indicators, marketRegime, historyWindow } = await fetchBacktestSeries({
       pair: body.pair,
       resolution: body.resolution,
       lookbackDays: body.lookbackDays
@@ -28,9 +28,11 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ...result,
       indicators,
+      marketRegime,
       bestReplay: {
         ...result.bestReplay,
-        indicators
+        indicators,
+        marketRegime
       },
       meta: {
         ...result.meta,
