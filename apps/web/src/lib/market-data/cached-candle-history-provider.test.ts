@@ -129,7 +129,8 @@ describe("CachedCandleHistoryProvider", () => {
     expect(result.meta.cacheHit).toBe(false);
     expect(result.meta.from).toEqual(request.from);
     expect(result.candles).toHaveLength(12);
-    expect(result.candles.find((item) => item.openTime.getTime() === new Date("2026-04-17T00:50:00.000Z").getTime())?.close).toBe(250);
+    const refreshedCandle = result.candles.find((item) => item.openTime.getTime() === new Date("2026-04-17T00:50:00.000Z").getTime());
+    expect(refreshedCandle?.close).toBe(250);
   });
 
   it("falls back to stale cached candles when upstream fails", async () => {
