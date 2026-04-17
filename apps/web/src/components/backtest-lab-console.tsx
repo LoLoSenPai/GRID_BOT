@@ -64,6 +64,7 @@ type SerializedBacktestReplayExecution = {
   status: string;
   inputAmount: number;
   outputAmount: number;
+  feeAmount: number;
   timestamp: string;
 };
 
@@ -193,6 +194,7 @@ function buildReplayConfigFromDraft(draft: BotFormDraft): SerializedBacktestConf
     minOrderMode: inferMinOrderMode(normalizedDraft),
     minOrderQuoteAmount: normalizedDraft.minOrderQuoteAmount,
     maxSlippageBps: normalizedDraft.maxSlippageBps,
+    executionFeeBps: 10,
     cooldownMs: normalizedDraft.cooldownMs,
     maxOrdersPerHour: normalizedDraft.maxOrdersPerHour,
     maxDrawdownPct: normalizedDraft.maxDrawdownPct,
@@ -212,7 +214,8 @@ function getConfigSignature(config: SerializedBacktestConfig) {
     config.highPrice,
     config.budgetUsd,
     config.minOrderQuoteAmount,
-    config.maxSlippageBps
+    config.maxSlippageBps,
+    config.executionFeeBps ?? 10
   ].join(":");
 }
 

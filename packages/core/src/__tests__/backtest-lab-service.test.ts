@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { BotStatus, GridType, MinOrderMode, OrderStatus, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
 import { BacktestLabService, compareBacktestLeaderboardEntries, generateBacktestCandidates } from "../services/backtest-lab-service";
-import type { BacktestLeaderboardEntry, BacktestMarketSeries } from "../domain/types";
+import type { BacktestConfig, BacktestLeaderboardEntry, BacktestMarketSeries } from "../domain/types";
 
 const service = new BacktestLabService();
 
@@ -31,7 +31,7 @@ function baseConfig(overrides: Partial<BacktestMarketSeries> = {}) {
   } satisfies BacktestMarketSeries;
 }
 
-function runConfig(strategyMode: StrategyMode, extra?: Partial<ReturnType<typeof buildBacktestConfig>>) {
+function runConfig(strategyMode: StrategyMode, extra?: Partial<BacktestConfig>) {
   return service.replay({
     series: baseConfig(),
     config: {
@@ -41,7 +41,7 @@ function runConfig(strategyMode: StrategyMode, extra?: Partial<ReturnType<typeof
   });
 }
 
-function buildBacktestConfig(strategyMode: StrategyMode) {
+function buildBacktestConfig(strategyMode: StrategyMode): BacktestConfig {
   return {
     budgetUsd: 30,
     lowPrice: 100,
@@ -106,6 +106,15 @@ describe("BacktestLabService", () => {
     expect(accumulateBase.replayPoints.at(-1)?.availableBaseAmount ?? 0).toBeGreaterThan(
       balanced.replayPoints.at(-1)?.availableBaseAmount ?? 0
     );
+  });
+
+  it("applies execution fees to simulated equity and realized PnL", () => {
+    const noFee = runConfig(StrategyMode.AccumulateUsdc, { executionFeeBps: 0 });
+    const withFee = runConfig(StrategyMode.AccumulateUsdc, { executionFeeBps: 100 });
+
+    expect(withFee.overallMetrics.endingEquityUsd).toBeLessThan(noFee.overallMetrics.endingEquityUsd);
+    expect(withFee.overallMetrics.realizedPnlUsd).toBeLessThan(noFee.overallMetrics.realizedPnlUsd);
+    expect(withFee.executions.reduce((sum, execution) => sum + execution.feeAmount, 0)).toBeGreaterThan(0);
   });
 
   it("generates bounded candidates from train quantiles only", () => {

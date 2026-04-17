@@ -22,6 +22,7 @@ import type {
   TriggerSignal
 } from "../domain/types";
 import { round } from "../utils/math";
+import { GridDecisionService } from "./grid-decision-service";
 import { GridStrategyService } from "./grid-strategy-service";
 import { RiskManagerService } from "./risk-manager-service";
 
@@ -53,6 +54,8 @@ const STRATEGY_RUNTIME_DEFAULTS: Record<
     priceConfirmationWindowMs: 0
   }
 };
+
+const DEFAULT_BACKTEST_EXECUTION_FEE_BPS = 10;
 
 export interface BacktestReplayRequest {
   series: BacktestMarketSeries;
@@ -233,11 +236,17 @@ export function deriveBacktestOperatorGuidance(
 
 export class BacktestLabService {
   private readonly gridStrategyService: GridStrategyService;
+  private readonly gridDecisionService: GridDecisionService;
   private readonly riskManagerService: RiskManagerService;
 
-  constructor(gridStrategyService = new GridStrategyService(), riskManagerService = new RiskManagerService()) {
+  constructor(
+    gridStrategyService = new GridStrategyService(),
+    riskManagerService = new RiskManagerService(),
+    gridDecisionService = new GridDecisionService()
+  ) {
     this.gridStrategyService = gridStrategyService;
     this.riskManagerService = riskManagerService;
+    this.gridDecisionService = gridDecisionService;
   }
 
   replay(request: BacktestReplayRequest): BacktestRunResult {
@@ -355,7 +364,14 @@ export class BacktestLabService {
         state.status = this.getPassiveStatus(state, step.timestamp);
         state.bot.status = state.status;
 
-        if (this.isOutOfRange(config, step.price)) {
+        const crossedSignals = previousObservedPrice !== null ? this.gridStrategyService.detectCrossedLevels(levels, previousObservedPrice, step.price) : [];
+        const outOfRange = this.isOutOfRange(config, step.price);
+        const signal =
+          outOfRange && step.price > config.highPrice
+            ? this.getOutOfRangeRecoverySellSignal(state, step.price, step.timestamp, levels, crossedSignals, config)
+            : this.getConfirmedSignalFromState(state, step.price, step.timestamp, levels, crossedSignals, config);
+
+        if (outOfRange && !signal) {
           state.status = BotStatus.OutOfRange;
           state.bot.status = BotStatus.OutOfRange;
           state.metadata.pendingSignal = null;
@@ -364,9 +380,6 @@ export class BacktestLabService {
           previousObservedPrice = step.price;
           return;
         }
-
-        const crossedSignals = previousObservedPrice !== null ? this.gridStrategyService.detectCrossedLevels(levels, previousObservedPrice, step.price) : [];
-        const signal = this.getConfirmedSignalFromState(state, step.price, step.timestamp, levels, crossedSignals, config);
 
         if (signal) {
           const orderIntent = this.gridStrategyService.buildOrderIntent(this.toAggregate(state), signal);
@@ -469,6 +482,7 @@ export class BacktestLabService {
       minOrderMode: config.minOrderMode ?? MinOrderMode.Auto,
       minOrderQuoteAmount: Math.max(0, round(config.minOrderQuoteAmount, 2)),
       maxSlippageBps: Math.max(0, config.maxSlippageBps),
+      executionFeeBps: Math.max(0, config.executionFeeBps ?? DEFAULT_BACKTEST_EXECUTION_FEE_BPS),
       cooldownMs: Math.max(0, config.cooldownMs ?? strategyDefaults.cooldownMs),
       maxOrdersPerHour: Math.max(1, config.maxOrdersPerHour ?? strategyDefaults.maxOrdersPerHour),
       maxDrawdownPct: Math.max(0, config.maxDrawdownPct ?? 18),
@@ -488,43 +502,18 @@ export class BacktestLabService {
     crossedSignals: TriggerSignal[],
     config: BacktestConfig
   ): TriggerSignal | null {
-    const immediateSignal =
-      config.priceConfirmationWindowMs === 0 ? this.selectActionableCrossedSignal(state, crossedSignals, now) : null;
-
-    if (immediateSignal) {
-      return {
-        ...immediateSignal,
-        idempotencyKey: `${state.bot.id}:${immediateSignal.side}:${immediateSignal.levelIndex}:${now.getTime()}`,
-        triggeredAt: now
-      };
-    }
-
-    const pending = state.metadata.pendingSignal;
-    if (!pending) {
-      return null;
-    }
-
-    const pendingLevel = levels.find((level) => level.index === pending.levelIndex);
-    if (!pendingLevel) {
-      return null;
-    }
-
-    if (!this.priceStillConfirms(pending.side, pendingLevel.price, currentPrice)) {
-      return null;
-    }
-
-    if (now.getTime() - new Date(pending.firstObservedAt).getTime() < config.priceConfirmationWindowMs) {
-      return null;
-    }
-
-    return {
-      levelIndex: pending.levelIndex,
-      side: pending.side,
-      levelPrice: pendingLevel.price,
-      observedPrice: currentPrice,
-      idempotencyKey: `${state.bot.id}:${pending.side}:${pending.levelIndex}:${pending.firstObservedAt}`,
-      triggeredAt: now
-    };
+    return this.gridDecisionService.getConfirmedSignal({
+      botId: state.bot.id,
+      botStatus: state.bot.status,
+      latestStatus: state.status,
+      pendingSignal: state.metadata.pendingSignal ?? null,
+      currentPrice,
+      now,
+      levels,
+      crossedSignals,
+      priceConfirmationWindowMs: config.priceConfirmationWindowMs,
+      canBuildOrder: (signal) => Boolean(this.gridStrategyService.buildOrderIntent(this.toAggregate(state), signal))
+    });
   }
 
   private resolvePendingSignal(
@@ -535,67 +524,42 @@ export class BacktestLabService {
     now: Date,
     config: BacktestConfig
   ) {
-    const pending = state.metadata.pendingSignal;
-    const crossed = this.selectActionableCrossedSignal(state, crossedSignals, now);
-
-    if (crossed) {
-      return {
-        levelIndex: crossed.levelIndex,
-        side: crossed.side,
-        firstObservedAt:
-          pending?.levelIndex === crossed.levelIndex && pending.side === crossed.side ? pending.firstObservedAt : now.toISOString(),
-        lastObservedPrice: currentPrice
-      };
-    }
-
-    if (!pending) {
-      return null;
-    }
-
-    const pendingLevel = levels.find((level) => level.index === pending.levelIndex);
-    if (!pendingLevel) {
-      return null;
-    }
-
-    if (!this.priceStillConfirms(pending.side, pendingLevel.price, currentPrice)) {
-      return null;
-    }
-
-    if (now.getTime() - new Date(pending.firstObservedAt).getTime() < config.priceConfirmationWindowMs) {
-      return null;
-    }
-
-    return {
-      ...pending,
-      lastObservedPrice: currentPrice
-    };
+    void config;
+    return this.gridDecisionService.resolvePendingSignal({
+      botId: state.bot.id,
+      pendingSignal: state.metadata.pendingSignal ?? null,
+      crossedSignals,
+      levels,
+      currentPrice,
+      now,
+      canBuildOrder: (signal) => Boolean(this.gridStrategyService.buildOrderIntent(this.toAggregate(state), signal))
+    });
   }
 
-  private selectActionableCrossedSignal(state: BacktestRuntimeState, crossedSignals: TriggerSignal[], now: Date) {
-    for (const signal of crossedSignals) {
-      const probeSignal: TriggerSignal = {
-        ...signal,
-        idempotencyKey: `probe:${state.bot.id}:${signal.side}:${signal.levelIndex}:${now.getTime()}`,
-        triggeredAt: now
-      };
-
-      if (this.gridStrategyService.buildOrderIntent(this.toAggregate(state), probeSignal)) {
-        return signal;
-      }
-    }
-
-    return null;
-  }
-
-  private priceStillConfirms(side: TradeSide, levelPrice: number, currentPrice: number) {
-    if (side === TradeSide.Buy) {
-      return currentPrice <= levelPrice;
-    }
-
-    return currentPrice >= levelPrice;
+  private getOutOfRangeRecoverySellSignal(
+    state: BacktestRuntimeState,
+    currentPrice: number,
+    now: Date,
+    levels: Array<{ index: number; price: number }>,
+    crossedSignals: TriggerSignal[],
+    config: BacktestConfig
+  ): TriggerSignal | null {
+    return this.gridDecisionService.getOutOfRangeRecoverySellSignal({
+      botId: state.bot.id,
+      botStatus: state.bot.status,
+      latestStatus: state.status,
+      pendingSignal: state.metadata.pendingSignal ?? null,
+      currentPrice,
+      now,
+      levels,
+      crossedSignals,
+      priceConfirmationWindowMs: config.priceConfirmationWindowMs,
+      canBuildOrder: (signal) => Boolean(this.gridStrategyService.buildOrderIntent(this.toAggregate(state), signal))
+    });
   }
 
   private simulateExecution(signal: TriggerSignal, orderIntent: OrderIntent, config: BacktestConfig) {
+    const executionFeeBps = Math.max(0, config.executionFeeBps ?? DEFAULT_BACKTEST_EXECUTION_FEE_BPS);
     const fillPrice =
       signal.side === TradeSide.Buy
         ? round(signal.levelPrice * (1 + config.maxSlippageBps / 10_000), 8)
@@ -604,22 +568,24 @@ export class BacktestLabService {
     if (signal.side === TradeSide.Buy) {
       const inputAmount = orderIntent.requestedQuoteAmount;
       const outputAmount = fillPrice > 0 ? round(inputAmount / fillPrice, 8) : 0;
+      const feeAmount = round((inputAmount * executionFeeBps) / 10_000, 8);
       return {
         executionId: `bt-${signal.side}-${signal.levelIndex}-${signal.triggeredAt.getTime()}`,
         inputAmount,
         outputAmount,
-        feeAmount: 0,
+        feeAmount,
         fillPrice
       };
     }
 
     const inputAmount = orderIntent.requestedBaseAmount;
     const outputAmount = round(inputAmount * fillPrice, 8);
+    const feeAmount = round((outputAmount * executionFeeBps) / 10_000, 8);
     return {
       executionId: `bt-${signal.side}-${signal.levelIndex}-${signal.triggeredAt.getTime()}`,
       inputAmount,
       outputAmount,
-      feeAmount: 0,
+      feeAmount,
       fillPrice
     };
   }
@@ -665,6 +631,7 @@ export class BacktestLabService {
       fillPrice: report.fillPrice,
       inputAmount: report.inputAmount,
       outputAmount: report.outputAmount,
+      feeAmount: report.feeAmount,
       realizedPnlDelta: lotUpdate.realizedPnlDelta,
       status: OrderStatus.Simulated,
       reason: orderIntent.reason,
@@ -690,6 +657,7 @@ export class BacktestLabService {
       fillPrice: orderIntent.targetPrice,
       inputAmount: signal.side === TradeSide.Buy ? orderIntent.requestedQuoteAmount : orderIntent.requestedBaseAmount,
       outputAmount: 0,
+      feeAmount: 0,
       realizedPnlDelta: 0,
       status: OrderStatus.Blocked,
       reason: orderIntent.reason,
@@ -736,6 +704,7 @@ export class BacktestLabService {
     let remainingToSell = report.inputAmount;
     let realizedPnlDelta = 0;
     const quotePerBase = report.inputAmount > 0 ? report.outputAmount / report.inputAmount : levelPrice;
+    const feePerBase = report.inputAmount > 0 ? report.feeAmount / report.inputAmount : 0;
 
     const lots = currentLots
       .map((lot) => {
@@ -747,10 +716,11 @@ export class BacktestLabService {
         const costPerBase = lot.remainingBaseAmount > 0 ? lot.costQuote / lot.remainingBaseAmount : 0;
         const soldCostQuote = round(costPerBase * sold, 8);
         const soldQuoteOutput = round(quotePerBase * sold, 8);
+        const soldFeeQuote = round(feePerBase * sold, 8);
         remainingToSell = round(remainingToSell - sold, 8);
         const nextRemaining = round(lot.remainingBaseAmount - sold, 8);
         const nextCostQuote = round(Math.max(lot.costQuote - soldCostQuote, 0), 8);
-        realizedPnlDelta = round(realizedPnlDelta + soldQuoteOutput - soldCostQuote, 8);
+        realizedPnlDelta = round(realizedPnlDelta + soldQuoteOutput - soldFeeQuote - soldCostQuote, 8);
         return {
           ...lot,
           remainingBaseAmount: nextRemaining,
@@ -803,7 +773,9 @@ export class BacktestLabService {
   }
 
   private computeAvailableQuote(availableQuote: number, side: TradeSide, report: { inputAmount: number; outputAmount: number; feeAmount: number }) {
-    return side === TradeSide.Buy ? round(availableQuote - report.inputAmount, 8) : round(availableQuote + report.outputAmount, 8);
+    return side === TradeSide.Buy
+      ? round(availableQuote - report.inputAmount - report.feeAmount, 8)
+      : round(availableQuote + report.outputAmount - report.feeAmount, 8);
   }
 
   private computeAvailableBase(availableBase: number, side: TradeSide, report: { inputAmount: number; outputAmount: number; feeAmount: number }) {
@@ -966,7 +938,7 @@ export class BacktestLabService {
   }
 
   private isOutOfRange(config: BacktestConfig, price: number): boolean {
-    return price < config.lowPrice || price > config.highPrice;
+    return this.gridDecisionService.isOutOfRange(config.lowPrice, config.highPrice, price);
   }
 
   private getPassiveStatus(state: BacktestRuntimeState, now: Date): BotStatus {
@@ -1002,6 +974,7 @@ function buildCandidateConfig(input: {
     minOrderMode: MinOrderMode.Auto,
     minOrderQuoteAmount: round(input.minOrderQuoteAmount, 2),
     maxSlippageBps: 50,
+    executionFeeBps: DEFAULT_BACKTEST_EXECUTION_FEE_BPS,
     cooldownMs: strategyDefaults.cooldownMs,
     maxOrdersPerHour: strategyDefaults.maxOrdersPerHour,
     maxDrawdownPct: 18,

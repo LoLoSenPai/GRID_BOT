@@ -63,6 +63,7 @@ describe("backtest-lab request parsing", () => {
         minOrderMode: MinOrderMode.Manual,
         minOrderQuoteAmount: 25,
         maxSlippageBps: 50,
+        executionFeeBps: 12,
         cooldownMs: 15000,
         maxOrdersPerHour: 96,
         maxDrawdownPct: 18,
@@ -78,6 +79,7 @@ describe("backtest-lab request parsing", () => {
     expect(config.gridType).toBe(GridType.Geometric);
     expect(config.strategyMode).toBe(StrategyMode.AccumulateUsdc);
     expect(config.minOrderMode).toBe(MinOrderMode.Manual);
+    expect(config.executionFeeBps).toBe(12);
     expect(config.recenterMode).toBe("manual_recenter");
   });
 });

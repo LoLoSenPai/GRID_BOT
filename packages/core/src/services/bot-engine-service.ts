@@ -19,6 +19,7 @@ import type {
 import type { BotAggregate, BotRuntimeMetadata, GridCycle, MarketPrice, PositionLot, TriggerSignal } from "../domain/types";
 import { AlertService } from "./alert-service";
 import { ExecutionService } from "./execution-service";
+import { GridDecisionService } from "./grid-decision-service";
 import { GridStrategyService } from "./grid-strategy-service";
 import { shouldPersistPassivePriceSnapshot, shouldPersistPassiveState } from "./passive-runtime-throttle";
 import { RiskManagerService } from "./risk-manager-service";
@@ -30,6 +31,7 @@ export class BotEngineService {
   private readonly passivePriceSnapshotWriteAt = new Map<string, number>();
   private readonly lastObservedPriceByBotId = new Map<string, number>();
   private readonly lastHeartbeatWriteAt = new Map<string, number>();
+  private readonly gridDecisionService = new GridDecisionService();
 
   constructor(
     private readonly botRepository: BotStateRepository,
@@ -223,7 +225,7 @@ export class BotEngineService {
   }
 
   private isOutOfRange(aggregate: BotAggregate, price: number): boolean {
-    return price < aggregate.config.lowPrice || price > aggregate.config.highPrice;
+    return this.gridDecisionService.isOutOfRange(aggregate.config.lowPrice, aggregate.config.highPrice, price);
   }
 
   private async executeConfirmedSignal(
@@ -451,50 +453,18 @@ export class BotEngineService {
     levels: Array<{ index: number; price: number }>,
     crossedSignals: TriggerSignal[]
   ): TriggerSignal | null {
-    const pending = aggregate.latestState?.metadata.pendingSignal;
-    const actionableSignal = this.selectActionableCrossedSignal(aggregate, crossedSignals, now);
-    const recoveringFromOutOfRange =
-      aggregate.bot.status === BotStatus.OutOfRange ||
-      aggregate.latestState?.status === BotStatus.OutOfRange;
-
-    if (
-      actionableSignal &&
-      !(recoveringFromOutOfRange && actionableSignal.side === TradeSide.Buy)
-    ) {
-      return {
-        ...actionableSignal,
-        idempotencyKey: `${aggregate.bot.id}:${actionableSignal.side}:${actionableSignal.levelIndex}:${now.getTime()}`,
-        triggeredAt: now
-      };
-    }
-
-    if (!pending) {
-      return null;
-    }
-    if (recoveringFromOutOfRange && pending.side === TradeSide.Buy) {
-      return null;
-    }
-    const pendingLevel = levels.find((level) => level.index === pending.levelIndex);
-    if (!pendingLevel) {
-      return null;
-    }
-
-    if (!this.priceStillConfirms(pending.side, pendingLevel.price, currentPrice)) {
-      return null;
-    }
-
-    if (now.getTime() - new Date(pending.firstObservedAt).getTime() < aggregate.config.priceConfirmationWindowMs) {
-      return null;
-    }
-
-    return {
-      levelIndex: pending.levelIndex,
-      side: pending.side,
-      levelPrice: pendingLevel.price,
-      observedPrice: currentPrice,
-      idempotencyKey: `${aggregate.bot.id}:${pending.side}:${pending.levelIndex}:${pending.firstObservedAt}`,
-      triggeredAt: now
-    };
+    return this.gridDecisionService.getConfirmedSignal({
+      botId: aggregate.bot.id,
+      botStatus: aggregate.bot.status,
+      latestStatus: aggregate.latestState?.status,
+      pendingSignal: aggregate.latestState?.metadata.pendingSignal ?? null,
+      currentPrice,
+      now,
+      levels,
+      crossedSignals,
+      priceConfirmationWindowMs: aggregate.config.priceConfirmationWindowMs,
+      canBuildOrder: (signal) => Boolean(this.gridStrategyService.buildOrderIntent(aggregate, signal))
+    });
   }
 
   private getOutOfRangeRecoverySellSignal(
@@ -504,31 +474,18 @@ export class BotEngineService {
     levels: Array<{ index: number; price: number }>,
     crossedSignals: TriggerSignal[]
   ): TriggerSignal | null {
-    const confirmedCrossing = this.getConfirmedSignalFromState(aggregate, currentPrice, now, levels, crossedSignals);
-    if (confirmedCrossing?.side === TradeSide.Sell) {
-      return confirmedCrossing;
-    }
-
-    for (const level of [...levels].reverse()) {
-      if (!this.priceStillConfirms(TradeSide.Sell, level.price, currentPrice)) {
-        continue;
-      }
-
-      const candidate: TriggerSignal = {
-        levelIndex: level.index,
-        side: TradeSide.Sell,
-        levelPrice: level.price,
-        observedPrice: currentPrice,
-        idempotencyKey: `${aggregate.bot.id}:recovery:sell:${level.index}:${now.getTime()}`,
-        triggeredAt: now
-      };
-
-      if (this.gridStrategyService.buildOrderIntent(aggregate, candidate)) {
-        return candidate;
-      }
-    }
-
-    return null;
+    return this.gridDecisionService.getOutOfRangeRecoverySellSignal({
+      botId: aggregate.bot.id,
+      botStatus: aggregate.bot.status,
+      latestStatus: aggregate.latestState?.status,
+      pendingSignal: aggregate.latestState?.metadata.pendingSignal ?? null,
+      currentPrice,
+      now,
+      levels,
+      crossedSignals,
+      priceConfirmationWindowMs: aggregate.config.priceConfirmationWindowMs,
+      canBuildOrder: (signal) => Boolean(this.gridStrategyService.buildOrderIntent(aggregate, signal))
+    });
   }
 
   private async persistPassiveState(
@@ -608,56 +565,15 @@ export class BotEngineService {
     currentPrice: number,
     now: Date
   ) {
-    const pending = aggregate.latestState?.metadata.pendingSignal;
-    const crossed = this.selectActionableCrossedSignal(aggregate, crossedSignals, now);
-
-    if (crossed) {
-      return {
-        levelIndex: crossed.levelIndex,
-        side: crossed.side,
-        firstObservedAt:
-          pending?.levelIndex === crossed.levelIndex && pending.side === crossed.side ? pending.firstObservedAt : now.toISOString(),
-        lastObservedPrice: currentPrice
-      };
-    }
-
-    if (!pending) {
-      return null;
-    }
-
-    const pendingLevel = levels.find((level) => level.index === pending.levelIndex);
-    if (!pendingLevel) {
-      return null;
-    }
-
-    if (!this.priceStillConfirms(pending.side, pendingLevel.price, currentPrice)) {
-      return null;
-    }
-
-    return {
-      ...pending,
-      lastObservedPrice: currentPrice
-    };
-  }
-
-  private selectActionableCrossedSignal(aggregate: BotAggregate, crossedSignals: TriggerSignal[], now: Date) {
-    for (const signal of crossedSignals) {
-      const probeSignal: TriggerSignal = {
-        ...signal,
-        idempotencyKey: `probe:${aggregate.bot.id}:${signal.side}:${signal.levelIndex}:${now.getTime()}`,
-        triggeredAt: now
-      };
-
-      if (this.gridStrategyService.buildOrderIntent(aggregate, probeSignal)) {
-        return signal;
-      }
-    }
-
-    return null;
-  }
-
-  private priceStillConfirms(side: TradeSide, levelPrice: number, currentPrice: number) {
-    return side === TradeSide.Buy ? currentPrice <= levelPrice : currentPrice >= levelPrice;
+    return this.gridDecisionService.resolvePendingSignal({
+      botId: aggregate.bot.id,
+      pendingSignal: aggregate.latestState?.metadata.pendingSignal ?? null,
+      crossedSignals,
+      levels,
+      currentPrice,
+      now,
+      canBuildOrder: (signal) => Boolean(this.gridStrategyService.buildOrderIntent(aggregate, signal))
+    });
   }
 
   private getPassiveStatus(aggregate: BotAggregate, now: Date): BotStatus {

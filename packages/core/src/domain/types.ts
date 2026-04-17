@@ -273,6 +273,7 @@ export interface BacktestConfig {
   minOrderMode: MinOrderMode;
   minOrderQuoteAmount: number;
   maxSlippageBps: number;
+  executionFeeBps?: number;
   cooldownMs: number;
   maxOrdersPerHour: number;
   maxDrawdownPct: number;
@@ -293,6 +294,7 @@ export interface BacktestReplayExecution {
   fillPrice: number;
   inputAmount: number;
   outputAmount: number;
+  feeAmount: number;
   realizedPnlDelta: number;
   status: OrderStatus;
   reason: string;

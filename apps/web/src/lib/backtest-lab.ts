@@ -28,6 +28,7 @@ export type BacktestReplayRequestBody = BacktestRecommendRequestBody & {
     | "minOrderMode"
     | "minOrderQuoteAmount"
     | "maxSlippageBps"
+    | "executionFeeBps"
     | "cooldownMs"
     | "maxOrdersPerHour"
     | "maxDrawdownPct"
@@ -68,6 +69,14 @@ function parseFiniteNumber(value: unknown, label: string) {
   }
 
   return value;
+}
+
+function parseOptionalFiniteNumber(value: unknown, label: string, fallback: number) {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+
+  return parseFiniteNumber(value, label);
 }
 
 function parsePositiveNumber(value: unknown, label: string) {
@@ -128,6 +137,7 @@ export function parseBacktestReplayRequest(body: unknown): BacktestReplayRequest
       minOrderMode: parseEnumValue(configRecord.minOrderMode, [MinOrderMode.Auto, MinOrderMode.Manual] as const, "config.minOrderMode"),
       minOrderQuoteAmount: parsePositiveNumber(configRecord.minOrderQuoteAmount, "config.minOrderQuoteAmount"),
       maxSlippageBps: Math.max(0, parseFiniteNumber(configRecord.maxSlippageBps, "config.maxSlippageBps")),
+      executionFeeBps: Math.max(0, parseOptionalFiniteNumber(configRecord.executionFeeBps, "config.executionFeeBps", 10)),
       cooldownMs: Math.max(0, parseFiniteNumber(configRecord.cooldownMs, "config.cooldownMs")),
       maxOrdersPerHour: parsePositiveInteger(configRecord.maxOrdersPerHour, "config.maxOrdersPerHour"),
       maxDrawdownPct: Math.max(0, parseFiniteNumber(configRecord.maxDrawdownPct, "config.maxDrawdownPct")),
