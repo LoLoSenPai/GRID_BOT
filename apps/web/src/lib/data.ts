@@ -56,9 +56,7 @@ export async function getDashboardData(mode?: BotMode) {
       where: mode ? { mode: mode as never } : undefined,
       include: {
         config: true,
-        stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
-        position: true,
-        priceSnapshots: { orderBy: { capturedAt: "desc" }, take: 16 }
+        stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 }
       },
       orderBy: { createdAt: "asc" }
     }),
@@ -110,10 +108,10 @@ export async function getDashboardData(mode?: BotMode) {
       budgetUsed,
       pnl,
       equity,
-      sparkline: [...bot.priceSnapshots].reverse().map((snapshot) => Number(snapshot.price)),
+      sparkline: [],
       rangeProgress: price === null ? 0 : ((price - low) / rangeSpan) * 100,
       deployableUsage: bot.config ? (budgetUsed / Number(bot.config.maxDeployableUsd || 1)) * 100 : 0,
-      baseInventoryValue: bot.position && price ? Number(bot.position.baseAmount) * price : 0,
+      baseInventoryValue: 0,
       latestTickAt: latest?.createdAt ?? null
     };
   });
@@ -193,7 +191,6 @@ export async function getBotsOverview(mode?: BotMode) {
           }
         }
       },
-      priceSnapshots: { orderBy: { capturedAt: "desc" }, take: 48 },
       executions: { orderBy: { createdAt: "desc" }, take: 1, include: { order: true } },
       systemLogs: { where: { category: "paper_reset" }, orderBy: { createdAt: "desc" }, take: 1 },
       _count: {
@@ -220,11 +217,11 @@ export async function getBotDetail(botId: string, mode?: BotMode) {
       positionLots: {
         where: { remainingBaseAmount: { gt: 0 } },
         orderBy: { openedAt: "asc" },
-        take: 64
+        take: 32
       },
       orders: {
         orderBy: { createdAt: "desc" },
-        take: 24,
+        take: 12,
         include: {
           executions: {
             orderBy: { createdAt: "desc" },
@@ -232,10 +229,10 @@ export async function getBotDetail(botId: string, mode?: BotMode) {
           }
         }
       },
-      alerts: { orderBy: { createdAt: "desc" }, take: 16 },
-      systemLogs: { orderBy: { createdAt: "desc" }, take: 16 },
-      priceSnapshots: { orderBy: { capturedAt: "desc" }, take: 120 },
-      executions: { orderBy: { createdAt: "desc" }, take: 24, include: { order: true } }
+      alerts: { orderBy: { createdAt: "desc" }, take: 8 },
+      systemLogs: { orderBy: { createdAt: "desc" }, take: 8 },
+      priceSnapshots: { orderBy: { capturedAt: "desc" }, take: 32 },
+      executions: { orderBy: { createdAt: "desc" }, take: 12, include: { order: true } }
     }
   });
 
@@ -245,8 +242,8 @@ export async function getBotDetail(botId: string, mode?: BotMode) {
 
   return {
     ...bot,
-    alerts: bot.alerts.filter((alert) => isVisibleIncidentAlert({ ...alert, bot })).slice(0, 24),
-    systemLogs: bot.systemLogs.filter((log) => isVisibleSystemLog(log)).slice(0, 40)
+    alerts: bot.alerts.filter((alert) => isVisibleIncidentAlert({ ...alert, bot })).slice(0, 8),
+    systemLogs: bot.systemLogs.filter((log) => isVisibleSystemLog(log)).slice(0, 8)
   };
 }
 

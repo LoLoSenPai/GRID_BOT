@@ -377,17 +377,23 @@ export function BotManagementConsole({
     setDeskToasts((current) => current.filter((toast) => toast.id !== id));
   }
 
-  function scheduleLiveRefresh() {
+  function scheduleLiveRefresh(botId: string) {
     if (liveRefreshTimeoutRef.current) {
       return;
     }
 
     liveRefreshTimeoutRef.current = setTimeout(() => {
       liveRefreshTimeoutRef.current = null;
-      startTransition(() => {
-        router.refresh();
+      setBotBoardCache((current) => {
+        if (!current[botId]) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[botId];
+        return next;
       });
-    }, 850);
+    }, 1200);
   }
 
   function formatExecutionToast(
@@ -516,7 +522,7 @@ export function BotManagementConsole({
           id: executionKey,
           ...formatExecutionToast(payload.execution, botMeta?.name ?? "Bot", botMeta?.baseSymbol ?? "SOL")
         });
-        scheduleLiveRefresh();
+        scheduleLiveRefresh(payload.botId);
       } catch {
         return;
       }

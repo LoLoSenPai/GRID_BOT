@@ -196,7 +196,7 @@ export function serializeBotOverview(bot: OverviewBot) {
     executionProvider: bot.executionProvider,
     currentPrice: price,
     lastHeartbeatAt: bot.lastHeartbeatAt?.toISOString() ?? null,
-    sparkline: serializePriceSnapshots(bot.priceSnapshots).map((snapshot) => snapshot.value),
+    sparkline: [],
     latestExecution: latestExecution
       ? {
           id: latestExecution.id,
