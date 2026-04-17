@@ -9,6 +9,7 @@ const SYMBOL_MAP: Record<string, string> = {
   SOL: "Crypto.SOL/USD",
   BTC: "Crypto.BTC/USD"
 };
+const PYTH_HISTORY_TIMEOUT_MS = 8_000;
 
 interface PythHistoryResponse {
   s: "ok" | "error";
@@ -46,12 +47,20 @@ export class PythHistoryProvider implements CandleHistoryProvider {
       marketSymbol
     )}&from=${fromSeconds}&to=${toSeconds}&resolution=${resolutionParam}`;
 
-    const response = await fetch(url, {
-      headers: {
-        accept: "application/json"
-      },
-      cache: "no-store"
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), PYTH_HISTORY_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: {
+          accept: "application/json"
+        },
+        cache: "no-store",
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     if (!response.ok) {
       throw new Error(`Pyth history request failed with status ${response.status}`);

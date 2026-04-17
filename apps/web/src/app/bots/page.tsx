@@ -9,12 +9,17 @@ import { requireSession } from "@/lib/auth";
 import { BOT_BEHAVIOR_PRESETS, BOT_PAIR_PRESETS, inferBehaviorPresetId, inferPresetId, type BotFormDraft, type BotPairPresetId } from "@/lib/bot-management";
 import { buildCandlesFromSnapshots } from "@/lib/charting";
 import { DESK_MODE_COOKIE, parseDeskMode } from "@/lib/desk-mode";
-import { fetchMarketHistory } from "@/lib/market-history";
 import { getNextGridTriggers, parsePendingSignal } from "@/lib/bot-runtime";
 import { getBotsOverview } from "@/lib/data";
 
 const PREVIEW_SYMBOLS = ["SOL", "BTC"] as const;
 type PreviewSymbol = (typeof PREVIEW_SYMBOLS)[number];
+type MarketPreviewHistory = {
+  candles: BotDetailViewData["initialCandles"];
+  meta: {
+    source: string;
+  };
+} | null;
 
 function deriveExecutionAmounts(
   side: "buy" | "sell",
@@ -78,7 +83,7 @@ function getPairPresetIdFromSymbol(symbol: PreviewSymbol): BotPairPresetId {
 
 function buildMarketPreviewBoard(
   symbol: PreviewSymbol,
-  history: Awaited<ReturnType<typeof fetchMarketHistory>> | null,
+  history: MarketPreviewHistory,
   mode: BotMode
 ): BotDetailViewData {
   const presetId = getPairPresetIdFromSymbol(symbol);
@@ -165,17 +170,6 @@ export default async function BotsPage({
   const bots = await getBotsOverview(deskMode);
   const liveTradingEnabled = getEnv().LIVE_TRADING_ENABLED;
   const botSymbols = new Set(bots.map((bot) => bot.baseSymbol as PreviewSymbol));
-  const symbols = Array.from(new Set<PreviewSymbol>([...botSymbols, ...PREVIEW_SYMBOLS]));
-  const historyEntries = await Promise.all(
-    symbols.map(async (symbol) => {
-      try {
-        return [symbol, await fetchMarketHistory(symbol, "1h")] as const;
-      } catch {
-        return [symbol, null] as const;
-      }
-    })
-  );
-  const historyBySymbol = new Map(historyEntries);
 
   const viewModel = bots.map((bot) => {
     const config = bot.config;
@@ -354,7 +348,6 @@ export default async function BotsPage({
       const behaviorPresetId = inferBehaviorPresetId(draftConfig);
       const behaviorPreset = BOT_BEHAVIOR_PRESETS[behaviorPresetId];
       const lotLookup = new Map(bot.positionLots.map((lot) => [lot.id, lot]));
-      const initialHistory = historyBySymbol.get(bot.baseSymbol as "SOL" | "BTC") ?? null;
 
       const board: BotDetailViewData = {
         id: bot.id,
@@ -405,8 +398,8 @@ export default async function BotsPage({
           deployableUsage
         },
         priceSnapshots,
-        initialCandles: initialHistory?.candles.length ? initialHistory.candles : buildCandlesFromSnapshots(priceSnapshots, "1h"),
-        initialHistorySourceLabel: initialHistory?.meta.source ?? "local snapshots",
+        initialCandles: buildCandlesFromSnapshots(priceSnapshots, "1h"),
+        initialHistorySourceLabel: "local snapshots",
         orders: bot.orders.map((order) => {
           const latestExecution = order.executions[0] ?? null;
           const executionAmounts = latestExecution
@@ -510,7 +503,7 @@ export default async function BotsPage({
   const marketPreviewBoards = Object.fromEntries(
     PREVIEW_SYMBOLS.filter((symbol) => !botSymbols.has(symbol)).map((symbol) => [
       symbol,
-      buildMarketPreviewBoard(symbol, historyBySymbol.get(symbol) ?? null, deskMode)
+      buildMarketPreviewBoard(symbol, null, deskMode)
     ])
   ) as Partial<Record<PreviewSymbol, BotDetailViewData>>;
 

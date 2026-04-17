@@ -30,6 +30,13 @@ function candle(overrides: Partial<NormalizedCandle> = {}): NormalizedCandle {
   };
 }
 
+function candleAt(openTime: string, overrides: Partial<NormalizedCandle> = {}) {
+  return candle({
+    openTime: new Date(openTime),
+    ...overrides
+  });
+}
+
 function repository(candles: NormalizedCandle[] = []): MarketCandleRepository {
   return {
     findCandles: vi.fn(async () => candles),
@@ -94,6 +101,35 @@ describe("CachedCandleHistoryProvider", () => {
     expect(result.meta.cacheHit).toBe(false);
     expect(result.candles[0]?.close).toBe(103);
     expect(repo.upsertCandles).toHaveBeenCalledWith([fresh]);
+  });
+
+  it("refreshes only the tail when a covered cache is stale", async () => {
+    const staleFetchedAt = new Date("2026-04-16T00:00:00.000Z");
+    const cached = Array.from({ length: 12 }, (_, index) =>
+      candleAt(`2026-04-17T00:${String(index * 5).padStart(2, "0")}:00.000Z`, {
+        close: 100 + index,
+        fetchedAt: staleFetchedAt
+      })
+    );
+    const fresh = [
+      candleAt("2026-04-17T00:50:00.000Z", { close: 250 }),
+      candleAt("2026-04-17T00:55:00.000Z", { close: 251 })
+    ];
+    const repo = repository(cached);
+    const source = upstream(fresh);
+    const provider = new CachedCandleHistoryProvider(repo, source, 60_000);
+
+    const result = await provider.getHistory(request);
+
+    expect(source.getHistory).toHaveBeenCalledWith({
+      ...request,
+      from: new Date("2026-04-17T00:40:00.000Z")
+    });
+    expect(repo.upsertCandles).toHaveBeenCalledWith(fresh);
+    expect(result.meta.cacheHit).toBe(false);
+    expect(result.meta.from).toEqual(request.from);
+    expect(result.candles).toHaveLength(12);
+    expect(result.candles.find((item) => item.openTime.getTime() === new Date("2026-04-17T00:50:00.000Z").getTime())?.close).toBe(250);
   });
 
   it("falls back to stale cached candles when upstream fails", async () => {

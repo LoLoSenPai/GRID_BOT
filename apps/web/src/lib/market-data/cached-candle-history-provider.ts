@@ -66,6 +66,18 @@ function hasWindowCoverage(request: CandleHistoryRequest, candles: NormalizedCan
   return firstOpenTime <= request.from.getTime() + startToleranceMs && lastOpenTime >= request.to.getTime() - endToleranceMs;
 }
 
+function mergeCandles(cachedCandles: NormalizedCandle[], freshCandles: NormalizedCandle[]) {
+  const byOpenTime = new Map<number, NormalizedCandle>();
+  for (const candle of cachedCandles) {
+    byOpenTime.set(candle.openTime.getTime(), candle);
+  }
+  for (const candle of freshCandles) {
+    byOpenTime.set(candle.openTime.getTime(), candle);
+  }
+
+  return [...byOpenTime.values()].sort((left, right) => left.openTime.getTime() - right.openTime.getTime());
+}
+
 export class CachedCandleHistoryProvider implements CandleHistoryProvider {
   readonly provider: string;
 
@@ -83,10 +95,11 @@ export class CachedCandleHistoryProvider implements CandleHistoryProvider {
       provider: this.provider
     });
     const latestFetchedAt = getLatestFetchedAt(cachedCandles);
+    const windowCovered = hasWindowCoverage(request, cachedCandles);
 
     if (
       cachedCandles.length > 0 &&
-      hasWindowCoverage(request, cachedCandles) &&
+      windowCovered &&
       latestFetchedAt &&
       Date.now() - latestFetchedAt.getTime() <= this.ttlMs
     ) {
@@ -94,9 +107,23 @@ export class CachedCandleHistoryProvider implements CandleHistoryProvider {
     }
 
     try {
-      const fresh = await this.upstream.getHistory(request);
+      const intervalMs = RESOLUTION_MS[request.resolution];
+      const lastOpenTime = cachedCandles.at(-1)?.openTime.getTime();
+      const refreshFrom =
+        windowCovered && intervalMs && lastOpenTime
+          ? new Date(Math.max(request.from.getTime(), lastOpenTime - intervalMs * 3))
+          : request.from;
+      const fresh = await this.upstream.getHistory({ ...request, from: refreshFrom });
       await this.repository.upsertCandles(fresh.candles);
-      return fresh;
+      const candles = windowCovered ? mergeCandles(cachedCandles, fresh.candles) : fresh.candles;
+      return {
+        candles,
+        meta: {
+          ...fresh.meta,
+          from: request.from,
+          to: request.to
+        }
+      };
     } catch (error) {
       if (cachedCandles.length > 0) {
         return buildCachedResult(request, this.provider, cachedCandles, { stale: true });
