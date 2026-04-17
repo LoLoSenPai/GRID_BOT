@@ -198,6 +198,7 @@ export function BotManagementConsole({
   liveTradingEnabled,
   initialSelectedBotId,
   initialSurfaceMode = "online",
+  labEnabled = false,
   botBoards,
   marketPreviewBoards = {}
 }: {
@@ -206,6 +207,7 @@ export function BotManagementConsole({
   liveTradingEnabled: boolean;
   initialSelectedBotId?: string | null;
   initialSurfaceMode?: DeskSurfaceMode;
+  labEnabled?: boolean;
   botBoards: Partial<Record<string, BotDetailViewData>>;
   marketPreviewBoards?: Partial<Record<"SOL" | "BTC", BotDetailViewData>>;
 }) {
@@ -434,6 +436,11 @@ export function BotManagementConsole({
   }, [bots]);
 
   useEffect(() => {
+    if (!labEnabled && surfaceMode === "lab") {
+      setSurfaceMode("online");
+      return;
+    }
+
     if (typeof window === "undefined") {
       return;
     }
@@ -446,7 +453,7 @@ export function BotManagementConsole({
     if (window.location.pathname + window.location.search !== nextUrl) {
       window.history.replaceState(null, "", nextUrl);
     }
-  }, [deskMode, selectedBotId, surfaceMode]);
+  }, [deskMode, labEnabled, selectedBotId, surfaceMode]);
 
   useEffect(() => {
     if (surfaceMode !== "online" || typeof window === "undefined" || typeof window.EventSource === "undefined") {
@@ -975,7 +982,7 @@ export function BotManagementConsole({
     <section className="space-y-0">
       <div className="mb-3 flex items-center justify-end gap-2">
         <PanelTabButton active={surfaceMode === "online"} onClick={() => setSurfaceMode("online")} label="Online" />
-        <PanelTabButton active={surfaceMode === "lab"} onClick={() => setSurfaceMode("lab")} label="Lab" />
+        {labEnabled ? <PanelTabButton active={surfaceMode === "lab"} onClick={() => setSurfaceMode("lab")} label="Lab" /> : null}
       </div>
       {/* ─── Feedback toast ─── */}
       {feedback ? (

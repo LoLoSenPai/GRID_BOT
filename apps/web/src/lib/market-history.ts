@@ -1,6 +1,6 @@
 import "server-only";
 
-import { PrismaMarketCandleRepository } from "@grid-bot/db";
+import type { CandleHistoryProvider } from "@grid-bot/core";
 
 import { type CandlePoint, type HistoryResolution } from "@/lib/charting";
 import { CachedCandleHistoryProvider } from "@/lib/market-data/cached-candle-history-provider";
@@ -35,11 +35,29 @@ type HistoryCacheEntry = {
 const historyCache = new Map<string, HistoryCacheEntry>();
 const inFlightHistoryRequests = new Map<string, Promise<MarketHistoryResult>>();
 
-const candleHistoryProvider = new CachedCandleHistoryProvider(
-  new PrismaMarketCandleRepository(),
-  new PythHistoryProvider(),
-  HISTORY_CACHE_TTL_MS
-);
+const directCandleHistoryProvider = new PythHistoryProvider();
+let dbCachedCandleHistoryProviderPromise: Promise<CandleHistoryProvider> | null = null;
+
+function isDbCandleCacheEnabled() {
+  return process.env.MARKET_CANDLE_DB_CACHE_ENABLED === "true";
+}
+
+function getCandleHistoryProvider(): Promise<CandleHistoryProvider> {
+  if (!isDbCandleCacheEnabled()) {
+    return Promise.resolve(directCandleHistoryProvider);
+  }
+
+  dbCachedCandleHistoryProviderPromise ??= import("@grid-bot/db").then(
+    ({ PrismaMarketCandleRepository }) =>
+      new CachedCandleHistoryProvider(
+        new PrismaMarketCandleRepository(),
+        directCandleHistoryProvider,
+        HISTORY_CACHE_TTL_MS
+      )
+  );
+
+  return dbCachedCandleHistoryProviderPromise;
+}
 
 function getHistoryCacheKey(symbol: SupportedSymbol, resolution: HistoryResolution) {
   return `${symbol}:${resolution}`;
@@ -142,6 +160,7 @@ async function fetchHistoryWindow(
     cacheKey: string;
   }
 ): Promise<MarketHistoryResult> {
+  const candleHistoryProvider = await getCandleHistoryProvider();
   const history = await candleHistoryProvider.getHistory({
     symbol,
     quoteSymbol: "USDC",

@@ -11,6 +11,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  if (process.env.BACKTEST_LAB_ENABLED !== "true") {
+    return NextResponse.json(
+      { error: "Backtest Lab is disabled on this VPS profile." },
+      { status: 503 }
+    );
+  }
+
   try {
     const body = parseBacktestReplayRequest(await request.json());
     const { series, indicators, marketRegime, historyWindow } = await fetchBacktestSeries({
