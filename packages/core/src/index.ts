@@ -10,6 +10,7 @@ export * from "./services/backtest-lab-service";
 export * from "./services/bot-engine-service";
 export * from "./services/execution-service";
 export * from "./services/grid-strategy-service";
+export * from "./services/indicator-service";
 export * from "./services/market-price-service";
 export * from "./services/risk-manager-service";
 export * from "./services/wallet-service";

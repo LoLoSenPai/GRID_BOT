@@ -13,7 +13,7 @@ export async function POST(request: Request) {
 
   try {
     const body = parseBacktestReplayRequest(await request.json());
-    const { series, historyWindow } = await fetchBacktestSeries({
+    const { series, indicators, historyWindow } = await fetchBacktestSeries({
       pair: body.pair,
       resolution: body.resolution,
       lookbackDays: body.lookbackDays
@@ -27,6 +27,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ...result,
+      indicators,
       meta: {
         ...result.meta,
         historyWindow,

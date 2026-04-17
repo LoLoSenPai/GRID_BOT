@@ -67,10 +67,34 @@ type SerializedBacktestReplayExecution = {
   timestamp: string;
 };
 
+type SerializedIndicatorSnapshot = {
+  timestamp: string;
+  close: number;
+  ema20: number | null;
+  ema50: number | null;
+  ema200: number | null;
+  atr14: number | null;
+  atrPct14: number | null;
+  adx14: number | null;
+  bollingerWidth20: number | null;
+  donchianHigh20: number | null;
+  donchianLow20: number | null;
+  donchianWidthPct20: number | null;
+  realizedVol20: number | null;
+  volumeSma20: number | null;
+  volumeRatio20: number | null;
+};
+
+type SerializedIndicatorSummary = {
+  latest: SerializedIndicatorSnapshot | null;
+  hasVolume: boolean;
+};
+
 type SerializedBacktestRunResult = {
   config: SerializedBacktestConfig;
   replayPoints: SerializedBacktestReplayPoint[];
   executions: SerializedBacktestReplayExecution[];
+  indicators?: SerializedIndicatorSummary;
   trainMetrics: SerializedBacktestMetrics;
   validationMetrics: SerializedBacktestMetrics;
   overallMetrics: SerializedBacktestMetrics;
@@ -101,6 +125,7 @@ type SerializedBacktestRunResult = {
 
 type SerializedBacktestRecommendation = {
   bestConfig: SerializedBacktestConfig;
+  indicators?: SerializedIndicatorSummary;
   leaderboard: Array<{
     rank: number;
     config: SerializedBacktestConfig;
@@ -191,6 +216,34 @@ function formatHealthTone(status: "Healthy" | "Caution" | "Fragile") {
   }
 }
 
+function formatOptionalNumber(value: number | null | undefined, digits = 2) {
+  return typeof value === "number" && Number.isFinite(value) ? formatNumber(value, digits) : "--";
+}
+
+function formatOptionalPercent(value: number | null | undefined, digits = 1) {
+  return typeof value === "number" && Number.isFinite(value) ? formatPercent(value, digits) : "--";
+}
+
+function formatIndicatorPrice(value: number | null | undefined, pair: LabPair) {
+  return formatOptionalNumber(value, pair === "BTC" ? 0 : 2);
+}
+
+function formatAdxHint(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "Needs more candles";
+  }
+
+  if (value >= 25) {
+    return "Trending pressure";
+  }
+
+  if (value >= 18) {
+    return "Borderline trend";
+  }
+
+  return "Range-friendly";
+}
+
 export function BacktestLabConsole({
   bots,
   selectedBotId,
@@ -227,6 +280,8 @@ export function BacktestLabConsole({
 
   const displayedReplay = activeReplay ?? recommendation?.bestReplay ?? null;
   const displayedGuidance = recommendation?.operatorGuidance ?? null;
+  const displayedIndicators = displayedReplay?.indicators ?? recommendation?.indicators ?? null;
+  const latestIndicators = displayedIndicators?.latest ?? null;
   const chartLevels = useMemo(
     () =>
       displayedReplay
@@ -565,6 +620,52 @@ export function BacktestLabConsole({
                   </div>
                 ) : (
                   <div className="text-sm text-[var(--muted)]">No replay yet. Run Replay current setup to test the selected bot config, or Find best setup to search for a better one first.</div>
+                )}
+              </LabSection>
+
+              <LabSection title="Market indicators" defaultOpen>
+                {latestIndicators ? (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 gap-2">
+                      <LabMetric
+                        label="ATR 14"
+                        value={formatOptionalPercent(latestIndicators.atrPct14, 2)}
+                        hint={`${formatIndicatorPrice(latestIndicators.atr14, pair)} price units`}
+                      />
+                      <LabMetric
+                        label="ADX 14"
+                        value={formatOptionalNumber(latestIndicators.adx14, 1)}
+                        hint={formatAdxHint(latestIndicators.adx14)}
+                      />
+                      <LabMetric
+                        label="EMA 20 / 50"
+                        value={`${formatIndicatorPrice(latestIndicators.ema20, pair)} / ${formatIndicatorPrice(latestIndicators.ema50, pair)}`}
+                        hint={`EMA 200 ${formatIndicatorPrice(latestIndicators.ema200, pair)}`}
+                      />
+                      <LabMetric
+                        label="Bollinger 20"
+                        value={formatOptionalPercent(latestIndicators.bollingerWidth20, 2)}
+                        hint="Band width"
+                      />
+                      <LabMetric
+                        label="Donchian 20"
+                        value={formatOptionalPercent(latestIndicators.donchianWidthPct20, 2)}
+                        hint={`${formatIndicatorPrice(latestIndicators.donchianLow20, pair)} -> ${formatIndicatorPrice(latestIndicators.donchianHigh20, pair)}`}
+                      />
+                      <LabMetric
+                        label="Realized vol"
+                        value={formatOptionalPercent(latestIndicators.realizedVol20, 2)}
+                        hint="20-bar log-return stdev"
+                      />
+                    </div>
+                    <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
+                      {displayedIndicators?.hasVolume
+                        ? `Volume available: 20-bar ratio ${formatOptionalNumber(latestIndicators.volumeRatio20, 2)}x.`
+                        : "No usable volume in this candle source yet; volume indicators stay disabled."}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-[var(--muted)]">Run a replay or recommendation to compute read-only market indicators for the selected window.</div>
                 )}
               </LabSection>
             </div>

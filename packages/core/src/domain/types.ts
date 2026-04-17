@@ -222,6 +222,30 @@ export interface CandleHistoryResult {
   meta: CandleHistoryMeta;
 }
 
+export interface IndicatorSnapshot {
+  timestamp: Date;
+  close: number;
+  ema20: number | null;
+  ema50: number | null;
+  ema200: number | null;
+  atr14: number | null;
+  atrPct14: number | null;
+  adx14: number | null;
+  bollingerWidth20: number | null;
+  donchianHigh20: number | null;
+  donchianLow20: number | null;
+  donchianWidthPct20: number | null;
+  realizedVol20: number | null;
+  volumeSma20: number | null;
+  volumeRatio20: number | null;
+}
+
+export interface IndicatorSummary {
+  latest: IndicatorSnapshot | null;
+  series: IndicatorSnapshot[];
+  hasVolume: boolean;
+}
+
 export interface BacktestConfig {
   budgetUsd: number;
   lowPrice: number;
