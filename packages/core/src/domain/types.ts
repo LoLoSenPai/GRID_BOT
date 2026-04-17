@@ -170,6 +170,7 @@ export interface HistoricalCandle {
   high: number;
   low: number;
   close: number;
+  volume?: number | null;
 }
 
 export interface BacktestMarketSeries {
@@ -177,6 +178,48 @@ export interface BacktestMarketSeries {
   pair: string;
   resolution?: string;
   candles: HistoricalCandle[];
+}
+
+export interface NormalizedCandle {
+  provider: string;
+  symbol: string;
+  quoteSymbol: string;
+  resolution: string;
+  sourceMarket: string | null;
+  openTime: Date;
+  closeTime: Date | null;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number | null;
+  fetchedAt: Date;
+}
+
+export interface CandleHistoryRequest {
+  symbol: string;
+  quoteSymbol: string;
+  resolution: string;
+  from: Date;
+  to: Date;
+}
+
+export interface CandleHistoryMeta {
+  provider: string;
+  symbol: string;
+  quoteSymbol: string;
+  resolution: string;
+  from: Date;
+  to: Date;
+  sourceMarket: string | null;
+  cacheHit: boolean;
+  stale?: boolean;
+  fetchedAt: Date;
+}
+
+export interface CandleHistoryResult {
+  candles: NormalizedCandle[];
+  meta: CandleHistoryMeta;
 }
 
 export interface BacktestConfig {

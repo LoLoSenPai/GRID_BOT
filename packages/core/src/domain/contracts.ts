@@ -1,4 +1,18 @@
-import type { AlertRecord, BotAggregate, BotStateSnapshot, ExecutionRecord, ExecutionReport, MarketPrice, OrderIntent, Position, PositionLot, SystemLogInput } from "./types";
+import type {
+  AlertRecord,
+  BotAggregate,
+  BotStateSnapshot,
+  CandleHistoryRequest,
+  CandleHistoryResult,
+  ExecutionRecord,
+  ExecutionReport,
+  MarketPrice,
+  NormalizedCandle,
+  OrderIntent,
+  Position,
+  PositionLot,
+  SystemLogInput
+} from "./types";
 import type { BotStatus } from "./enums";
 
 export interface BotStateRepository {
@@ -58,6 +72,24 @@ export interface SystemLogRepository {
 
 export interface MarketPricePort {
   getLatestPrice(bot: BotAggregate["bot"]): Promise<MarketPrice>;
+}
+
+export interface LivePriceProvider {
+  getLatestPrice(symbol: string, quoteSymbol: string): Promise<MarketPrice>;
+}
+
+export interface ReferencePriceProvider {
+  getReferencePrice(symbol: string, quoteSymbol: string): Promise<MarketPrice>;
+}
+
+export interface CandleHistoryProvider {
+  readonly provider: string;
+  getHistory(request: CandleHistoryRequest): Promise<CandleHistoryResult>;
+}
+
+export interface MarketCandleRepository {
+  findCandles(request: CandleHistoryRequest & { provider: string }): Promise<NormalizedCandle[]>;
+  upsertCandles(candles: NormalizedCandle[]): Promise<void>;
 }
 
 export interface AlertSink {

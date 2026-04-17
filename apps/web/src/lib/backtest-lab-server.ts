@@ -23,7 +23,8 @@ export async function fetchBacktestSeries(input: {
         open: candle.open,
         high: candle.high,
         low: candle.low,
-        close: candle.close
+        close: candle.close,
+        volume: candle.volume ?? null
       }))
     },
     historyWindow: {

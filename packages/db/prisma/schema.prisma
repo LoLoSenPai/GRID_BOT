@@ -327,3 +327,27 @@ model PriceSnapshot {
   @@index([symbol, capturedAt(sort: Desc)])
   @@map("price_snapshots")
 }
+
+model MarketCandle {
+  id           String    @id @default(cuid())
+  provider     String
+  symbol       String
+  quoteSymbol  String    @map("quote_symbol")
+  resolution   String
+  sourceMarket String?   @map("source_market")
+  openTime     DateTime  @map("open_time")
+  closeTime    DateTime? @map("close_time")
+  open         Decimal   @db.Decimal(30, 10)
+  high         Decimal   @db.Decimal(30, 10)
+  low          Decimal   @db.Decimal(30, 10)
+  close        Decimal   @db.Decimal(30, 10)
+  volume       Decimal?  @db.Decimal(30, 10)
+  fetchedAt    DateTime  @default(now()) @map("fetched_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([provider, symbol, quoteSymbol, resolution, openTime])
+  @@index([symbol, quoteSymbol, resolution, openTime(sort: Desc)])
+  @@index([provider, symbol, quoteSymbol, resolution, fetchedAt])
+  @@map("market_candles")
+}

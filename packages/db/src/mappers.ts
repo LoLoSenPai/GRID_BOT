@@ -4,6 +4,7 @@ import type {
   BotConfig,
   BotStateSnapshot,
   Execution,
+  MarketCandle,
   Position,
   PositionLot
 } from "@prisma/client";
@@ -14,6 +15,7 @@ import type {
   BotConfig as DomainBotConfig,
   BotStateSnapshot as DomainBotStateSnapshot,
   ExecutionRecord,
+  NormalizedCandle,
   Position as DomainPosition,
   PositionLot as DomainPositionLot
 } from "@grid-bot/core";
@@ -154,6 +156,24 @@ export function mapAlert(alert: Alert): AlertRecord {
     message: alert.message,
     metadata: (alert.metadata as Record<string, unknown> | undefined) ?? undefined,
     createdAt: alert.createdAt
+  };
+}
+
+export function mapMarketCandle(candle: MarketCandle): NormalizedCandle {
+  return {
+    provider: candle.provider,
+    symbol: candle.symbol,
+    quoteSymbol: candle.quoteSymbol,
+    resolution: candle.resolution,
+    sourceMarket: candle.sourceMarket,
+    openTime: candle.openTime,
+    closeTime: candle.closeTime,
+    open: candle.open.toNumber(),
+    high: candle.high.toNumber(),
+    low: candle.low.toNumber(),
+    close: candle.close.toNumber(),
+    volume: candle.volume?.toNumber() ?? null,
+    fetchedAt: candle.fetchedAt
   };
 }
 

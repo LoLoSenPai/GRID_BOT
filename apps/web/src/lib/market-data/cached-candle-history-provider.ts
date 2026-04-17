@@ -1,0 +1,108 @@
+import type { CandleHistoryProvider, MarketCandleRepository } from "@grid-bot/core";
+import type { CandleHistoryRequest, CandleHistoryResult, NormalizedCandle } from "@grid-bot/core";
+
+const DEFAULT_CACHE_TTL_MS = 60_000;
+const RESOLUTION_MS: Record<string, number> = {
+  "5m": 5 * 60 * 1000,
+  "30m": 30 * 60 * 1000,
+  "1h": 60 * 60 * 1000,
+  "4h": 4 * 60 * 60 * 1000,
+  "1d": 24 * 60 * 60 * 1000,
+  "1w": 7 * 24 * 60 * 60 * 1000,
+  "1mo": 31 * 24 * 60 * 60 * 1000
+};
+
+function getLatestFetchedAt(candles: NormalizedCandle[]) {
+  return candles.reduce<Date | null>((latest, candle) => {
+    if (!latest || candle.fetchedAt > latest) {
+      return candle.fetchedAt;
+    }
+
+    return latest;
+  }, null);
+}
+
+function buildCachedResult(
+  request: CandleHistoryRequest,
+  provider: string,
+  candles: NormalizedCandle[],
+  input: { stale?: boolean } = {}
+): CandleHistoryResult {
+  const latestFetchedAt = getLatestFetchedAt(candles) ?? new Date();
+  const firstCandle = candles[0];
+
+  return {
+    candles,
+    meta: {
+      provider,
+      symbol: request.symbol.toUpperCase(),
+      quoteSymbol: request.quoteSymbol.toUpperCase(),
+      resolution: request.resolution,
+      from: request.from,
+      to: request.to,
+      sourceMarket: firstCandle?.sourceMarket ?? null,
+      cacheHit: true,
+      stale: input.stale,
+      fetchedAt: latestFetchedAt
+    }
+  };
+}
+
+function hasWindowCoverage(request: CandleHistoryRequest, candles: NormalizedCandle[]) {
+  if (candles.length === 0) {
+    return false;
+  }
+
+  const intervalMs = RESOLUTION_MS[request.resolution];
+  if (!intervalMs) {
+    return false;
+  }
+
+  const firstOpenTime = candles[0]?.openTime.getTime() ?? Number.POSITIVE_INFINITY;
+  const lastOpenTime = candles.at(-1)?.openTime.getTime() ?? 0;
+  const startToleranceMs = intervalMs * 2;
+  const endToleranceMs = intervalMs * 2;
+
+  return firstOpenTime <= request.from.getTime() + startToleranceMs && lastOpenTime >= request.to.getTime() - endToleranceMs;
+}
+
+export class CachedCandleHistoryProvider implements CandleHistoryProvider {
+  readonly provider: string;
+
+  constructor(
+    private readonly repository: MarketCandleRepository,
+    private readonly upstream: CandleHistoryProvider,
+    private readonly ttlMs = DEFAULT_CACHE_TTL_MS
+  ) {
+    this.provider = upstream.provider;
+  }
+
+  async getHistory(request: CandleHistoryRequest): Promise<CandleHistoryResult> {
+    const cachedCandles = await this.repository.findCandles({
+      ...request,
+      provider: this.provider
+    });
+    const latestFetchedAt = getLatestFetchedAt(cachedCandles);
+
+    if (
+      cachedCandles.length > 0 &&
+      hasWindowCoverage(request, cachedCandles) &&
+      latestFetchedAt &&
+      Date.now() - latestFetchedAt.getTime() <= this.ttlMs
+    ) {
+      return buildCachedResult(request, this.provider, cachedCandles);
+    }
+
+    try {
+      const fresh = await this.upstream.getHistory(request);
+      await this.repository.upsertCandles(fresh.candles);
+      return fresh;
+    } catch (error) {
+      if (cachedCandles.length > 0) {
+        return buildCachedResult(request, this.provider, cachedCandles, { stale: true });
+      }
+
+      throw error;
+    }
+  }
+}
