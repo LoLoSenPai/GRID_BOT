@@ -47,6 +47,17 @@ describe("backtest-lab request parsing", () => {
     ).toThrow("Unsupported resolution.");
   });
 
+  it("rejects Lab windows that are too heavy for the VPS", () => {
+    expect(() =>
+      parseBacktestRecommendRequest({
+        pair: "SOL",
+        budgetUsd: 100,
+        lookbackDays: 180,
+        resolution: "5m"
+      })
+    ).toThrow("5m Lab runs are capped at 30d on this VPS.");
+  });
+
   it("parses replay config and forces manual recenter in the built core config", () => {
     const payload = parseBacktestReplayRequest({
       pair: "BTC",

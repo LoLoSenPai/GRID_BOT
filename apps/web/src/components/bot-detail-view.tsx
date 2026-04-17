@@ -218,6 +218,10 @@ function getFreshHistoryCacheEntry(symbol: BotDetailViewData["baseSymbol"], reso
     return null;
   }
 
+  if (cached.sourceLabel === "local snapshots") {
+    return null;
+  }
+
   if (Date.now() - cached.fetchedAt > HISTORY_CACHE_TTL_MS) {
     historyCache.delete(cacheKey);
     return null;

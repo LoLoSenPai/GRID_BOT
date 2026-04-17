@@ -51,14 +51,14 @@ function buildScopedOptionalBotRelation(mode?: BotMode) {
 }
 
 export async function getDashboardData(mode?: BotMode) {
-  const [bots, rawAlerts, orders, executions, rawLogs] = await Promise.all([
+  const [bots, rawAlerts, executions, rawLogs] = await Promise.all([
     prisma.bot.findMany({
       where: mode ? { mode: mode as never } : undefined,
       include: {
         config: true,
         stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
         position: true,
-        priceSnapshots: { orderBy: { capturedAt: "asc" }, take: 24 }
+        priceSnapshots: { orderBy: { capturedAt: "desc" }, take: 16 }
       },
       orderBy: { createdAt: "asc" }
     }),
@@ -66,25 +66,19 @@ export async function getDashboardData(mode?: BotMode) {
       where: buildScopedOptionalBotRelation(mode),
       include: { bot: true },
       orderBy: { createdAt: "desc" },
-      take: 24,
-    }),
-    prisma.order.findMany({
-      where: mode ? { bot: { mode: mode as never } } : undefined,
-      include: { bot: true },
-      orderBy: { createdAt: "desc" },
-      take: 8
+      take: 12,
     }),
     prisma.execution.findMany({
       where: mode ? { bot: { mode: mode as never } } : undefined,
       include: { bot: true, order: true },
       orderBy: { createdAt: "desc" },
-      take: 8
+      take: 6
     }),
     prisma.systemLog.findMany({
       where: buildScopedOptionalBotRelation(mode),
       include: { bot: true },
       orderBy: { createdAt: "desc" },
-      take: 24
+      take: 12
     })
   ]);
 
@@ -116,7 +110,7 @@ export async function getDashboardData(mode?: BotMode) {
       budgetUsed,
       pnl,
       equity,
-      sparkline: bot.priceSnapshots.map((snapshot) => Number(snapshot.price)),
+      sparkline: [...bot.priceSnapshots].reverse().map((snapshot) => Number(snapshot.price)),
       rangeProgress: price === null ? 0 : ((price - low) / rangeSpan) * 100,
       deployableUsage: bot.config ? (budgetUsed / Number(bot.config.maxDeployableUsd || 1)) * 100 : 0,
       baseInventoryValue: bot.position && price ? Number(bot.position.baseAmount) * price : 0,
@@ -177,7 +171,6 @@ export async function getDashboardData(mode?: BotMode) {
     topPerformer,
     botCards,
     alerts,
-    orders,
     executions,
     logs,
     activityStream
@@ -190,11 +183,9 @@ export async function getBotsOverview(mode?: BotMode) {
     include: {
       config: true,
       stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
-      position: true,
-      positionLots: { orderBy: { openedAt: "asc" } },
       orders: {
         orderBy: { createdAt: "desc" },
-        take: 80,
+        take: 1,
         include: {
           executions: {
             orderBy: { createdAt: "desc" },
@@ -202,10 +193,9 @@ export async function getBotsOverview(mode?: BotMode) {
           }
         }
       },
-      priceSnapshots: { orderBy: { capturedAt: "asc" }, take: 240 },
-      alerts: { orderBy: { createdAt: "desc" }, take: 24 },
-      executions: { orderBy: { createdAt: "desc" }, take: 24, include: { order: true } },
-      systemLogs: { orderBy: { createdAt: "desc" }, take: 24 },
+      priceSnapshots: { orderBy: { capturedAt: "desc" }, take: 48 },
+      executions: { orderBy: { createdAt: "desc" }, take: 1, include: { order: true } },
+      systemLogs: { where: { category: "paper_reset" }, orderBy: { createdAt: "desc" }, take: 1 },
       _count: {
         select: {
           orders: true,
@@ -217,17 +207,24 @@ export async function getBotsOverview(mode?: BotMode) {
   });
 }
 
-export async function getBotDetail(botId: string) {
-  const bot = await prisma.bot.findUnique({
-    where: { id: botId },
+export async function getBotDetail(botId: string, mode?: BotMode) {
+  const bot = await prisma.bot.findFirst({
+    where: {
+      id: botId,
+      ...(mode ? { mode: mode as never } : {})
+    },
     include: {
       config: true,
-      stateSnapshots: { orderBy: { createdAt: "desc" }, take: 120 },
+      stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
       position: true,
-      positionLots: { orderBy: { openedAt: "asc" } },
+      positionLots: {
+        where: { remainingBaseAmount: { gt: 0 } },
+        orderBy: { openedAt: "asc" },
+        take: 64
+      },
       orders: {
         orderBy: { createdAt: "desc" },
-        take: 80,
+        take: 24,
         include: {
           executions: {
             orderBy: { createdAt: "desc" },
@@ -235,11 +232,10 @@ export async function getBotDetail(botId: string) {
           }
         }
       },
-      alerts: { orderBy: { createdAt: "desc" }, take: 80 },
-      systemLogs: { orderBy: { createdAt: "desc" }, take: 80 },
-      priceSnapshots: { orderBy: { capturedAt: "desc" }, take: 240 },
-      pnlSnapshots: { orderBy: { createdAt: "desc" }, take: 120 },
-      executions: { orderBy: { createdAt: "desc" }, take: 40, include: { order: true } }
+      alerts: { orderBy: { createdAt: "desc" }, take: 16 },
+      systemLogs: { orderBy: { createdAt: "desc" }, take: 16 },
+      priceSnapshots: { orderBy: { capturedAt: "desc" }, take: 120 },
+      executions: { orderBy: { createdAt: "desc" }, take: 24, include: { order: true } }
     }
   });
 
@@ -260,24 +256,24 @@ export async function getActivityFeed(mode?: BotMode) {
       where: buildScopedOptionalBotRelation(mode),
       include: { bot: true },
       orderBy: { createdAt: "desc" },
-      take: 120,
+      take: 48,
     }),
     prisma.systemLog.findMany({
       where: buildScopedOptionalBotRelation(mode),
       include: { bot: true },
       orderBy: { createdAt: "desc" },
-      take: 120,
+      take: 48,
     }),
     prisma.execution.findMany({
       where: mode ? { bot: { mode: mode as never } } : undefined,
       include: { bot: true, order: true },
       orderBy: { createdAt: "desc" },
-      take: 40,
+      take: 24,
     })
   ]);
 
-  const alerts = rawAlerts.filter((alert) => isVisibleIncidentAlert(alert)).slice(0, 40);
-  const logs = rawLogs.filter((log) => isVisibleSystemLog(log)).slice(0, 40);
+  const alerts = rawAlerts.filter((alert) => isVisibleIncidentAlert(alert)).slice(0, 24);
+  const logs = rawLogs.filter((log) => isVisibleSystemLog(log)).slice(0, 24);
 
   const timeline = [
     ...alerts.map((alert) => ({

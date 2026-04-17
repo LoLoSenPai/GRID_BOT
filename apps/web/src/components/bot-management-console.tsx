@@ -206,7 +206,7 @@ export function BotManagementConsole({
   liveTradingEnabled: boolean;
   initialSelectedBotId?: string | null;
   initialSurfaceMode?: DeskSurfaceMode;
-  botBoards: Record<string, BotDetailViewData>;
+  botBoards: Partial<Record<string, BotDetailViewData>>;
   marketPreviewBoards?: Partial<Record<"SOL" | "BTC", BotDetailViewData>>;
 }) {
   const router = useRouter();
@@ -229,6 +229,9 @@ export function BotManagementConsole({
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [drawerBotId, setDrawerBotId] = useState<string | null>(null);
   const [deskToasts, setDeskToasts] = useState<DeskToast[]>([]);
+  const [botBoardCache, setBotBoardCache] = useState<Partial<Record<string, BotDetailViewData>>>(() => botBoards);
+  const [loadingBoardId, setLoadingBoardId] = useState<string | null>(null);
+  const [boardLoadError, setBoardLoadError] = useState<string | null>(null);
 
   const [liveTelemetry, setLiveTelemetry] = useState<Record<string, BotRuntimeTelemetry>>({});
   const hydratedBotIdRef = useRef<string | null>(initialSelectedBotId ?? bots[0]?.id ?? null);
@@ -254,15 +257,19 @@ export function BotManagementConsole({
   const hasBots = runtimeBots.length > 0;
 
   const selectedBot = useMemo(() => runtimeBots.find((bot) => bot.id === selectedBotId) ?? runtimeBots[0] ?? null, [runtimeBots, selectedBotId]);
-  const selectedBoard = selectedBot ? botBoards[selectedBot.id] ?? null : null;
-  const drawerBot = useMemo(() => (drawerBotId ? botBoards[drawerBotId] ?? null : null), [botBoards, drawerBotId]);
+  const selectedBoard = selectedBot ? botBoardCache[selectedBot.id] ?? null : null;
+  const drawerBot = useMemo(() => (drawerBotId ? botBoardCache[drawerBotId] ?? null : null), [botBoardCache, drawerBotId]);
   const boardsBySymbol = useMemo(
     () =>
-      Object.values(botBoards).reduce<Partial<Record<"SOL" | "BTC", BotDetailViewData>>>((accumulator, board) => {
+      Object.values(botBoardCache).reduce<Partial<Record<"SOL" | "BTC", BotDetailViewData>>>((accumulator, board) => {
+        if (!board) {
+          return accumulator;
+        }
+
         accumulator[board.baseSymbol] ??= board;
         return accumulator;
       }, {}),
-    [botBoards]
+    [botBoardCache]
   );
   const createBaseSymbol = BOT_PAIR_PRESETS[createDraft.presetId].baseSymbol as "SOL" | "BTC";
   const createBoardSource = boardsBySymbol[createBaseSymbol] ?? marketPreviewBoards[createBaseSymbol] ?? null;
@@ -293,6 +300,60 @@ export function BotManagementConsole({
       totalEquityUsd: selectedBot.runtime.totalEquityUsd
     };
   }, [selectedBoard, selectedBot, selectedTelemetry]);
+
+  useEffect(() => {
+    setBotBoardCache((current) => ({
+      ...current,
+      ...botBoards
+    }));
+  }, [botBoards]);
+
+  useEffect(() => {
+    if (!selectedBotId || botBoardCache[selectedBotId]) {
+      return;
+    }
+
+    let active = true;
+    setLoadingBoardId(selectedBotId);
+    setBoardLoadError(null);
+
+    fetch(`/api/bots/${selectedBotId}/detail?${new URLSearchParams({ mode: deskMode }).toString()}`)
+      .then(async (response) => {
+        const payload = (await response.json().catch(() => null)) as { bot?: BotDetailViewData; error?: string } | null;
+        if (!response.ok || !payload?.bot) {
+          throw new Error(payload?.error ?? "Failed to load bot detail.");
+        }
+
+        return payload.bot;
+      })
+      .then((board) => {
+        if (!active) {
+          return;
+        }
+
+        setBotBoardCache((current) => ({
+          ...current,
+          [board.id]: board
+        }));
+      })
+      .catch((error) => {
+        if (!active) {
+          return;
+        }
+
+        setBoardLoadError(error instanceof Error ? error.message : "Failed to load bot detail.");
+      })
+      .finally(() => {
+        if (active) {
+          setLoadingBoardId(null);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [botBoardCache, deskMode, selectedBotId]);
+
   const activePreviewDraft =
     panelKind === "create" && panelTab === "setup"
       ? createDraft
@@ -989,7 +1050,9 @@ export function BotManagementConsole({
                   runtimeData={panelKind === "create" ? null : selectedRuntimeData}
                 />
               ) : (
-                <div className="flex h-[500px] items-center justify-center text-sm text-[var(--muted)]">Select a bot below</div>
+                <div className="flex h-[500px] items-center justify-center px-6 text-center text-sm text-[var(--muted)]">
+                  {loadingBoardId ? "Loading selected bot detail..." : boardLoadError ?? "Select a bot below"}
+                </div>
               )}
             </div>
 

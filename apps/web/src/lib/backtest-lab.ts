@@ -4,6 +4,12 @@ import { GridType, MinOrderMode, RecenterMode, StrategyMode } from "@grid-bot/co
 export const LAB_PAIR_OPTIONS = ["SOL", "BTC"] as const;
 export const LAB_LOOKBACK_OPTIONS = [30, 60, 90, 180] as const;
 export const LAB_RESOLUTION_OPTIONS = ["5m", "30m", "1h", "4h"] as const;
+const MAX_LOOKBACK_BY_RESOLUTION: Record<LabResolution, LabLookbackDays> = {
+  "5m": 30,
+  "30m": 90,
+  "1h": 180,
+  "4h": 180
+};
 
 export type LabPair = (typeof LAB_PAIR_OPTIONS)[number];
 export type LabLookbackDays = (typeof LAB_LOOKBACK_OPTIONS)[number];
@@ -107,12 +113,19 @@ function parseBoolean(value: unknown, label: string) {
 
 export function parseBacktestRecommendRequest(body: unknown): BacktestRecommendRequestBody {
   const record = asObject(body);
+  const lookbackDays = parseNumberEnumValue(record.lookbackDays, LAB_LOOKBACK_OPTIONS, "lookbackDays");
+  const resolution = parseEnumValue(record.resolution, LAB_RESOLUTION_OPTIONS, "resolution");
+  const maxLookbackDays = MAX_LOOKBACK_BY_RESOLUTION[resolution];
+
+  if (lookbackDays > maxLookbackDays) {
+    throw new Error(`${resolution} Lab runs are capped at ${maxLookbackDays}d on this VPS.`);
+  }
 
   return {
     pair: parseEnumValue(record.pair, LAB_PAIR_OPTIONS, "pair"),
     budgetUsd: parsePositiveNumber(record.budgetUsd, "budgetUsd"),
-    lookbackDays: parseNumberEnumValue(record.lookbackDays, LAB_LOOKBACK_OPTIONS, "lookbackDays"),
-    resolution: parseEnumValue(record.resolution, LAB_RESOLUTION_OPTIONS, "resolution")
+    lookbackDays,
+    resolution
   };
 }
 
