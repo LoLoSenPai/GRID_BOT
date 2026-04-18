@@ -14,14 +14,12 @@ const PREVIEW_SYMBOLS = ["SOL", "BTC"] as const;
 export default async function BotsPage({
   searchParams
 }: {
-  searchParams?: Promise<{ botId?: string; deskMode?: string; surface?: string }>;
+  searchParams?: Promise<{ botId?: string; deskMode?: string }>;
 }) {
   await requireSession();
   const params = (await searchParams) ?? {};
   const cookieStore = await cookies();
   const deskMode = parseDeskMode(params.deskMode ?? cookieStore.get(DESK_MODE_COOKIE)?.value);
-  const labEnabled = process.env.BACKTEST_LAB_ENABLED === "true";
-  const initialSurfaceMode = labEnabled && params.surface === "lab" ? "lab" : "online";
   const bots = await getBotsOverview(deskMode);
   const liveTradingEnabled = getEnv().LIVE_TRADING_ENABLED;
   const viewModel = bots.map(serializeBotOverview);
@@ -42,8 +40,6 @@ export default async function BotsPage({
         deskMode={deskMode}
         liveTradingEnabled={liveTradingEnabled}
         initialSelectedBotId={initialSelectedBotId}
-        initialSurfaceMode={initialSurfaceMode}
-        labEnabled={labEnabled}
         botBoards={botBoards}
         marketPreviewBoards={marketPreviewBoards}
       />

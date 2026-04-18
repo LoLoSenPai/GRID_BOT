@@ -9,7 +9,6 @@ import { useRouter } from "next/navigation";
 
 import { BotConfigFields, type ConfigSectionId } from "@/components/bot-config-fields";
 import type { MinOrderMode } from "@/components/bot-config-fields";
-import { BacktestLabConsole } from "@/components/backtest-lab-console";
 import { BotDetailView, type BotDetailRuntimeData, type BotDetailViewData } from "@/components/bot-detail-view";
 import { BotTradingDrawer } from "@/components/bot-trading-drawer";
 
@@ -190,15 +189,12 @@ type FeedbackState =
 
 type PanelKind = "create" | "edit" | null;
 type PanelTab = "setup" | "paper" | "actions";
-type DeskSurfaceMode = "online" | "lab";
 
 export function BotManagementConsole({
   bots,
   deskMode,
   liveTradingEnabled,
   initialSelectedBotId,
-  initialSurfaceMode = "online",
-  labEnabled = false,
   botBoards,
   marketPreviewBoards = {}
 }: {
@@ -206,14 +202,11 @@ export function BotManagementConsole({
   deskMode: BotMode;
   liveTradingEnabled: boolean;
   initialSelectedBotId?: string | null;
-  initialSurfaceMode?: DeskSurfaceMode;
-  labEnabled?: boolean;
   botBoards: Partial<Record<string, BotDetailViewData>>;
   marketPreviewBoards?: Partial<Record<"SOL" | "BTC", BotDetailViewData>>;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  const [surfaceMode, setSurfaceMode] = useState<DeskSurfaceMode>(initialSurfaceMode);
   const [selectedBotId, setSelectedBotId] = useState<string | null>(initialSelectedBotId ?? bots[0]?.id ?? null);
   const [panelKind, setPanelKind] = useState<PanelKind>(null);
   const [panelTab, setPanelTab] = useState<PanelTab>("setup");
@@ -442,16 +435,11 @@ export function BotManagementConsole({
   }, [bots]);
 
   useEffect(() => {
-    if (!labEnabled && surfaceMode === "lab") {
-      setSurfaceMode("online");
-      return;
-    }
-
     if (typeof window === "undefined") {
       return;
     }
 
-    const params = new URLSearchParams({ deskMode, surface: surfaceMode });
+    const params = new URLSearchParams({ deskMode });
     if (selectedBotId) {
       params.set("botId", selectedBotId);
     }
@@ -459,10 +447,10 @@ export function BotManagementConsole({
     if (window.location.pathname + window.location.search !== nextUrl) {
       window.history.replaceState(null, "", nextUrl);
     }
-  }, [deskMode, labEnabled, selectedBotId, surfaceMode]);
+  }, [deskMode, selectedBotId]);
 
   useEffect(() => {
-    if (surfaceMode !== "online" || typeof window === "undefined" || typeof window.EventSource === "undefined") {
+    if (typeof window === "undefined" || typeof window.EventSource === "undefined") {
       return;
     }
 
@@ -535,7 +523,7 @@ export function BotManagementConsole({
       source.removeEventListener("desk-event", handleDeskEvent as EventListener);
       source.close();
     };
-  }, [deskMode, surfaceMode]);
+  }, [deskMode]);
 
 
 
@@ -986,10 +974,6 @@ export function BotManagementConsole({
 
   return (
     <section className="space-y-0">
-      <div className="mb-3 flex items-center justify-end gap-2">
-        <PanelTabButton active={surfaceMode === "online"} onClick={() => setSurfaceMode("online")} label="Online" />
-        {labEnabled ? <PanelTabButton active={surfaceMode === "lab"} onClick={() => setSurfaceMode("lab")} label="Lab" /> : null}
-      </div>
       {/* ─── Feedback toast ─── */}
       {feedback ? (
         <div
@@ -1037,18 +1021,7 @@ export function BotManagementConsole({
         </div>
       ) : null}
 
-      {surfaceMode === "lab" ? (
-        <BacktestLabConsole
-          bots={runtimeBots.map((bot) => ({
-            id: bot.id,
-            name: bot.name,
-            pairLabel: bot.pairLabel,
-            config: bot.config
-          }))}
-          selectedBotId={selectedBotId}
-          onSelectBotId={setSelectedBotId}
-        />
-      ) : hasBots ? (
+      {hasBots ? (
         <>
           {/* ═══ SECTION 1 — Chart + Config side panel ═══ */}
           <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px]">

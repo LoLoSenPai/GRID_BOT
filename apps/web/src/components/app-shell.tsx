@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { BotMode } from "@grid-bot/core/enums";
-import { Activity, Bot, Gauge, LogOut } from "lucide-react";
+import { Activity, Bot, FlaskConical, Gauge, LogOut } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { buildDeskHref } from "@/lib/desk-mode";
@@ -10,6 +10,7 @@ import { WalletBalancePanel } from "@/components/wallet-balance-panel";
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: Gauge },
   { href: "/bots", label: "Bots", icon: Bot },
+  { href: "/lab", label: "Lab", icon: FlaskConical, labOnly: true },
   { href: "/activity", label: "Activity", icon: Activity }
 ];
 
@@ -41,6 +42,10 @@ export function AppShell({
           </div>
           <nav className="px-3 py-3">
             {navItems.map((item) => {
+              if (item.labOnly && process.env.BACKTEST_LAB_ENABLED !== "true") {
+                return null;
+              }
+
               const Icon = item.icon;
               const active = pathname.startsWith(item.href);
               return (
@@ -81,7 +86,7 @@ export function AppShell({
                   {pathname.replace("/", "") || "home"}
                 </span>
                 <span className="border border-[var(--line)] px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--green)]">
-                  online
+                  {pathname.startsWith("/lab") ? "lab" : "online"}
                 </span>
               </div>
             </div>

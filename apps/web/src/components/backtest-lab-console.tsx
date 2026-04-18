@@ -497,8 +497,8 @@ function formatStrategyPostureTone(posture: SerializedStrategySelection["posture
 }
 
 function formatScenarioDescription(row: ScenarioComparisonRow) {
-  const recenterSuffix = row.config.recenterMode === RecenterMode.Auto ? " · recenter" : "";
-  return `${formatGoalLabel(row.config.strategyMode)} · ${formatSpacingLabel(row.config.gridType)} · ${row.config.levelCount} rails${recenterSuffix}`;
+  const recenterSuffix = row.config.recenterMode === RecenterMode.Auto ? " | recenter" : "";
+  return `${formatGoalLabel(row.config.strategyMode)} | ${formatSpacingLabel(row.config.gridType)} | ${row.config.levelCount} rails${recenterSuffix}`;
 }
 
 export function BacktestLabConsole({
@@ -507,8 +507,8 @@ export function BacktestLabConsole({
   onSelectBotId
 }: {
   bots: LabPrefillBot[];
-  selectedBotId: string | null;
-  onSelectBotId: (botId: string | null) => void;
+  selectedBotId?: string | null;
+  onSelectBotId?: (botId: string | null) => void;
 }) {
   const [isPending, setIsPending] = useState(false);
   const [pair, setPair] = useState<LabPair>("SOL");
@@ -520,8 +520,11 @@ export function BacktestLabConsole({
   const [activeReplay, setActiveReplay] = useState<SerializedBacktestRunResult | null>(null);
   const [activeConfigKey, setActiveConfigKey] = useState<string | null>(null);
   const [scenarioComparison, setScenarioComparison] = useState<ScenarioComparisonRow[]>([]);
+  const [localSelectedBotId, setLocalSelectedBotId] = useState<string | null>(selectedBotId ?? bots[0]?.id ?? null);
+  const effectiveSelectedBotId = onSelectBotId ? selectedBotId ?? null : localSelectedBotId;
+  const selectBotId = onSelectBotId ?? setLocalSelectedBotId;
 
-  const selectedBot = useMemo(() => bots.find((bot) => bot.id === selectedBotId) ?? bots[0] ?? null, [bots, selectedBotId]);
+  const selectedBot = useMemo(() => bots.find((bot) => bot.id === effectiveSelectedBotId) ?? bots[0] ?? null, [bots, effectiveSelectedBotId]);
   const selectedBotReplayConfig = useMemo(
     () => (selectedBot ? buildReplayConfigFromDraft(selectedBot.config) : null),
     [selectedBot]
@@ -750,7 +753,7 @@ export function BacktestLabConsole({
               <div>
                 <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">Backtest lab</div>
                 <div className="mt-1 text-sm text-white">
-                  Search the current grid model on Pyth history, then replay the best config before you touch a live bot.
+                  Compare your current grid against recenter and optimizer scenarios before changing a live bot.
                 </div>
               </div>
               {displayedGuidance ? (
@@ -777,7 +780,7 @@ export function BacktestLabConsole({
                 onChange={(next) => setResolution(next as LabResolution)}
               />
               <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
-                {displayedReplay?.meta.historyWindow?.source ?? "pyth-history"} · {lookbackDays}d
+                {displayedReplay?.meta.historyWindow?.source ?? "pyth-history"} | {lookbackDays}d
               </div>
             </div>
 
@@ -815,7 +818,7 @@ export function BacktestLabConsole({
         <aside className="flex max-h-[calc(100vh-160px)] min-w-0 flex-col overflow-hidden bg-[var(--panel-soft)]/60">
           <div className="border-b border-[var(--line)] px-4 py-3">
             <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">Lab scope</div>
-            <div className="mt-1 text-sm text-white">Use a live bot as a starting point, then test hypothetical setups before touching production.</div>
+            <div className="mt-1 text-sm text-white">Start with a bot, run Compare scenarios, then read the winner and the risk flags.</div>
           </div>
 
           <div className="flex-1 overflow-y-auto px-4 py-3">
@@ -825,7 +828,7 @@ export function BacktestLabConsole({
                   <LabField label="Prefill from">
                     <select
                       value={selectedBot?.id ?? ""}
-                      onChange={(event) => onSelectBotId(event.currentTarget.value || null)}
+                      onChange={(event) => selectBotId(event.currentTarget.value || null)}
                       className="h-9 w-full min-w-0 rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white"
                     >
                       {!bots.length ? <option value="">Custom</option> : null}
@@ -888,15 +891,15 @@ export function BacktestLabConsole({
                   <div className="space-y-2">
                     <button
                       type="button"
-                      onClick={runRecommendation}
+                      onClick={runScenarioComparison}
                       disabled={isPending || budgetUsd <= 0}
                       className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--accent-line)] bg-[linear-gradient(180deg,rgba(121,184,255,0.18),rgba(121,184,255,0.1))] px-3.5 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--accent)] shadow-[0_10px_24px_rgba(58,120,255,0.16),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-[rgba(121,184,255,0.45)] hover:bg-[linear-gradient(180deg,rgba(121,184,255,0.24),rgba(121,184,255,0.14))] hover:text-white disabled:pointer-events-none disabled:opacity-50"
                     >
-                      <FlaskConical className="h-3.5 w-3.5 shrink-0" />
-                      {isPending ? "Running…" : "Find best setup"}
+                      <RotateCcw className="h-3.5 w-3.5 shrink-0" />
+                      {isPending ? "Running..." : "Compare scenarios"}
                     </button>
                     <div className="text-[11px] leading-4 text-[var(--muted)]">
-                      Search the current grid model on the selected history window and rank the winner on validation, not train.
+                      Best first step: current setup, current + recenter, optimizer best, and adaptive plan on the same window.
                     </div>
                     {selectedBotReplayConfig ? (
                       <button
@@ -922,20 +925,20 @@ export function BacktestLabConsole({
                     ) : null}
                     {selectedBotReplayConfig ? (
                       <div className="text-[11px] leading-4 text-[var(--muted)]">
-                        Current setup is manual. Recenter replay simulates auto-recenter in Lab only and does not update the live bot.
+                        Use these two buttons for quick one-off checks. They do not search for a better setup.
                       </div>
                     ) : null}
                     <button
                       type="button"
-                      onClick={runScenarioComparison}
+                      onClick={runRecommendation}
                       disabled={isPending || budgetUsd <= 0}
                       className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] px-3 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-[var(--accent-line)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)] disabled:pointer-events-none disabled:opacity-50"
                     >
-                      <RotateCcw className="h-3.5 w-3.5 shrink-0" />
-                      Compare scenarios
+                      <FlaskConical className="h-3.5 w-3.5 shrink-0" />
+                      Find optimizer best
                     </button>
                     <div className="text-[11px] leading-4 text-[var(--muted)]">
-                      Runs current setup, current + recenter, optimizer best, and adaptive plan on the same window when available.
+                      Optional: search the parameter space without comparing against the selected bot.
                     </div>
                   </div>
                 </div>
@@ -958,7 +961,7 @@ export function BacktestLabConsole({
                     </div>
                   </div>
                 ) : (
-                  <div className="text-sm text-[var(--muted)]">Use Find best setup to search the current strategy space and surface one concrete recommendation for this pair, budget, and window.</div>
+                  <div className="text-sm text-[var(--muted)]">Use Compare scenarios first, or Find optimizer best if you only want the search winner.</div>
                 )}
               </LabSection>
 
@@ -978,7 +981,7 @@ export function BacktestLabConsole({
                     />
                   </div>
                 ) : (
-                  <div className="text-sm text-[var(--muted)]">No replay yet. Run Replay current setup to test the selected bot config, or Find best setup to search for a better one first.</div>
+                  <div className="text-sm text-[var(--muted)]">No replay yet. Run Compare scenarios to compare your selected bot against Lab alternatives.</div>
                 )}
               </LabSection>
 
@@ -1082,12 +1085,12 @@ export function BacktestLabConsole({
                   </div>
                 ) : (
                   <div className="text-sm text-[var(--muted)]">
-                    Use Compare scenarios to test the selected bot, the optimizer winner, and the adaptive range plan on the same history window.
+                    Use Compare scenarios to test the selected bot, selected bot + recenter, optimizer winner, and adaptive range plan on the same history window.
                   </div>
                 )}
               </LabSection>
 
-              <LabSection title="Adaptive range plan" defaultOpen>
+              <LabSection title="Diagnostics: adaptive range">
                 {displayedRangePlan ? (
                   <div className="space-y-3">
                     <div className={cn("rounded-md border px-3 py-2", formatRangePlanTone(displayedRangePlan.risk))}>
@@ -1136,7 +1139,7 @@ export function BacktestLabConsole({
                 )}
               </LabSection>
 
-              <LabSection title="Meta decision" defaultOpen>
+              <LabSection title="Diagnostics: meta decision">
                 {displayedStrategySelection ? (
                   <div className="space-y-3">
                     <div className={cn("rounded-md border px-3 py-2", formatStrategyPostureTone(displayedStrategySelection.posture))}>
@@ -1183,7 +1186,7 @@ export function BacktestLabConsole({
                 )}
               </LabSection>
 
-              <LabSection title="Recenter advice" defaultOpen>
+              <LabSection title="Diagnostics: recenter">
                 {displayedRecenterAdvice ? (
                   <div className="space-y-3">
                     <div className={cn("rounded-md border px-3 py-2", formatRecenterTone(displayedRecenterAdvice.risk))}>
@@ -1225,7 +1228,7 @@ export function BacktestLabConsole({
                 )}
               </LabSection>
 
-              <LabSection title="Market regime" defaultOpen>
+              <LabSection title="Diagnostics: market regime">
                 {displayedRegime ? (
                   <div className="space-y-3">
                     <div className={cn("rounded-md border px-3 py-2", formatRegimeTone(displayedRegime.regime))}>
@@ -1261,7 +1264,7 @@ export function BacktestLabConsole({
                 )}
               </LabSection>
 
-              <LabSection title="Market indicators" defaultOpen>
+              <LabSection title="Diagnostics: indicators">
                 {latestIndicators ? (
                   <div className="space-y-3">
                     <div className="grid grid-cols-1 gap-2">
@@ -1360,7 +1363,7 @@ export function BacktestLabConsole({
                       <td className="px-4 py-3">
                         <div className="font-medium text-white">{formatGoalLabel(entry.config.strategyMode)}</div>
                         <div className="mt-1 text-[11px] text-[var(--muted)]">
-                          {formatSpacingLabel(entry.config.gridType)} · {entry.config.levelCount} rails · {formatNumber(entry.config.lowPrice, entry.config.lowPrice >= 1000 ? 0 : 2)} →{" "}
+                          {formatSpacingLabel(entry.config.gridType)} | {entry.config.levelCount} rails | {formatNumber(entry.config.lowPrice, entry.config.lowPrice >= 1000 ? 0 : 2)}{" -> "}
                           {formatNumber(entry.config.highPrice, entry.config.highPrice >= 1000 ? 0 : 2)}
                         </div>
                       </td>
