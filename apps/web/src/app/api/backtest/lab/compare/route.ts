@@ -120,7 +120,8 @@ export async function POST(request: Request) {
       lowPrice: bestRangePlan.recommendedLowPrice,
       highPrice: bestRangePlan.recommendedHighPrice,
       levelCount: bestRangePlan.recommendedLevelCount,
-      gridType: bestRangePlan.recommendedGridType
+      gridType: bestRangePlan.recommendedGridType,
+      rangeControlMode: "adaptive"
     });
     const adaptiveReplay = decorateReplay({
       service,
@@ -157,7 +158,7 @@ export async function POST(request: Request) {
         {
           id: "adaptive_plan",
           label: "Adaptive plan",
-          description: "Best config with the indicator-derived range plan applied.",
+          description: "Best config with Lab-only dynamic range shifts while flat.",
           config: adaptiveConfig,
           replay: adaptiveReplay
         }

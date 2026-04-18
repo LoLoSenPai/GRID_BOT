@@ -19,5 +19,6 @@ export * from "./services/market-regime-service";
 export * from "./services/range-plan-service";
 export * from "./services/recenter-policy-service";
 export * from "./services/risk-manager-service";
+export * from "./services/strategy-registry-service";
 export * from "./services/strategy-selection-service";
 export * from "./services/wallet-service";

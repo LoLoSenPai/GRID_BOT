@@ -319,11 +319,25 @@ export interface RangePlanDecision {
 
 export type StrategyFamily = "range_grid" | "trend_following" | "capital_defense";
 export type StrategyPosture = "active" | "caution" | "pause" | "watch";
+export type StrategyReadiness = "live_ready" | "paper_only" | "advisory_only" | "planned";
+
+export interface StrategyDescriptor {
+  family: StrategyFamily;
+  label: string;
+  readiness: StrategyReadiness;
+  liveEnabled: boolean;
+  intendedRegimes: MarketRegime[];
+  summary: string;
+  operatorUse: string;
+  limitations: string[];
+}
 
 export interface StrategyCandidateScore {
   family: StrategyFamily;
   score: number;
   reason: string;
+  readiness: StrategyReadiness;
+  liveEnabled: boolean;
 }
 
 export interface StrategySelectionInput {
@@ -334,11 +348,13 @@ export interface StrategySelectionInput {
 
 export interface StrategySelectionDecision {
   recommendedFamily: StrategyFamily;
+  activeLiveFamily: StrategyFamily;
   posture: StrategyPosture;
   confidence: number;
   operatorAction: string;
   reasons: string[];
   candidates: StrategyCandidateScore[];
+  registry: StrategyDescriptor[];
 }
 
 export interface BacktestConfig {
@@ -348,6 +364,7 @@ export interface BacktestConfig {
   levelCount: number;
   gridType: GridType;
   strategyMode: StrategyMode;
+  rangeControlMode?: "static" | "adaptive";
   minOrderMode: MinOrderMode;
   minOrderQuoteAmount: number;
   maxSlippageBps: number;
@@ -416,6 +433,24 @@ export interface BacktestRecenterEvent {
   reason: string;
 }
 
+export interface BacktestRangeAdjustmentEvent {
+  id: string;
+  phase: "train" | "validation";
+  timestamp: Date;
+  previousLowPrice: number;
+  previousHighPrice: number;
+  previousLevelCount: number;
+  previousGridType: GridType;
+  nextLowPrice: number;
+  nextHighPrice: number;
+  nextLevelCount: number;
+  nextGridType: GridType;
+  risk: RangePlanRisk;
+  basis: RangePlanBasis;
+  confidence: number;
+  reason: string;
+}
+
 export interface BacktestReplayPoint {
   timestamp: Date;
   price: number;
@@ -452,6 +487,7 @@ export interface BacktestMetrics {
   blockedOrderCount: number;
   simulatedOrderCount: number;
   recenterCount: number;
+  rangeAdjustmentCount: number;
   totalFeesUsd: number;
   averageSlippageBps: number;
 }
@@ -479,6 +515,7 @@ export interface BacktestAssumptions {
   trainValidationSplit: number;
   recenterMode: RecenterMode;
   recenterScope: "advisory_only" | "simulated_when_auto_recenter";
+  rangeControlMode: "static" | "adaptive_lab_only";
   outOfRangeModel: "pause_new_entries_allow_recovery_sells";
   excludedCosts: string[];
   notes: string[];
@@ -490,6 +527,7 @@ export interface BacktestRunResult {
   replayPoints: BacktestReplayPoint[];
   executions: BacktestReplayExecution[];
   recenterEvents: BacktestRecenterEvent[];
+  rangeAdjustmentEvents: BacktestRangeAdjustmentEvent[];
   recenterAdvice: RecenterPolicyDecision;
   trainMetrics: BacktestMetrics;
   validationMetrics: BacktestMetrics;

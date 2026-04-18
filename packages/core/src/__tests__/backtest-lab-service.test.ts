@@ -197,6 +197,72 @@ describe("BacktestLabService", () => {
     expect(result.assumptions.recenterScope).toBe("simulated_when_auto_recenter");
   });
 
+  it("simulates adaptive range shifts in Lab while the replay is flat", () => {
+    const candles = Array.from({ length: 48 }, (_, index) => {
+      const price = 120 + Math.sin(index / 3) * 0.35;
+      return candle(
+        new Date(Date.UTC(2026, 3, 1, index)).toISOString(),
+        price,
+        price + 0.12,
+        price - 0.12,
+        price + 0.02
+      );
+    });
+
+    const result = service.replay({
+      series: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        resolution: "1h",
+        candles
+      },
+      config: {
+        ...buildBacktestConfig(StrategyMode.AccumulateUsdc),
+        budgetUsd: 100,
+        rangeControlMode: "adaptive",
+        minOrderMode: MinOrderMode.Manual,
+        minOrderQuoteAmount: 10,
+        lowPrice: 100,
+        highPrice: 110
+      }
+    });
+
+    expect(result.rangeAdjustmentEvents.length).toBeGreaterThan(0);
+    expect(result.overallMetrics.rangeAdjustmentCount).toBe(result.rangeAdjustmentEvents.length);
+    expect(result.assumptions.rangeControlMode).toBe("adaptive_lab_only");
+    expect(result.rangeAdjustmentEvents[0]?.previousLowPrice).toBe(100);
+    expect(result.rangeAdjustmentEvents[0]?.nextLowPrice).toBeGreaterThan(100);
+  });
+
+  it("does not move adaptive rails while open cycles exist", () => {
+    const candles = [
+      candle("2026-04-01T00:00:00Z", 115, 116, 104, 105),
+      ...Array.from({ length: 47 }, (_, index) =>
+        candle(new Date(Date.UTC(2026, 3, 1, index + 1)).toISOString(), 105, 106, 104, 105)
+      )
+    ];
+
+    const result = service.replay({
+      series: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        resolution: "1h",
+        candles
+      },
+      config: {
+        ...buildBacktestConfig(StrategyMode.AccumulateUsdc),
+        budgetUsd: 100,
+        rangeControlMode: "adaptive",
+        minOrderMode: MinOrderMode.Manual,
+        minOrderQuoteAmount: 10
+      }
+    });
+
+    expect(result.overallMetrics.openCycleCount).toBeGreaterThan(0);
+    expect(result.rangeAdjustmentEvents).toEqual([]);
+    expect(result.overallMetrics.rangeAdjustmentCount).toBe(0);
+  });
+
   it("generates bounded candidates from train quantiles only", () => {
     const series: BacktestMarketSeries = {
       symbol: "BTC",
@@ -270,6 +336,7 @@ describe("BacktestLabService", () => {
         blockedOrderCount: 0,
         simulatedOrderCount: 2,
         recenterCount: 0,
+        rangeAdjustmentCount: 0,
         totalFeesUsd: 0,
         averageSlippageBps: 0
       },
@@ -292,6 +359,7 @@ describe("BacktestLabService", () => {
         blockedOrderCount: 0,
         simulatedOrderCount: 2,
         recenterCount: 0,
+        rangeAdjustmentCount: 0,
         totalFeesUsd: 0,
         averageSlippageBps: 0
       }

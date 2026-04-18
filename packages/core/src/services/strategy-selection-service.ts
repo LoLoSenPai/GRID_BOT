@@ -1,5 +1,6 @@
 import type {
   MarketRegime,
+  StrategyDescriptor,
   StrategyCandidateScore,
   StrategyFamily,
   StrategyPosture,
@@ -7,27 +8,40 @@ import type {
   StrategySelectionInput
 } from "../domain/types";
 import { round } from "../utils/math";
+import { StrategyRegistryService } from "./strategy-registry-service";
 
 export class StrategySelectionService {
+  private readonly registryService: StrategyRegistryService;
+
+  constructor(registryService = new StrategyRegistryService()) {
+    this.registryService = registryService;
+  }
+
   select(input: StrategySelectionInput): StrategySelectionDecision {
-    const candidates = scoreCandidates(input);
+    const registry = this.registryService.list();
+    const candidates = scoreCandidates(input, registry);
     candidates.sort((left, right) => right.score - left.score);
-    const recommended = candidates[0] ?? { family: "range_grid" as const, score: 0.2, reason: "Fallback to range grid until signals are available." };
+    const recommended =
+      candidates[0] ??
+      buildCandidateScore(registry, "range_grid", 0.2, "Fallback to range grid until signals are available.");
     const posture = choosePosture(input, recommended.family);
     const confidence = computeConfidence(candidates);
+    const activeLiveFamily = getActiveLiveFamily(recommended.family, registry);
 
     return {
       recommendedFamily: recommended.family,
+      activeLiveFamily,
       posture,
       confidence,
       operatorAction: buildOperatorAction(input.marketRegime.regime, recommended.family, posture),
       reasons: buildReasons(input, recommended.family),
-      candidates
+      candidates,
+      registry
     };
   }
 }
 
-function scoreCandidates(input: StrategySelectionInput): StrategyCandidateScore[] {
+function scoreCandidates(input: StrategySelectionInput, registry: StrategyDescriptor[]): StrategyCandidateScore[] {
   const regime = input.marketRegime.regime;
   const rangePlan = input.rangePlan;
   const metrics = input.validationMetrics ?? null;
@@ -56,22 +70,22 @@ function scoreCandidates(input: StrategySelectionInput): StrategyCandidateScore[
   defenseScore += drawdown >= 12 ? 0.08 : 0;
 
   return [
-    {
-      family: "range_grid",
-      score: normalizeScore(rangeScore),
-      reason: "Specialized for range conditions and repeated adjacent cycles."
-    },
-    {
-      family: "trend_following",
-      score: normalizeScore(trendScore),
-      reason: "Future candidate for directional regimes; not implemented for live execution yet."
-    },
-    {
-      family: "capital_defense",
-      score: normalizeScore(defenseScore),
-      reason: "Prioritizes preserving quote and avoiding new exposure in fragile regimes."
-    }
+    buildCandidateScore(registry, "range_grid", rangeScore, "Specialized for range conditions and repeated adjacent cycles."),
+    buildCandidateScore(registry, "trend_following", trendScore, "Future candidate for directional regimes; not implemented for live execution yet."),
+    buildCandidateScore(registry, "capital_defense", defenseScore, "Prioritizes preserving quote and avoiding new exposure in fragile regimes.")
   ];
+}
+
+function buildCandidateScore(registry: StrategyDescriptor[], family: StrategyFamily, rawScore: number, reason: string): StrategyCandidateScore {
+  const descriptor = registry.find((candidate) => candidate.family === family);
+
+  return {
+    family,
+    score: normalizeScore(rawScore),
+    reason,
+    readiness: descriptor?.readiness ?? "planned",
+    liveEnabled: descriptor?.liveEnabled ?? false
+  };
 }
 
 function choosePosture(input: StrategySelectionInput, family: StrategyFamily): StrategyPosture {
@@ -129,6 +143,11 @@ function buildReasons(input: StrategySelectionInput, family: StrategyFamily) {
   }
 
   return reasons;
+}
+
+function getActiveLiveFamily(recommendedFamily: StrategyFamily, registry: StrategyDescriptor[]): StrategyFamily {
+  const recommended = registry.find((candidate) => candidate.family === recommendedFamily);
+  return recommended?.liveEnabled ? recommended.family : "range_grid";
 }
 
 function computeConfidence(candidates: StrategyCandidateScore[]) {

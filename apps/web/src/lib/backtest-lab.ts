@@ -30,6 +30,7 @@ export type BacktestReplayRequestBody = BacktestRecommendRequestBody & {
     | "levelCount"
     | "gridType"
     | "strategyMode"
+    | "rangeControlMode"
     | "budgetUsd"
     | "minOrderMode"
     | "minOrderQuoteAmount"
@@ -150,6 +151,10 @@ export function parseBacktestReplayRequest(body: unknown): BacktestReplayRequest
         [StrategyMode.AccumulateUsdc, StrategyMode.Balanced, StrategyMode.AccumulateBase] as const,
         "config.strategyMode"
       ),
+      rangeControlMode:
+        configRecord.rangeControlMode === undefined
+          ? "static"
+          : parseEnumValue(configRecord.rangeControlMode, ["static", "adaptive"] as const, "config.rangeControlMode"),
       minOrderMode: parseEnumValue(configRecord.minOrderMode, [MinOrderMode.Auto, MinOrderMode.Manual] as const, "config.minOrderMode"),
       minOrderQuoteAmount: parsePositiveNumber(configRecord.minOrderQuoteAmount, "config.minOrderQuoteAmount"),
       maxSlippageBps: Math.max(0, parseFiniteNumber(configRecord.maxSlippageBps, "config.maxSlippageBps")),
@@ -179,6 +184,7 @@ export function parseBacktestCompareRequest(body: unknown): BacktestCompareReque
 export function buildReplayConfig(input: BacktestReplayRequestBody["config"]): BacktestConfig {
   return {
     ...input,
-    recenterMode: input.recenterMode ?? RecenterMode.Manual
+    recenterMode: input.recenterMode ?? RecenterMode.Manual,
+    rangeControlMode: input.rangeControlMode ?? "static"
   };
 }

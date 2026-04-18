@@ -30,6 +30,7 @@ type LabPrefillBot = {
 
 type SerializedBacktestConfig = BacktestReplayRequestBody["config"] & {
   recenterMode?: string;
+  rangeControlMode?: "static" | "adaptive";
 };
 
 type SerializedBacktestMetrics = {
@@ -50,6 +51,7 @@ type SerializedBacktestMetrics = {
   blockedOrderCount: number;
   simulatedOrderCount: number;
   recenterCount: number;
+  rangeAdjustmentCount: number;
   totalFeesUsd: number;
   averageSlippageBps: number;
 };
@@ -87,6 +89,24 @@ type SerializedBacktestRecenterEvent = {
   allowNewBuys: boolean;
   allowRecoverySells: boolean;
   risk: "low" | "medium" | "high";
+  reason: string;
+};
+
+type SerializedBacktestRangeAdjustmentEvent = {
+  id: string;
+  phase: "train" | "validation";
+  timestamp: string;
+  previousLowPrice: number;
+  previousHighPrice: number;
+  previousLevelCount: number;
+  previousGridType: SerializedBacktestConfig["gridType"];
+  nextLowPrice: number;
+  nextHighPrice: number;
+  nextLevelCount: number;
+  nextGridType: SerializedBacktestConfig["gridType"];
+  risk: "low" | "medium" | "high";
+  basis: SerializedRangePlan["basis"];
+  confidence: number;
   reason: string;
 };
 
@@ -154,6 +174,7 @@ type SerializedRangePlan = {
 
 type SerializedStrategySelection = {
   recommendedFamily: "range_grid" | "trend_following" | "capital_defense";
+  activeLiveFamily: "range_grid" | "trend_following" | "capital_defense";
   posture: "active" | "caution" | "pause" | "watch";
   confidence: number;
   operatorAction: string;
@@ -162,6 +183,18 @@ type SerializedStrategySelection = {
     family: "range_grid" | "trend_following" | "capital_defense";
     score: number;
     reason: string;
+    readiness: "live_ready" | "paper_only" | "advisory_only" | "planned";
+    liveEnabled: boolean;
+  }>;
+  registry: Array<{
+    family: "range_grid" | "trend_following" | "capital_defense";
+    label: string;
+    readiness: "live_ready" | "paper_only" | "advisory_only" | "planned";
+    liveEnabled: boolean;
+    intendedRegimes: Array<"RANGE" | "TREND_UP" | "TREND_DOWN" | "CHAOTIC_HIGH_VOL">;
+    summary: string;
+    operatorUse: string;
+    limitations: string[];
   }>;
 };
 
@@ -174,6 +207,7 @@ type SerializedBacktestAssumptions = {
   trainValidationSplit: number;
   recenterMode: string;
   recenterScope: "advisory_only" | "simulated_when_auto_recenter";
+  rangeControlMode: "static" | "adaptive_lab_only";
   outOfRangeModel: "pause_new_entries_allow_recovery_sells";
   excludedCosts: string[];
   notes: string[];
@@ -184,6 +218,7 @@ type SerializedBacktestRunResult = {
   replayPoints: SerializedBacktestReplayPoint[];
   executions: SerializedBacktestReplayExecution[];
   recenterEvents: SerializedBacktestRecenterEvent[];
+  rangeAdjustmentEvents: SerializedBacktestRangeAdjustmentEvent[];
   recenterAdvice: SerializedRecenterAdvice;
   rangePlan?: SerializedRangePlan;
   strategySelection?: SerializedStrategySelection;
@@ -271,6 +306,17 @@ type SerializedBacktestCompareResponse = {
   rows: ScenarioComparisonRow[];
 };
 
+type LabConclusionTone = "neutral" | "positive" | "caution" | "danger";
+
+type LabConclusion = {
+  tone: LabConclusionTone;
+  eyebrow: string;
+  title: string;
+  body: string;
+  primaryAction: string;
+  details: string[];
+};
+
 function inferPairFromDraft(draft: BotFormDraft): LabPair {
   const symbol = BOT_PAIR_PRESETS[draft.presetId].baseSymbol;
   return symbol === "BTC" ? "BTC" : "SOL";
@@ -302,6 +348,7 @@ function buildReplayConfigFromDraft(draft: BotFormDraft): SerializedBacktestConf
     levelLockMs: normalizedDraft.levelLockMs,
     priceConfirmationWindowMs: normalizedDraft.priceConfirmationWindowMs,
     recenterMode: RecenterMode.Manual,
+    rangeControlMode: "static",
     outOfRangePause: normalizedDraft.outOfRangePause
   };
 }
@@ -312,7 +359,8 @@ function buildAdaptiveReplayConfig(baseConfig: SerializedBacktestConfig, rangePl
     lowPrice: rangePlan.recommendedLowPrice,
     highPrice: rangePlan.recommendedHighPrice,
     levelCount: rangePlan.recommendedLevelCount,
-    gridType: rangePlan.recommendedGridType
+    gridType: rangePlan.recommendedGridType,
+    rangeControlMode: "adaptive"
   };
 }
 
@@ -327,7 +375,8 @@ function getConfigSignature(config: SerializedBacktestConfig) {
     config.minOrderQuoteAmount,
     config.maxSlippageBps,
     config.executionFeeBps ?? 10,
-    config.recenterMode ?? RecenterMode.Manual
+    config.recenterMode ?? RecenterMode.Manual,
+    config.rangeControlMode ?? "static"
   ].join(":");
 }
 
@@ -483,6 +532,32 @@ function formatStrategyFamilyLabel(family: SerializedStrategySelection["recommen
   }
 }
 
+function formatReadinessLabel(readiness: SerializedStrategySelection["registry"][number]["readiness"]) {
+  switch (readiness) {
+    case "live_ready":
+      return "Live-ready";
+    case "paper_only":
+      return "Paper-only";
+    case "advisory_only":
+      return "Advisory";
+    case "planned":
+      return "Planned";
+  }
+}
+
+function formatReadinessTone(readiness: SerializedStrategySelection["registry"][number]["readiness"]) {
+  switch (readiness) {
+    case "live_ready":
+      return "border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)] text-[var(--green)]";
+    case "planned":
+      return "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]";
+    case "paper_only":
+      return "border-[color:rgba(248,200,108,0.18)] bg-[color:rgba(248,200,108,0.08)] text-[var(--amber)]";
+    default:
+      return "border-[color:rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.035)] text-[var(--muted)]";
+  }
+}
+
 function formatStrategyPostureTone(posture: SerializedStrategySelection["posture"]) {
   switch (posture) {
     case "active":
@@ -498,7 +573,176 @@ function formatStrategyPostureTone(posture: SerializedStrategySelection["posture
 
 function formatScenarioDescription(row: ScenarioComparisonRow) {
   const recenterSuffix = row.config.recenterMode === RecenterMode.Auto ? " | recenter" : "";
-  return `${formatGoalLabel(row.config.strategyMode)} | ${formatSpacingLabel(row.config.gridType)} | ${row.config.levelCount} rails${recenterSuffix}`;
+  const adaptiveSuffix = row.config.rangeControlMode === "adaptive" ? " | adaptive" : "";
+  return `${formatGoalLabel(row.config.strategyMode)} | ${formatSpacingLabel(row.config.gridType)} | ${row.config.levelCount} rails${recenterSuffix}${adaptiveSuffix}`;
+}
+
+function formatScenarioLabel(id: ScenarioComparisonId) {
+  switch (id) {
+    case "current_setup":
+      return "Current setup";
+    case "current_recenter":
+      return "Current + recenter";
+    case "optimizer_best":
+      return "Optimizer best";
+    case "adaptive_plan":
+      return "Adaptive plan";
+  }
+}
+
+function getScenarioSummaryAction(id: ScenarioComparisonId) {
+  switch (id) {
+    case "current_setup":
+      return "Keep the current bot for now.";
+    case "current_recenter":
+      return "Keep the current config, but treat recenter as the next paper-only test.";
+    case "optimizer_best":
+      return "Consider recreating the bot with the optimizer config.";
+    case "adaptive_plan":
+      return "Consider recreating with the adaptive range candidate, preferably in paper first.";
+  }
+}
+
+function rankScenarioRows(rows: ScenarioComparisonRow[]) {
+  return [...rows].sort((left, right) => {
+    const netDelta = getValidationNet(right.replay.validationMetrics) - getValidationNet(left.replay.validationMetrics);
+    if (Math.abs(netDelta) > 0.000001) {
+      return netDelta;
+    }
+
+    const drawdownDelta = left.replay.validationMetrics.maxDrawdownPct - right.replay.validationMetrics.maxDrawdownPct;
+    if (Math.abs(drawdownDelta) > 0.000001) {
+      return drawdownDelta;
+    }
+
+    return right.replay.validationMetrics.timeInRangePct - left.replay.validationMetrics.timeInRangePct;
+  });
+}
+
+function buildLabConclusion({
+  scenarioComparison,
+  recommendation,
+  displayedReplay
+}: {
+  scenarioComparison: ScenarioComparisonRow[];
+  recommendation: SerializedBacktestRecommendation | null;
+  displayedReplay: SerializedBacktestRunResult | null;
+}): LabConclusion {
+  if (scenarioComparison.length) {
+    const rankedRows = rankScenarioRows(scenarioComparison);
+    const best = rankedRows[0]!;
+    const current = scenarioComparison.find((row) => row.id === "current_setup") ?? null;
+    const bestNet = getValidationNet(best.replay.validationMetrics);
+    const currentNet = current ? getValidationNet(current.replay.validationMetrics) : null;
+    const currentGap = currentNet === null ? 0 : bestNet - currentNet;
+    const budget = best.replay.validationMetrics.startingBudgetUsd || best.config.budgetUsd || 1;
+    const materialGap = Math.max(1, budget * 0.002);
+    const riskTone: LabConclusionTone =
+      best.replay.validationMetrics.timeInRangePct < 50 || best.replay.validationMetrics.maxDrawdownPct > 20
+        ? "danger"
+        : best.replay.validationMetrics.timeInRangePct < 70 || best.replay.validationMetrics.maxDrawdownPct > 12
+          ? "caution"
+          : "positive";
+    const bestLabel = formatScenarioLabel(best.id);
+    const isCurrentGoodEnough = best.id === "current_setup" || currentGap <= materialGap;
+    const details = [
+      `Best validation result: ${bestLabel} at ${formatCurrency(bestNet)} net.`,
+      currentNet === null ? null : `Current setup gap: ${formatCurrency(currentGap)} versus the best scenario.`,
+      `Risk check: ${formatPercent(best.replay.validationMetrics.maxDrawdownPct, 1)} max drawdown, ${formatPercent(best.replay.validationMetrics.timeInRangePct, 0)} in range.`,
+      best.replay.overallMetrics.recenterCount > 0 ? `${best.replay.overallMetrics.recenterCount} simulated recenter event(s).` : "No simulated recenter event on the selected winner.",
+      best.replay.overallMetrics.rangeAdjustmentCount > 0
+        ? `${best.replay.overallMetrics.rangeAdjustmentCount} Lab-only adaptive range shift(s).`
+        : "No adaptive range shift on the selected winner."
+    ].filter((detail): detail is string => Boolean(detail));
+
+    if (isCurrentGoodEnough) {
+      return {
+        tone: riskTone === "danger" ? "caution" : "positive",
+        eyebrow: "Decision",
+        title: "Keep the current bot for now",
+        body: "The alternatives do not beat your current setup by enough on validation to justify recreating the bot immediately.",
+        primaryAction: "Keep monitoring. Recreate only if price closes outside the range for the stop rule.",
+        details
+      };
+    }
+
+    if (best.id === "current_recenter") {
+      return {
+        tone: riskTone,
+        eyebrow: "Decision",
+        title: "Current config is close, recenter helps",
+        body: "The Lab says the same setup performs better when recenter defense is simulated. This is a paper/Lab signal, not a live auto-recenter recommendation yet.",
+        primaryAction: getScenarioSummaryAction(best.id),
+        details
+      };
+    }
+
+    return {
+      tone: riskTone,
+      eyebrow: "Decision",
+      title: `${bestLabel} is the best candidate`,
+      body: "The best validation result comes from a different configuration. Treat it as a recreate candidate, not a silent edit to the running bot.",
+      primaryAction: getScenarioSummaryAction(best.id),
+      details
+    };
+  }
+
+  if (recommendation) {
+    const net = getValidationNet(recommendation.validationMetrics);
+    return {
+      tone: recommendation.operatorGuidance.status === "Healthy" ? "positive" : recommendation.operatorGuidance.status === "Fragile" ? "danger" : "caution",
+      eyebrow: "Optimizer result",
+      title: `Optimizer found ${formatGoalLabel(recommendation.bestConfig.strategyMode)}`,
+      body: "This is only the search winner. Run Compare scenarios before deciding whether it is better than the selected bot.",
+      primaryAction: `Validation net ${formatCurrency(net)}. Next: Compare scenarios.`,
+      details: [
+        `${formatSpacingLabel(recommendation.bestConfig.gridType)}, ${recommendation.bestConfig.levelCount} rails.`,
+        `Range ${formatNumber(recommendation.bestConfig.lowPrice, recommendation.bestConfig.lowPrice >= 1000 ? 0 : 2)} -> ${formatNumber(recommendation.bestConfig.highPrice, recommendation.bestConfig.highPrice >= 1000 ? 0 : 2)}.`,
+        `Risk check: ${formatPercent(recommendation.validationMetrics.maxDrawdownPct, 1)} max drawdown, ${formatPercent(recommendation.validationMetrics.timeInRangePct, 0)} in range.`,
+        "Optimizer configs stay static; use Compare scenarios to test recenter/adaptive variants."
+      ]
+    };
+  }
+
+  if (displayedReplay) {
+    const net = getValidationNet(displayedReplay.validationMetrics);
+    return {
+      tone: net >= 0 ? "neutral" : "caution",
+      eyebrow: "Single replay",
+      title: "One setup replayed",
+      body: "A single replay is useful for inspection, but it does not tell you whether this setup is better than the alternatives.",
+      primaryAction: "Run Compare scenarios to get a real decision.",
+      details: [
+        `Validation net ${formatCurrency(net)}.`,
+        `${formatPercent(displayedReplay.validationMetrics.maxDrawdownPct, 1)} max drawdown, ${formatPercent(displayedReplay.validationMetrics.timeInRangePct, 0)} in range.`,
+        displayedReplay.overallMetrics.rangeAdjustmentCount > 0
+          ? `${displayedReplay.overallMetrics.rangeAdjustmentCount} adaptive range shift(s) happened in this replay.`
+          : "No adaptive range shift happened in this replay."
+      ]
+    };
+  }
+
+  return {
+    tone: "neutral",
+    eyebrow: "Start here",
+    title: "Run Compare scenarios first",
+    body: "The Lab is useful only after it compares your selected bot against recenter, optimizer, and adaptive alternatives on the same window.",
+    primaryAction: "Pick the bot, budget, window, then click Compare scenarios.",
+    details: ["Nothing here touches live trading.", "Use diagnostics only after the conclusion looks surprising."]
+  };
+}
+
+function getConclusionToneClass(tone: LabConclusionTone) {
+  switch (tone) {
+    case "positive":
+      return "border-[color:rgba(68,211,156,0.22)] bg-[linear-gradient(180deg,rgba(68,211,156,0.1),rgba(68,211,156,0.035))]";
+    case "danger":
+      return "border-[color:rgba(255,107,122,0.24)] bg-[linear-gradient(180deg,rgba(255,107,122,0.1),rgba(255,107,122,0.035))]";
+    case "caution":
+      return "border-[color:rgba(248,200,108,0.24)] bg-[linear-gradient(180deg,rgba(248,200,108,0.1),rgba(248,200,108,0.035))]";
+    default:
+      return "border-[var(--accent-line)] bg-[linear-gradient(180deg,rgba(121,184,255,0.1),rgba(121,184,255,0.035))]";
+  }
 }
 
 export function BacktestLabConsole({
@@ -730,6 +974,10 @@ export function BacktestLabConsole({
   }
 
   const bestValidationNet = recommendation ? recommendation.validationMetrics.endingEquityUsd - recommendation.validationMetrics.startingBudgetUsd : null;
+  const labConclusion = useMemo(
+    () => buildLabConclusion({ scenarioComparison, recommendation, displayedReplay }),
+    [displayedReplay, recommendation, scenarioComparison]
+  );
 
   return (
     <section className="space-y-0">
@@ -745,6 +993,8 @@ export function BacktestLabConsole({
           {feedback.message}
         </div>
       ) : null}
+
+      <LabConclusionPanel conclusion={labConclusion} />
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_400px]">
         <div className="min-w-0 border-r border-[var(--line)]">
@@ -979,6 +1229,11 @@ export function BacktestLabConsole({
                       value={formatNumber(displayedReplay.overallMetrics.recenterCount, 0)}
                       hint={displayedReplay.assumptions.recenterScope === "simulated_when_auto_recenter" ? "Lab simulation" : "Advisory only"}
                     />
+                    <LabMetric
+                      label="Range shifts"
+                      value={formatNumber(displayedReplay.overallMetrics.rangeAdjustmentCount, 0)}
+                      hint={displayedReplay.assumptions.rangeControlMode === "adaptive_lab_only" ? "Adaptive Lab simulation" : "Static range"}
+                    />
                   </div>
                 ) : (
                   <div className="text-sm text-[var(--muted)]">No replay yet. Run Compare scenarios to compare your selected bot against Lab alternatives.</div>
@@ -1004,6 +1259,11 @@ export function BacktestLabConsole({
                         label="Recenter"
                         value={formatAssumptionRecenterMode(displayedAssumptions.recenterMode)}
                         hint={displayedAssumptions.recenterScope === "simulated_when_auto_recenter" ? "Lab simulation" : "Advisory only"}
+                      />
+                      <LabMetric
+                        label="Range control"
+                        value={displayedAssumptions.rangeControlMode === "adaptive_lab_only" ? "Adaptive Lab" : "Static"}
+                        hint="Never auto-applies to live"
                       />
                     </div>
                     <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
@@ -1075,8 +1335,8 @@ export function BacktestLabConsole({
                               <div className="mt-0.5 text-[10px] text-white">{formatBps(row.replay.validationMetrics.averageSlippageBps)}</div>
                             </div>
                             <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
-                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Blocked</div>
-                              <div className="mt-0.5 text-[10px] text-white">{formatNumber(row.replay.validationMetrics.blockedOrderCount, 0)}</div>
+                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Adaptive</div>
+                              <div className="mt-0.5 text-[10px] text-white">{formatNumber(row.replay.validationMetrics.rangeAdjustmentCount, 0)}</div>
                             </div>
                           </div>
                         </button>
@@ -1154,7 +1414,18 @@ export function BacktestLabConsole({
                       </div>
                       <div className="mt-2 text-[11px] leading-4 text-[var(--muted)]">{displayedStrategySelection.operatorAction}</div>
                     </div>
-                    <LabMetric label="Selector confidence" value={formatPercent(displayedStrategySelection.confidence * 100, 0)} hint="Heuristic score" />
+                    <div className="grid grid-cols-2 gap-2">
+                      <LabMetric label="Selector confidence" value={formatPercent(displayedStrategySelection.confidence * 100, 0)} hint="Heuristic score" />
+                      <LabMetric
+                        label="Live engine today"
+                        value={formatStrategyFamilyLabel(displayedStrategySelection.activeLiveFamily)}
+                        hint={
+                          displayedStrategySelection.activeLiveFamily === displayedStrategySelection.recommendedFamily
+                            ? "Executable now"
+                            : "Recommendation is watch/advisory"
+                        }
+                      />
+                    </div>
                     <div className="grid grid-cols-1 gap-2">
                       {displayedStrategySelection.candidates.map((candidate) => (
                         <div key={candidate.family} className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
@@ -1162,11 +1433,32 @@ export function BacktestLabConsole({
                             <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-white">
                               {formatStrategyFamilyLabel(candidate.family)}
                             </div>
-                            <div className="font-mono text-[10px] text-[var(--muted)]">{formatPercent(candidate.score * 100, 0)}</div>
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              <span className={cn("rounded border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.1em]", formatReadinessTone(candidate.readiness))}>
+                                {formatReadinessLabel(candidate.readiness)}
+                              </span>
+                              <span className="font-mono text-[10px] text-[var(--muted)]">{formatPercent(candidate.score * 100, 0)}</span>
+                            </div>
                           </div>
                           <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">{candidate.reason}</div>
                         </div>
                       ))}
+                    </div>
+                    <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
+                      <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">Strategy registry</div>
+                      <div className="mt-2 space-y-2">
+                        {displayedStrategySelection.registry.map((strategy) => (
+                          <div key={strategy.family} className="rounded border border-[rgba(255,255,255,0.06)] bg-[rgba(255,255,255,0.02)] px-2 py-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-white">{strategy.label}</div>
+                              <span className={cn("rounded border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.1em]", formatReadinessTone(strategy.readiness))}>
+                                {formatReadinessLabel(strategy.readiness)}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">{strategy.summary}</div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                     <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
                       <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">Why</div>
@@ -1393,6 +1685,31 @@ export function BacktestLabConsole({
         ) : (
           <div className="px-4 py-6 text-sm text-[var(--muted)]">No leaderboard yet. Run the optimizer to compare configs.</div>
         )}
+      </div>
+    </section>
+  );
+}
+
+function LabConclusionPanel({ conclusion }: { conclusion: LabConclusion }) {
+  return (
+    <section className={cn("mb-3 border px-4 py-3", getConclusionToneClass(conclusion.tone))}>
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start">
+        <div className="min-w-0">
+          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">{conclusion.eyebrow}</div>
+          <div className="mt-1 text-xl font-semibold tracking-[-0.03em] text-white">{conclusion.title}</div>
+          <div className="mt-1 max-w-3xl text-sm leading-5 text-[var(--muted)]">{conclusion.body}</div>
+        </div>
+        <div className="rounded-md border border-[var(--line)] bg-[rgba(0,0,0,0.16)] px-3 py-2">
+          <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--muted)]">Operator action</div>
+          <div className="mt-1 text-sm font-medium text-white">{conclusion.primaryAction}</div>
+        </div>
+      </div>
+      <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+        {conclusion.details.map((detail) => (
+          <div key={detail} className="border border-[rgba(255,255,255,0.06)] bg-[rgba(0,0,0,0.12)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
+            {detail}
+          </div>
+        ))}
       </div>
     </section>
   );

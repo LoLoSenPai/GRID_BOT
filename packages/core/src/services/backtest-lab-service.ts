@@ -8,6 +8,7 @@ import type {
   BacktestMarketSeries,
   BacktestMetrics,
   BacktestOperatorGuidance,
+  BacktestRangeAdjustmentEvent,
   BacktestRecommendation,
   BacktestRecenterEvent,
   BacktestReplayExecution,
@@ -30,6 +31,9 @@ import { CandleReplayService } from "./candle-replay-service";
 import { DEFAULT_EXECUTION_FEE_BPS, ExecutionCostModelService } from "./execution-cost-model-service";
 import { GridDecisionService } from "./grid-decision-service";
 import { GridStrategyService } from "./grid-strategy-service";
+import { IndicatorService } from "./indicator-service";
+import { MarketRegimeService } from "./market-regime-service";
+import { RangePlanService } from "./range-plan-service";
 import { RecenterPolicyService } from "./recenter-policy-service";
 import { RiskManagerService } from "./risk-manager-service";
 
@@ -62,6 +66,11 @@ const STRATEGY_RUNTIME_DEFAULTS: Record<
   }
 };
 
+const ADAPTIVE_RANGE_MIN_CANDLES = 30;
+const ADAPTIVE_RANGE_REPLAN_BARS = 12;
+const ADAPTIVE_RANGE_MIN_MOVE_PCT = 1;
+const ADAPTIVE_RANGE_OBSERVED_WINDOW = 250;
+
 export interface BacktestReplayRequest {
   series: BacktestMarketSeries;
   config: BacktestConfig;
@@ -93,6 +102,8 @@ interface BacktestRuntimeState {
   openLots: PositionLot[];
   recenterGuard: Pick<RecenterPolicyDecision, "mode" | "side" | "allowNewBuys" | "allowRecoverySells"> | null;
   consecutiveOutsideCloses: number;
+  observedCandles: HistoricalCandle[];
+  adaptiveBarsSinceLastEvaluation: number;
 }
 
 interface BacktestSegmentResult {
@@ -100,6 +111,7 @@ interface BacktestSegmentResult {
   replayPoints: BacktestReplayPoint[];
   executions: BacktestReplayExecution[];
   recenterEvents: BacktestRecenterEvent[];
+  rangeAdjustmentEvents: BacktestRangeAdjustmentEvent[];
 }
 
 interface PreparedSeries {
@@ -255,6 +267,9 @@ export class BacktestLabService {
   private readonly recenterPolicyService: RecenterPolicyService;
   private readonly executionCostModelService: ExecutionCostModelService;
   private readonly candleReplayService: CandleReplayService;
+  private readonly indicatorService: IndicatorService;
+  private readonly marketRegimeService: MarketRegimeService;
+  private readonly rangePlanService: RangePlanService;
 
   constructor(
     gridStrategyService = new GridStrategyService(),
@@ -262,7 +277,10 @@ export class BacktestLabService {
     gridDecisionService = new GridDecisionService(),
     recenterPolicyService = new RecenterPolicyService(),
     executionCostModelService = new ExecutionCostModelService(),
-    candleReplayService = defaultCandleReplayService
+    candleReplayService = defaultCandleReplayService,
+    indicatorService = new IndicatorService(),
+    marketRegimeService = new MarketRegimeService(),
+    rangePlanService = new RangePlanService()
   ) {
     this.gridStrategyService = gridStrategyService;
     this.riskManagerService = riskManagerService;
@@ -270,6 +288,9 @@ export class BacktestLabService {
     this.recenterPolicyService = recenterPolicyService;
     this.executionCostModelService = executionCostModelService;
     this.candleReplayService = candleReplayService;
+    this.indicatorService = indicatorService;
+    this.marketRegimeService = marketRegimeService;
+    this.rangePlanService = rangePlanService;
   }
 
   replay(request: BacktestReplayRequest): BacktestRunResult {
@@ -297,6 +318,7 @@ export class BacktestLabService {
     const replayPoints = [...continuousTrain.replayPoints, ...continuousValidation.replayPoints];
     const executions = [...continuousTrain.executions, ...continuousValidation.executions];
     const recenterEvents = [...continuousTrain.recenterEvents, ...continuousValidation.recenterEvents];
+    const rangeAdjustmentEvents = [...continuousTrain.rangeAdjustmentEvents, ...continuousValidation.rangeAdjustmentEvents];
     const recenterAdvice = this.deriveRecenterAdvice(
       config,
       continuousValidation.state,
@@ -308,6 +330,7 @@ export class BacktestLabService {
       replayPoints,
       executions,
       recenterEvents,
+      rangeAdjustmentEvents,
       config.budgetUsd,
       continuousValidation.state,
       prepared.series,
@@ -320,6 +343,7 @@ export class BacktestLabService {
       replayPoints,
       executions,
       recenterEvents,
+      rangeAdjustmentEvents,
       recenterAdvice,
       trainMetrics: trainMetricsResult.metrics,
       validationMetrics: validationMetricsResult.metrics,
@@ -393,14 +417,15 @@ export class BacktestLabService {
     const state = initialState ?? this.createInitialState(series, config);
 
     if (candles.length === 0) {
-      const metrics = this.summarizeMetrics([], [], [], config.budgetUsd, state, series, config);
-      return { state, replayPoints: [], executions: [], recenterEvents: [], metrics };
+      const metrics = this.summarizeMetrics([], [], [], [], config.budgetUsd, state, series, config);
+      return { state, replayPoints: [], executions: [], recenterEvents: [], rangeAdjustmentEvents: [], metrics };
     }
 
     const intervalMs = this.candleReplayService.estimateIntervalMs(candles);
     const replayPoints: BacktestReplayPoint[] = [];
     const executions: BacktestReplayExecution[] = [];
     const recenterEvents: BacktestRecenterEvent[] = [];
+    const rangeAdjustmentEvents: BacktestRangeAdjustmentEvent[] = [];
     let previousObservedPrice = state.currentPrice ?? candles[0]!.open;
 
     candles.forEach((candle) => {
@@ -456,7 +481,7 @@ export class BacktestLabService {
             return;
           }
 
-          const report = this.simulateExecution(signal, orderIntent, config);
+          const report = this.simulateExecution(signal, orderIntent, activeConfig);
           executions.push(this.applyExecution(state, signal, orderIntent, report, step.timestamp, phase));
           this.recalculatePortfolioState(state, step.price);
           replayPoints.push(this.snapshotPoint(state, step.timestamp, phase));
@@ -470,18 +495,27 @@ export class BacktestLabService {
         previousObservedPrice = step.price;
       });
 
+      state.observedCandles = [...state.observedCandles, candle].slice(-ADAPTIVE_RANGE_OBSERVED_WINDOW);
+      state.adaptiveBarsSinceLastEvaluation += 1;
+
+      const adaptiveRangeEvent = this.maybeApplyAdaptiveRangePlan(state, candle, phase);
+      if (adaptiveRangeEvent) {
+        rangeAdjustmentEvents.push(adaptiveRangeEvent);
+      }
+
       const recenterEvent = this.maybeApplySimulatedRecenter(state, candle, phase, marketRegime ?? null);
       if (recenterEvent) {
         recenterEvents.push(recenterEvent);
       }
     });
 
-    const metrics = this.summarizeMetrics(replayPoints, executions, recenterEvents, config.budgetUsd, state, series, config);
+    const metrics = this.summarizeMetrics(replayPoints, executions, recenterEvents, rangeAdjustmentEvents, config.budgetUsd, state, series, config);
     return {
       state,
       replayPoints,
       executions,
       recenterEvents,
+      rangeAdjustmentEvents,
       metrics
     };
   }
@@ -528,7 +562,9 @@ export class BacktestLabService {
       },
       openLots: [],
       recenterGuard: null,
-      consecutiveOutsideCloses: 0
+      consecutiveOutsideCloses: 0,
+      observedCandles: [],
+      adaptiveBarsSinceLastEvaluation: 0
     };
   }
 
@@ -548,6 +584,7 @@ export class BacktestLabService {
       levelLockMs: Math.max(0, config.levelLockMs ?? strategyDefaults.levelLockMs),
       priceConfirmationWindowMs: Math.max(0, config.priceConfirmationWindowMs ?? strategyDefaults.priceConfirmationWindowMs),
       recenterMode: config.recenterMode ?? RecenterMode.Manual,
+      rangeControlMode: config.rangeControlMode ?? "static",
       outOfRangePause: config.outOfRangePause ?? true
     };
   }
@@ -929,10 +966,110 @@ export class BacktestLabService {
     };
   }
 
+  private maybeApplyAdaptiveRangePlan(
+    state: BacktestRuntimeState,
+    candle: HistoricalCandle,
+    phase: "train" | "validation"
+  ): BacktestRangeAdjustmentEvent | null {
+    if (state.config.rangeControlMode !== "adaptive") {
+      return null;
+    }
+
+    if (state.observedCandles.length < ADAPTIVE_RANGE_MIN_CANDLES) {
+      return null;
+    }
+
+    if (state.adaptiveBarsSinceLastEvaluation < ADAPTIVE_RANGE_REPLAN_BARS) {
+      return null;
+    }
+
+    state.adaptiveBarsSinceLastEvaluation = 0;
+    const indicators = this.indicatorService.compute(state.observedCandles);
+    const latestIndicators = indicators.latest;
+    if (!latestIndicators) {
+      return null;
+    }
+
+    const marketRegime = this.marketRegimeService.assess(state.observedCandles, indicators);
+    const rangePlan = this.rangePlanService.plan({
+      currentPrice: candle.close,
+      currentLowPrice: state.config.lowPrice,
+      currentHighPrice: state.config.highPrice,
+      currentLevelCount: state.config.levelCount,
+      budgetUsd: state.config.budgetUsd,
+      minOrderQuoteAmount:
+        state.config.minOrderMode === MinOrderMode.Auto
+          ? getSuggestedMinOrderQuoteAmount(state.config.budgetUsd, state.config.levelCount)
+          : state.config.minOrderQuoteAmount,
+      indicators: latestIndicators,
+      marketRegime
+    });
+
+    if (rangePlan.risk === "high" || marketRegime.regime === "CHAOTIC_HIGH_VOL") {
+      state.recenterGuard = {
+        mode: "soft",
+        side: candle.close > state.config.highPrice ? "above" : candle.close < state.config.lowPrice ? "below" : "inside",
+        allowNewBuys: false,
+        allowRecoverySells: true
+      };
+      return null;
+    }
+
+    if (state.openLots.length > 0 || state.deployedQuoteAmount > 0) {
+      return null;
+    }
+
+    const previousLowPrice = state.config.lowPrice;
+    const previousHighPrice = state.config.highPrice;
+    const previousLevelCount = state.config.levelCount;
+    const previousGridType = state.config.gridType;
+    const currentMid = (previousLowPrice + previousHighPrice) / 2;
+    const currentWidth = previousHighPrice - previousLowPrice;
+    const nextMid = (rangePlan.recommendedLowPrice + rangePlan.recommendedHighPrice) / 2;
+    const nextWidth = rangePlan.recommendedHighPrice - rangePlan.recommendedLowPrice;
+    const midMovePct = currentMid > 0 ? Math.abs(nextMid - currentMid) / currentMid * 100 : 0;
+    const widthMovePct = currentWidth > 0 ? Math.abs(nextWidth - currentWidth) / currentWidth * 100 : 0;
+    const structureChanged = previousLevelCount !== rangePlan.recommendedLevelCount || previousGridType !== rangePlan.recommendedGridType;
+
+    if (!structureChanged && midMovePct < ADAPTIVE_RANGE_MIN_MOVE_PCT && widthMovePct < ADAPTIVE_RANGE_MIN_MOVE_PCT) {
+      return null;
+    }
+
+    state.config = {
+      ...state.config,
+      lowPrice: rangePlan.recommendedLowPrice,
+      highPrice: rangePlan.recommendedHighPrice,
+      levelCount: rangePlan.recommendedLevelCount,
+      gridType: rangePlan.recommendedGridType
+    };
+    state.metadata.pendingSignal = null;
+    state.metadata.levelLocks = {};
+    state.recenterGuard = null;
+
+    return {
+      id: `range-adjustment-${phase}-${candle.timestamp.getTime()}`,
+      phase,
+      timestamp: candle.timestamp,
+      previousLowPrice,
+      previousHighPrice,
+      previousLevelCount,
+      previousGridType,
+      nextLowPrice: rangePlan.recommendedLowPrice,
+      nextHighPrice: rangePlan.recommendedHighPrice,
+      nextLevelCount: rangePlan.recommendedLevelCount,
+      nextGridType: rangePlan.recommendedGridType,
+      risk: rangePlan.risk,
+      basis: rangePlan.basis,
+      confidence: rangePlan.confidence,
+      reason: rangePlan.operatorAction
+    };
+  }
+
   private summarizeMetrics(
     points: BacktestReplayPoint[],
     executions: BacktestReplayExecution[],
     recenterEvents: BacktestRecenterEvent[],
+    rangeAdjustmentEvents: BacktestRangeAdjustmentEvent[],
     startingBudgetUsd: number,
     endState: BacktestRuntimeState,
     series: BacktestMarketSeries,
@@ -956,6 +1093,7 @@ export class BacktestLabService {
     const blockedOrderCount = executions.filter((execution) => execution.status === OrderStatus.Blocked).length;
     const simulatedOrderCount = simulatedExecutions.length;
     const recenterCount = recenterEvents.length;
+    const rangeAdjustmentCount = rangeAdjustmentEvents.length;
     const totalFeesUsd = round(simulatedExecutions.reduce((sum, execution) => sum + execution.feeAmount, 0), 8);
     const averageSlippageBps = computeAverageSlippageBps(simulatedExecutions);
 
@@ -980,6 +1118,7 @@ export class BacktestLabService {
       blockedOrderCount,
       simulatedOrderCount,
       recenterCount,
+      rangeAdjustmentCount,
       totalFeesUsd,
       averageSlippageBps
     };
@@ -1054,11 +1193,15 @@ export class BacktestLabService {
       trainValidationSplit: 0.7,
       recenterMode: config.recenterMode,
       recenterScope: config.recenterMode === RecenterMode.Auto ? "simulated_when_auto_recenter" : "advisory_only",
+      rangeControlMode: config.rangeControlMode === "adaptive" ? "adaptive_lab_only" : "static",
       outOfRangeModel: "pause_new_entries_allow_recovery_sells",
       excludedCosts: ["network fees", "rent", "priority fees", "failed transaction costs"],
       notes: [
         "Candle replay approximates intrabar order; it is not tick-level execution data.",
         "Ranking uses validation metrics before train metrics to reduce overfitting.",
+        config.rangeControlMode === "adaptive"
+          ? "Adaptive range is simulated in Lab only and only shifts rails while no open cycles are present."
+          : "Range is static unless a Lab-only adaptive scenario is selected.",
         config.recenterMode === RecenterMode.Auto
           ? "Auto recenter is simulated in Lab only; it is not auto-applied to live bots."
           : "Recenter output is advisory in Lab unless a recenter simulation scenario is selected."
@@ -1164,6 +1307,7 @@ function buildCandidateConfig(input: {
     levelCount: input.levelCount,
     gridType: input.gridType,
     strategyMode: input.strategyMode,
+    rangeControlMode: "static",
     minOrderMode: MinOrderMode.Auto,
     minOrderQuoteAmount: round(input.minOrderQuoteAmount, 2),
     maxSlippageBps: 50,

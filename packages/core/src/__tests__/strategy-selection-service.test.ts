@@ -44,8 +44,11 @@ describe("StrategySelectionService", () => {
     const decision = new StrategySelectionService().select(buildInput());
 
     expect(decision.recommendedFamily).toBe("range_grid");
+    expect(decision.activeLiveFamily).toBe("range_grid");
     expect(decision.posture).toBe("active");
     expect(decision.candidates[0]?.family).toBe("range_grid");
+    expect(decision.candidates[0]?.readiness).toBe("live_ready");
+    expect(decision.registry.find((strategy) => strategy.family === "range_grid")?.liveEnabled).toBe(true);
   });
 
   it("moves to capital defense in chaotic high volatility", () => {
@@ -74,7 +77,9 @@ describe("StrategySelectionService", () => {
     );
 
     expect(decision.recommendedFamily).toBe("capital_defense");
+    expect(decision.activeLiveFamily).toBe("range_grid");
     expect(decision.posture).toBe("pause");
+    expect(decision.candidates.find((candidate) => candidate.family === "capital_defense")?.readiness).toBe("advisory_only");
   });
 
   it("marks trend following as watch-only because live trend strategy is not implemented", () => {
@@ -102,7 +107,9 @@ describe("StrategySelectionService", () => {
     );
 
     expect(decision.recommendedFamily).toBe("trend_following");
+    expect(decision.activeLiveFamily).toBe("range_grid");
     expect(decision.posture).toBe("watch");
     expect(decision.operatorAction).toContain("not live-ready");
+    expect(decision.candidates.find((candidate) => candidate.family === "trend_following")?.liveEnabled).toBe(false);
   });
 });
