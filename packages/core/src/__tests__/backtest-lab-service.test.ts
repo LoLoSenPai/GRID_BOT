@@ -80,11 +80,15 @@ describe("BacktestLabService", () => {
 
     expect(result.meta.trainCandleCount).toBe(1);
     expect(result.meta.validationCandleCount).toBe(1);
+    expect(result.assumptions.candleTraversal).toBe("bullish_open_low_high_close_bearish_open_high_low_close");
+    expect(result.assumptions.trainValidationSplit).toBe(0.7);
+    expect(result.assumptions.recenterScope).toBe("advisory_only");
     expect(result.trainMetrics.executedBuyCount).toBe(1);
     expect(result.trainMetrics.closedCycleCount).toBe(0);
     expect(result.validationMetrics.executedSellCount).toBe(0);
     expect(result.validationMetrics.closedCycleCount).toBe(0);
     expect(result.overallMetrics.endingEquityUsd).toBeGreaterThan(result.overallMetrics.startingBudgetUsd);
+    expect(result.recenterAdvice.mode).toBe("none");
     expect(result.executions.map((execution) => execution.status)).toEqual([OrderStatus.Simulated, OrderStatus.Simulated]);
     expect(result.executions.map((execution) => execution.side)).toEqual([TradeSide.Buy, TradeSide.Sell]);
   });
@@ -115,6 +119,82 @@ describe("BacktestLabService", () => {
     expect(withFee.overallMetrics.endingEquityUsd).toBeLessThan(noFee.overallMetrics.endingEquityUsd);
     expect(withFee.overallMetrics.realizedPnlUsd).toBeLessThan(noFee.overallMetrics.realizedPnlUsd);
     expect(withFee.executions.reduce((sum, execution) => sum + execution.feeAmount, 0)).toBeGreaterThan(0);
+    expect(withFee.overallMetrics.totalFeesUsd).toBeGreaterThan(0);
+  });
+
+  it("reports average simulated slippage in basis points", () => {
+    const result = runConfig(StrategyMode.AccumulateUsdc, { maxSlippageBps: 50 });
+
+    expect(result.overallMetrics.simulatedOrderCount).toBeGreaterThan(0);
+    expect(result.overallMetrics.averageSlippageBps).toBe(50);
+    expect(result.assumptions.maxSlippageBps).toBe(50);
+  });
+
+  it("adds recenter advice when validation ends outside the range", () => {
+    const result = service.replay({
+      series: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        resolution: "1h",
+        candles: [
+          candle("2026-04-01T00:00:00Z", 105, 106, 104, 105),
+          candle("2026-04-01T01:00:00Z", 106, 112, 105, 112),
+          candle("2026-04-01T02:00:00Z", 112, 114, 111, 113),
+          candle("2026-04-01T03:00:00Z", 113, 116, 112, 115)
+        ]
+      },
+      config: {
+        ...buildBacktestConfig(StrategyMode.AccumulateUsdc),
+        highPrice: 110
+      },
+      marketRegime: {
+        regime: "TREND_UP",
+        confidence: 0.8,
+        scores: { range: 0, trendUp: 4, trendDown: 0, chaoticHighVol: 0 },
+        reasons: ["test"],
+        evaluatedAt: new Date("2026-04-01T03:00:00Z")
+      }
+    });
+
+    expect(result.recenterAdvice.side).toBe("above");
+    expect(["soft", "hybrid", "hard"]).toContain(result.recenterAdvice.mode);
+    expect(result.recenterAdvice.allowNewBuys).toBe(false);
+  });
+
+  it("simulates hybrid recenter in Lab auto mode without forcing a live bot change", () => {
+    const result = service.replay({
+      series: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        resolution: "1h",
+        candles: [
+          candle("2026-04-01T00:00:00Z", 105, 106, 99, 100),
+          candle("2026-04-01T01:00:00Z", 100, 101, 94, 95),
+          candle("2026-04-01T02:00:00Z", 95, 96, 90, 92),
+          candle("2026-04-01T03:00:00Z", 92, 98, 91, 97)
+        ]
+      },
+      config: {
+        ...buildBacktestConfig(StrategyMode.AccumulateUsdc),
+        highPrice: 120,
+        levelCount: 3,
+        recenterMode: RecenterMode.Auto
+      },
+      marketRegime: {
+        regime: "TREND_DOWN",
+        confidence: 0.8,
+        scores: { range: 0, trendUp: 0, trendDown: 4, chaoticHighVol: 0 },
+        reasons: ["test"],
+        evaluatedAt: new Date("2026-04-01T03:00:00Z")
+      }
+    });
+
+    expect(result.recenterEvents.length).toBeGreaterThan(0);
+    expect(result.recenterEvents[0]?.mode).toBe("hybrid");
+    expect(result.recenterEvents[0]?.side).toBe("below");
+    expect(result.overallMetrics.recenterCount).toBe(result.recenterEvents.length);
+    expect(result.replayPoints.at(-1)?.activeLowPrice).toBeLessThan(100);
+    expect(result.assumptions.recenterScope).toBe("simulated_when_auto_recenter");
   });
 
   it("generates bounded candidates from train quantiles only", () => {
@@ -187,7 +267,11 @@ describe("BacktestLabService", () => {
         openCycleCount: 0,
         executedBuyCount: 1,
         executedSellCount: 1,
-        blockedOrderCount: 0
+        blockedOrderCount: 0,
+        simulatedOrderCount: 2,
+        recenterCount: 0,
+        totalFeesUsd: 0,
+        averageSlippageBps: 0
       },
       validationMetrics: {
         sampleCount: 1,
@@ -205,7 +289,11 @@ describe("BacktestLabService", () => {
         openCycleCount: 0,
         executedBuyCount: 1,
         executedSellCount: 1,
-        blockedOrderCount: 0
+        blockedOrderCount: 0,
+        simulatedOrderCount: 2,
+        recenterCount: 0,
+        totalFeesUsd: 0,
+        averageSlippageBps: 0
       }
     };
 

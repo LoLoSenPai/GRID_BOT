@@ -3,7 +3,7 @@ import { BacktestLabService } from "@grid-bot/core";
 
 import { readSession } from "@/lib/auth";
 import { buildReplayConfig, parseBacktestReplayRequest } from "@/lib/backtest-lab";
-import { fetchBacktestSeries } from "@/lib/backtest-lab-server";
+import { buildAdaptiveRangePlan, buildStrategySelection, fetchBacktestSeries } from "@/lib/backtest-lab-server";
 
 export async function POST(request: Request) {
   const session = await readSession();
@@ -27,15 +27,30 @@ export async function POST(request: Request) {
     });
 
     const service = new BacktestLabService();
+    const config = buildReplayConfig(body.config);
     const result = service.replay({
       series,
-      config: buildReplayConfig(body.config)
+      config,
+      marketRegime
+    });
+    const rangePlan = buildAdaptiveRangePlan({
+      series,
+      config,
+      indicators,
+      marketRegime
+    });
+    const strategySelection = buildStrategySelection({
+      marketRegime,
+      rangePlan,
+      validationMetrics: result.validationMetrics
     });
 
     return NextResponse.json({
       ...result,
       indicators,
       marketRegime,
+      rangePlan,
+      strategySelection,
       meta: {
         ...result.meta,
         historyWindow,

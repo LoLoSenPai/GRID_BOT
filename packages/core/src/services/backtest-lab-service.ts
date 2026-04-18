@@ -2,12 +2,14 @@ import { DEFAULTS } from "@grid-bot/common";
 
 import { BotMode, BotStatus, ExecutionProvider, GridType, MinOrderMode, OrderStatus, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
 import type {
+  BacktestAssumptions,
   BacktestConfig,
   BacktestLeaderboardEntry,
   BacktestMarketSeries,
   BacktestMetrics,
   BacktestOperatorGuidance,
   BacktestRecommendation,
+  BacktestRecenterEvent,
   BacktestReplayExecution,
   BacktestReplayPoint,
   BacktestRunMeta,
@@ -17,13 +19,18 @@ import type {
   BotRuntimeMetadata,
   GridCycle,
   HistoricalCandle,
+  MarketRegimeAssessment,
   OrderIntent,
   PositionLot,
+  RecenterPolicyDecision,
   TriggerSignal
 } from "../domain/types";
 import { round } from "../utils/math";
+import { CandleReplayService } from "./candle-replay-service";
+import { DEFAULT_EXECUTION_FEE_BPS, ExecutionCostModelService } from "./execution-cost-model-service";
 import { GridDecisionService } from "./grid-decision-service";
 import { GridStrategyService } from "./grid-strategy-service";
+import { RecenterPolicyService } from "./recenter-policy-service";
 import { RiskManagerService } from "./risk-manager-service";
 
 const STRATEGY_RUNTIME_DEFAULTS: Record<
@@ -55,16 +62,16 @@ const STRATEGY_RUNTIME_DEFAULTS: Record<
   }
 };
 
-const DEFAULT_BACKTEST_EXECUTION_FEE_BPS = 10;
-
 export interface BacktestReplayRequest {
   series: BacktestMarketSeries;
   config: BacktestConfig;
+  marketRegime?: MarketRegimeAssessment | null;
 }
 
 export interface BacktestRecommendationRequest {
   series: BacktestMarketSeries;
   budgetUsd: number;
+  marketRegime?: MarketRegimeAssessment | null;
 }
 
 interface BacktestRuntimeState {
@@ -84,12 +91,15 @@ interface BacktestRuntimeState {
   lastRecenterAt: Date | null;
   metadata: BotRuntimeMetadata;
   openLots: PositionLot[];
+  recenterGuard: Pick<RecenterPolicyDecision, "mode" | "side" | "allowNewBuys" | "allowRecoverySells"> | null;
+  consecutiveOutsideCloses: number;
 }
 
 interface BacktestSegmentResult {
   state: BacktestRuntimeState;
   replayPoints: BacktestReplayPoint[];
   executions: BacktestReplayExecution[];
+  recenterEvents: BacktestRecenterEvent[];
 }
 
 interface PreparedSeries {
@@ -100,6 +110,8 @@ interface PreparedSeries {
   splitIndex: number;
   estimatedIntervalMs: number;
 }
+
+const defaultCandleReplayService = new CandleReplayService();
 
 export function splitBacktestSeries(series: BacktestMarketSeries): PreparedSeries {
   const candles = [...series.candles].sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
@@ -114,7 +126,7 @@ export function splitBacktestSeries(series: BacktestMarketSeries): PreparedSerie
     trainCandles: candles.slice(0, splitIndex),
     validationCandles: candles.slice(splitIndex),
     splitIndex,
-    estimatedIntervalMs: estimateIntervalMs(candles)
+    estimatedIntervalMs: defaultCandleReplayService.estimateIntervalMs(candles)
   };
 }
 
@@ -205,7 +217,8 @@ export function compareBacktestLeaderboardEntries(left: BacktestLeaderboardEntry
 
 export function deriveBacktestOperatorGuidance(
   metrics: Pick<BacktestMetrics, "timeInRangePct" | "maxOccupancyPct">,
-  resolution?: string
+  resolution?: string,
+  recenterAdvice?: RecenterPolicyDecision
 ): BacktestOperatorGuidance {
   const { timeInRangePct, maxOccupancyPct } = metrics;
 
@@ -229,6 +242,7 @@ export function deriveBacktestOperatorGuidance(
     status,
     summary,
     stopRule: `Recreate if price closes outside the recommended range for 2 consecutive bars at ${resolutionLabel}.`,
+    recenterAction: recenterAdvice?.operatorAction ?? "No recenter action is required while price stays inside the selected range.",
     timeInRangePct,
     maxOccupancyPct
   };
@@ -238,36 +252,62 @@ export class BacktestLabService {
   private readonly gridStrategyService: GridStrategyService;
   private readonly gridDecisionService: GridDecisionService;
   private readonly riskManagerService: RiskManagerService;
+  private readonly recenterPolicyService: RecenterPolicyService;
+  private readonly executionCostModelService: ExecutionCostModelService;
+  private readonly candleReplayService: CandleReplayService;
 
   constructor(
     gridStrategyService = new GridStrategyService(),
     riskManagerService = new RiskManagerService(),
-    gridDecisionService = new GridDecisionService()
+    gridDecisionService = new GridDecisionService(),
+    recenterPolicyService = new RecenterPolicyService(),
+    executionCostModelService = new ExecutionCostModelService(),
+    candleReplayService = defaultCandleReplayService
   ) {
     this.gridStrategyService = gridStrategyService;
     this.riskManagerService = riskManagerService;
     this.gridDecisionService = gridDecisionService;
+    this.recenterPolicyService = recenterPolicyService;
+    this.executionCostModelService = executionCostModelService;
+    this.candleReplayService = candleReplayService;
   }
 
   replay(request: BacktestReplayRequest): BacktestRunResult {
     const prepared = splitBacktestSeries(request.series);
     const config = this.normalizeConfig(request.config);
-    const continuousTrain = this.simulateSegment(prepared.series, config, prepared.trainCandles, "train");
+    const continuousTrain = this.simulateSegment(prepared.series, config, prepared.trainCandles, "train", undefined, request.marketRegime ?? null);
     const continuousValidation = this.simulateSegment(
       prepared.series,
       config,
       prepared.validationCandles,
       "validation",
-      continuousTrain.state
+      continuousTrain.state,
+      request.marketRegime ?? null
     );
-    const trainMetricsResult = this.simulateSegment(prepared.series, config, prepared.trainCandles, "train");
-    const validationMetricsResult = this.simulateSegment(prepared.series, config, prepared.validationCandles, "validation");
+    const trainMetricsResult = this.simulateSegment(prepared.series, config, prepared.trainCandles, "train", undefined, request.marketRegime ?? null);
+    const validationMetricsResult = this.simulateSegment(
+      prepared.series,
+      config,
+      prepared.validationCandles,
+      "validation",
+      undefined,
+      request.marketRegime ?? null
+    );
 
     const replayPoints = [...continuousTrain.replayPoints, ...continuousValidation.replayPoints];
     const executions = [...continuousTrain.executions, ...continuousValidation.executions];
+    const recenterEvents = [...continuousTrain.recenterEvents, ...continuousValidation.recenterEvents];
+    const recenterAdvice = this.deriveRecenterAdvice(
+      config,
+      continuousValidation.state,
+      continuousValidation.replayPoints.length ? continuousValidation.replayPoints : continuousTrain.replayPoints,
+      prepared.validationCandles.length ? prepared.validationCandles : prepared.candles,
+      request.marketRegime ?? null
+    );
     const overallMetrics = this.summarizeMetrics(
       replayPoints,
       executions,
+      recenterEvents,
       config.budgetUsd,
       continuousValidation.state,
       prepared.series,
@@ -279,9 +319,12 @@ export class BacktestLabService {
       config,
       replayPoints,
       executions,
+      recenterEvents,
+      recenterAdvice,
       trainMetrics: trainMetricsResult.metrics,
       validationMetrics: validationMetricsResult.metrics,
       overallMetrics,
+      assumptions: this.buildAssumptions(config),
       meta: this.buildMeta(prepared)
     };
   }
@@ -295,8 +338,8 @@ export class BacktestLabService {
     }
 
     const leaderboard: BacktestLeaderboardEntry[] = candidates.map((config) => {
-      const trainResult = this.simulateSegment(prepared.series, config, prepared.trainCandles, "train");
-      const validationResult = this.simulateSegment(prepared.series, config, prepared.validationCandles, "validation");
+      const trainResult = this.simulateSegment(prepared.series, config, prepared.trainCandles, "train", undefined, request.marketRegime ?? null);
+      const validationResult = this.simulateSegment(prepared.series, config, prepared.validationCandles, "validation", undefined, request.marketRegime ?? null);
 
       return {
         rank: 0,
@@ -318,16 +361,19 @@ export class BacktestLabService {
     }
     const bestReplay = this.replay({
       series: prepared.series,
-      config: best.config
+      config: best.config,
+      marketRegime: request.marketRegime ?? null
     });
 
     return {
       bestConfig: best.config,
       leaderboard: topFive,
       bestReplay,
+      recenterAdvice: bestReplay.recenterAdvice,
       trainMetrics: best.trainMetrics,
       validationMetrics: best.validationMetrics,
-      operatorGuidance: deriveBacktestOperatorGuidance(best.validationMetrics, prepared.series.resolution),
+      operatorGuidance: deriveBacktestOperatorGuidance(best.validationMetrics, prepared.series.resolution, bestReplay.recenterAdvice),
+      assumptions: bestReplay.assumptions,
       meta: {
         ...bestReplay.meta,
         candidateCount: candidates.length,
@@ -341,35 +387,39 @@ export class BacktestLabService {
     config: BacktestConfig,
     candles: HistoricalCandle[],
     phase: "train" | "validation",
-    initialState?: BacktestRuntimeState
+    initialState?: BacktestRuntimeState,
+    marketRegime?: MarketRegimeAssessment | null
   ): BacktestSegmentResult & { metrics: BacktestMetrics } {
     const state = initialState ?? this.createInitialState(series, config);
 
     if (candles.length === 0) {
-      const metrics = this.summarizeMetrics([], [], config.budgetUsd, state, series, config);
-      return { state, replayPoints: [], executions: [], metrics };
+      const metrics = this.summarizeMetrics([], [], [], config.budgetUsd, state, series, config);
+      return { state, replayPoints: [], executions: [], recenterEvents: [], metrics };
     }
 
-    const levels = this.gridStrategyService.calculateLevels(config.lowPrice, config.highPrice, config.levelCount, config.gridType);
-    const intervalMs = estimateIntervalMs(candles);
+    const intervalMs = this.candleReplayService.estimateIntervalMs(candles);
     const replayPoints: BacktestReplayPoint[] = [];
     const executions: BacktestReplayExecution[] = [];
+    const recenterEvents: BacktestRecenterEvent[] = [];
     let previousObservedPrice = state.currentPrice ?? candles[0]!.open;
 
-    candles.forEach((candle, candleIndex) => {
-      const path = buildIntrabougiePath(candle, intervalMs);
-      path.forEach((step, stepIndex) => {
+    candles.forEach((candle) => {
+      const path = this.candleReplayService.buildIntrabougiePath(candle, intervalMs);
+      path.forEach((step) => {
+        const activeConfig = state.config;
+        const levels = this.gridStrategyService.calculateLevels(activeConfig.lowPrice, activeConfig.highPrice, activeConfig.levelCount, activeConfig.gridType);
         state.currentPrice = step.price;
         state.bot.currentPrice = step.price;
         state.status = this.getPassiveStatus(state, step.timestamp);
         state.bot.status = state.status;
+        this.clearRecenterGuardWhenInside(state, step.price);
 
         const crossedSignals = previousObservedPrice !== null ? this.gridStrategyService.detectCrossedLevels(levels, previousObservedPrice, step.price) : [];
-        const outOfRange = this.isOutOfRange(config, step.price);
+        const outOfRange = this.isOutOfRange(activeConfig, step.price);
         const signal =
-          outOfRange && step.price > config.highPrice
-            ? this.getOutOfRangeRecoverySellSignal(state, step.price, step.timestamp, levels, crossedSignals, config)
-            : this.getConfirmedSignalFromState(state, step.price, step.timestamp, levels, crossedSignals, config);
+          outOfRange && step.price > activeConfig.highPrice
+            ? this.getOutOfRangeRecoverySellSignal(state, step.price, step.timestamp, levels, crossedSignals, activeConfig)
+            : this.getConfirmedSignalFromState(state, step.price, step.timestamp, levels, crossedSignals, activeConfig);
 
         if (outOfRange && !signal) {
           state.status = BotStatus.OutOfRange;
@@ -414,18 +464,24 @@ export class BacktestLabService {
           return;
         }
 
-        state.metadata.pendingSignal = this.resolvePendingSignal(state, crossedSignals, levels, step.price, step.timestamp, config);
+        state.metadata.pendingSignal = this.resolvePendingSignal(state, crossedSignals, levels, step.price, step.timestamp, activeConfig);
         this.recalculatePortfolioState(state, step.price);
         replayPoints.push(this.snapshotPoint(state, step.timestamp, phase));
         previousObservedPrice = step.price;
       });
+
+      const recenterEvent = this.maybeApplySimulatedRecenter(state, candle, phase, marketRegime ?? null);
+      if (recenterEvent) {
+        recenterEvents.push(recenterEvent);
+      }
     });
 
-    const metrics = this.summarizeMetrics(replayPoints, executions, config.budgetUsd, state, series, config);
+    const metrics = this.summarizeMetrics(replayPoints, executions, recenterEvents, config.budgetUsd, state, series, config);
     return {
       state,
       replayPoints,
       executions,
+      recenterEvents,
       metrics
     };
   }
@@ -470,7 +526,9 @@ export class BacktestLabService {
         recenterHistory: [],
         recentExecutions: []
       },
-      openLots: []
+      openLots: [],
+      recenterGuard: null,
+      consecutiveOutsideCloses: 0
     };
   }
 
@@ -482,14 +540,14 @@ export class BacktestLabService {
       minOrderMode: config.minOrderMode ?? MinOrderMode.Auto,
       minOrderQuoteAmount: Math.max(0, round(config.minOrderQuoteAmount, 2)),
       maxSlippageBps: Math.max(0, config.maxSlippageBps),
-      executionFeeBps: Math.max(0, config.executionFeeBps ?? DEFAULT_BACKTEST_EXECUTION_FEE_BPS),
+      executionFeeBps: Math.max(0, config.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS),
       cooldownMs: Math.max(0, config.cooldownMs ?? strategyDefaults.cooldownMs),
       maxOrdersPerHour: Math.max(1, config.maxOrdersPerHour ?? strategyDefaults.maxOrdersPerHour),
       maxDrawdownPct: Math.max(0, config.maxDrawdownPct ?? 18),
       maxConsecutiveFailures: Math.max(1, config.maxConsecutiveFailures ?? DEFAULTS.maxConsecutiveFailures),
       levelLockMs: Math.max(0, config.levelLockMs ?? strategyDefaults.levelLockMs),
       priceConfirmationWindowMs: Math.max(0, config.priceConfirmationWindowMs ?? strategyDefaults.priceConfirmationWindowMs),
-      recenterMode: RecenterMode.Manual,
+      recenterMode: config.recenterMode ?? RecenterMode.Manual,
       outOfRangePause: config.outOfRangePause ?? true
     };
   }
@@ -512,7 +570,7 @@ export class BacktestLabService {
       levels,
       crossedSignals,
       priceConfirmationWindowMs: config.priceConfirmationWindowMs,
-      canBuildOrder: (signal) => Boolean(this.gridStrategyService.buildOrderIntent(this.toAggregate(state), signal))
+      canBuildOrder: (signal) => this.canBuildOrder(state, signal)
     });
   }
 
@@ -532,7 +590,7 @@ export class BacktestLabService {
       levels,
       currentPrice,
       now,
-      canBuildOrder: (signal) => Boolean(this.gridStrategyService.buildOrderIntent(this.toAggregate(state), signal))
+      canBuildOrder: (signal) => this.canBuildOrder(state, signal)
     });
   }
 
@@ -554,39 +612,38 @@ export class BacktestLabService {
       levels,
       crossedSignals,
       priceConfirmationWindowMs: config.priceConfirmationWindowMs,
-      canBuildOrder: (signal) => Boolean(this.gridStrategyService.buildOrderIntent(this.toAggregate(state), signal))
+      canBuildOrder: (signal) => this.canBuildOrder(state, signal)
     });
   }
 
-  private simulateExecution(signal: TriggerSignal, orderIntent: OrderIntent, config: BacktestConfig) {
-    const executionFeeBps = Math.max(0, config.executionFeeBps ?? DEFAULT_BACKTEST_EXECUTION_FEE_BPS);
-    const fillPrice =
-      signal.side === TradeSide.Buy
-        ? round(signal.levelPrice * (1 + config.maxSlippageBps / 10_000), 8)
-        : round(signal.levelPrice * (1 - config.maxSlippageBps / 10_000), 8);
-
-    if (signal.side === TradeSide.Buy) {
-      const inputAmount = orderIntent.requestedQuoteAmount;
-      const outputAmount = fillPrice > 0 ? round(inputAmount / fillPrice, 8) : 0;
-      const feeAmount = round((inputAmount * executionFeeBps) / 10_000, 8);
-      return {
-        executionId: `bt-${signal.side}-${signal.levelIndex}-${signal.triggeredAt.getTime()}`,
-        inputAmount,
-        outputAmount,
-        feeAmount,
-        fillPrice
-      };
+  private canBuildOrder(state: BacktestRuntimeState, signal: TriggerSignal): boolean {
+    if (signal.side === TradeSide.Buy && state.recenterGuard?.allowNewBuys === false) {
+      return false;
     }
 
-    const inputAmount = orderIntent.requestedBaseAmount;
-    const outputAmount = round(inputAmount * fillPrice, 8);
-    const feeAmount = round((outputAmount * executionFeeBps) / 10_000, 8);
+    if (signal.side === TradeSide.Sell && state.recenterGuard?.allowRecoverySells === false) {
+      return false;
+    }
+
+    return Boolean(this.gridStrategyService.buildOrderIntent(this.toAggregate(state), signal));
+  }
+
+  private simulateExecution(signal: TriggerSignal, orderIntent: OrderIntent, config: BacktestConfig) {
+    const report = this.executionCostModelService.simulate({
+      side: signal.side,
+      levelPrice: signal.levelPrice,
+      requestedQuoteAmount: orderIntent.requestedQuoteAmount,
+      requestedBaseAmount: orderIntent.requestedBaseAmount,
+      maxSlippageBps: config.maxSlippageBps,
+      executionFeeBps: config.executionFeeBps
+    });
+
     return {
       executionId: `bt-${signal.side}-${signal.levelIndex}-${signal.triggeredAt.getTime()}`,
-      inputAmount,
-      outputAmount,
-      feeAmount,
-      fillPrice
+      inputAmount: report.inputAmount,
+      outputAmount: report.outputAmount,
+      feeAmount: report.feeAmount,
+      fillPrice: report.fillPrice
     };
   }
 
@@ -791,9 +848,91 @@ export class BacktestLabService {
     state.totalEquityUsd = round(state.availableQuoteAmount + state.availableBaseAmount * currentPrice, 8);
   }
 
+  private clearRecenterGuardWhenInside(state: BacktestRuntimeState, currentPrice: number) {
+    if (!state.recenterGuard || this.isOutOfRange(state.config, currentPrice)) {
+      return;
+    }
+
+    state.recenterGuard = null;
+  }
+
+  private maybeApplySimulatedRecenter(
+    state: BacktestRuntimeState,
+    candle: HistoricalCandle,
+    phase: "train" | "validation",
+    marketRegime: MarketRegimeAssessment | null
+  ): BacktestRecenterEvent | null {
+    if (state.config.recenterMode !== RecenterMode.Auto) {
+      return null;
+    }
+
+    if (!this.isOutOfRange(state.config, candle.close)) {
+      state.consecutiveOutsideCloses = 0;
+      state.recenterGuard = null;
+      return null;
+    }
+
+    state.consecutiveOutsideCloses += 1;
+    const maxOccupancyPct = state.config.budgetUsd > 0 ? round((state.deployedQuoteAmount / state.config.budgetUsd) * 100, 8) : 0;
+    const decision = this.recenterPolicyService.evaluate({
+      currentPrice: candle.close,
+      lowPrice: state.config.lowPrice,
+      highPrice: state.config.highPrice,
+      openCycleCount: state.openLots.length,
+      maxOccupancyPct,
+      consecutiveOutsideBars: state.consecutiveOutsideCloses,
+      marketRegime
+    });
+
+    state.recenterGuard = {
+      mode: decision.mode,
+      side: decision.side,
+      allowNewBuys: decision.allowNewBuys,
+      allowRecoverySells: decision.allowRecoverySells
+    };
+
+    if ((decision.mode !== "hybrid" && decision.mode !== "hard") || decision.suggestedLowPrice === null || decision.suggestedHighPrice === null) {
+      return null;
+    }
+
+    if (decision.mode === "hard" && state.openLots.length > 0) {
+      return null;
+    }
+
+    const previousLowPrice = state.config.lowPrice;
+    const previousHighPrice = state.config.highPrice;
+    state.config = {
+      ...state.config,
+      lowPrice: decision.suggestedLowPrice,
+      highPrice: decision.suggestedHighPrice
+    };
+    state.metadata.pendingSignal = null;
+    state.metadata.levelLocks = {};
+    state.metadata.recenterHistory = [...state.metadata.recenterHistory, candle.timestamp.toISOString()].slice(-50);
+    state.lastRecenterAt = candle.timestamp;
+    state.consecutiveOutsideCloses = 0;
+
+    return {
+      id: `recenter-${phase}-${candle.timestamp.getTime()}`,
+      phase,
+      timestamp: candle.timestamp,
+      mode: decision.mode,
+      side: decision.side,
+      previousLowPrice,
+      previousHighPrice,
+      nextLowPrice: decision.suggestedLowPrice,
+      nextHighPrice: decision.suggestedHighPrice,
+      allowNewBuys: decision.allowNewBuys,
+      allowRecoverySells: decision.allowRecoverySells,
+      risk: decision.risk,
+      reason: decision.operatorAction
+    };
+  }
+
   private summarizeMetrics(
     points: BacktestReplayPoint[],
     executions: BacktestReplayExecution[],
+    recenterEvents: BacktestRecenterEvent[],
     startingBudgetUsd: number,
     endState: BacktestRuntimeState,
     series: BacktestMarketSeries,
@@ -807,13 +946,18 @@ export class BacktestLabService {
     const returnPct = startingBudgetUsd > 0 ? round(((endingEquityUsd - startingBudgetUsd) / startingBudgetUsd) * 100, 8) : 0;
     const maxDrawdownPct = computeMaxDrawdownPct(points, startingBudgetUsd);
     const maxOccupancyPct = points.reduce((max, point) => Math.max(max, point.occupancyPct), 0);
-    const timeInRangePct = computeTimeRatio(points, config.lowPrice, config.highPrice, true);
-    const timeOutOfRangePct = computeTimeRatio(points, config.lowPrice, config.highPrice, false);
+    const timeInRangePct = computeTimeRatio(points, true);
+    const timeOutOfRangePct = computeTimeRatio(points, false);
     const closedCycleCount = executions.filter((execution) => execution.status === OrderStatus.Simulated && execution.side === TradeSide.Sell).length;
     const openCycleCount = endState.openLots.length;
-    const executedBuyCount = executions.filter((execution) => execution.status === OrderStatus.Simulated && execution.side === TradeSide.Buy).length;
-    const executedSellCount = executions.filter((execution) => execution.status === OrderStatus.Simulated && execution.side === TradeSide.Sell).length;
+    const simulatedExecutions = executions.filter((execution) => execution.status === OrderStatus.Simulated);
+    const executedBuyCount = simulatedExecutions.filter((execution) => execution.side === TradeSide.Buy).length;
+    const executedSellCount = simulatedExecutions.filter((execution) => execution.side === TradeSide.Sell).length;
     const blockedOrderCount = executions.filter((execution) => execution.status === OrderStatus.Blocked).length;
+    const simulatedOrderCount = simulatedExecutions.length;
+    const recenterCount = recenterEvents.length;
+    const totalFeesUsd = round(simulatedExecutions.reduce((sum, execution) => sum + execution.feeAmount, 0), 8);
+    const averageSlippageBps = computeAverageSlippageBps(simulatedExecutions);
 
     void series;
 
@@ -833,8 +977,33 @@ export class BacktestLabService {
       openCycleCount,
       executedBuyCount,
       executedSellCount,
-      blockedOrderCount
+      blockedOrderCount,
+      simulatedOrderCount,
+      recenterCount,
+      totalFeesUsd,
+      averageSlippageBps
     };
+  }
+
+  private deriveRecenterAdvice(
+    config: BacktestConfig,
+    state: BacktestRuntimeState,
+    replayPoints: BacktestReplayPoint[],
+    candles: HistoricalCandle[],
+    marketRegime: MarketRegimeAssessment | null
+  ) {
+    const fallbackPrice = candles.at(-1)?.close ?? config.lowPrice;
+    const maxOccupancyPct = replayPoints.reduce((max, point) => Math.max(max, point.occupancyPct), 0);
+
+    return this.recenterPolicyService.evaluate({
+      currentPrice: state.currentPrice ?? fallbackPrice,
+      lowPrice: state.config.lowPrice,
+      highPrice: state.config.highPrice,
+      openCycleCount: state.openLots.length,
+      maxOccupancyPct,
+      consecutiveOutsideBars: countTrailingOutsideCloses(candles, state.config),
+      marketRegime
+    });
   }
 
   private snapshotPoint(state: BacktestRuntimeState, timestamp: Date, phase: "train" | "validation"): BacktestReplayPoint {
@@ -846,6 +1015,8 @@ export class BacktestLabService {
       price: state.currentPrice ?? 0,
       phase,
       status: state.status,
+      activeLowPrice: state.config.lowPrice,
+      activeHighPrice: state.config.highPrice,
       availableQuoteAmount: state.availableQuoteAmount,
       availableBaseAmount: state.availableBaseAmount,
       deployedQuoteAmount: state.deployedQuoteAmount,
@@ -870,6 +1041,28 @@ export class BacktestLabService {
       trainEndAt: prepared.trainCandles[prepared.trainCandles.length - 1]!.timestamp,
       endAt: prepared.candles[prepared.candles.length - 1]!.timestamp,
       estimatedIntervalMs: prepared.estimatedIntervalMs
+    };
+  }
+
+  private buildAssumptions(config: BacktestConfig): BacktestAssumptions {
+    return {
+      candleTraversal: "bullish_open_low_high_close_bearish_open_high_low_close",
+      fillPolicy: "immediate_on_confirmed_level_cross",
+      executionCostModel: "pessimistic_slippage_plus_fee",
+      maxSlippageBps: config.maxSlippageBps,
+      executionFeeBps: config.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS,
+      trainValidationSplit: 0.7,
+      recenterMode: config.recenterMode,
+      recenterScope: config.recenterMode === RecenterMode.Auto ? "simulated_when_auto_recenter" : "advisory_only",
+      outOfRangeModel: "pause_new_entries_allow_recovery_sells",
+      excludedCosts: ["network fees", "rent", "priority fees", "failed transaction costs"],
+      notes: [
+        "Candle replay approximates intrabar order; it is not tick-level execution data.",
+        "Ranking uses validation metrics before train metrics to reduce overfitting.",
+        config.recenterMode === RecenterMode.Auto
+          ? "Auto recenter is simulated in Lab only; it is not auto-applied to live bots."
+          : "Recenter output is advisory in Lab unless a recenter simulation scenario is selected."
+      ]
     };
   }
 
@@ -974,7 +1167,7 @@ function buildCandidateConfig(input: {
     minOrderMode: MinOrderMode.Auto,
     minOrderQuoteAmount: round(input.minOrderQuoteAmount, 2),
     maxSlippageBps: 50,
-    executionFeeBps: DEFAULT_BACKTEST_EXECUTION_FEE_BPS,
+    executionFeeBps: DEFAULT_EXECUTION_FEE_BPS,
     cooldownMs: strategyDefaults.cooldownMs,
     maxOrdersPerHour: strategyDefaults.maxOrdersPerHour,
     maxDrawdownPct: 18,
@@ -1001,41 +1194,6 @@ function getSuggestedMinOrderQuoteAmount(budgetUsd: number, levelCount: number) 
   }
 
   return round(budgetPerCycleUsd, 2);
-}
-
-function estimateIntervalMs(candles: HistoricalCandle[]) {
-  const deltas = candles
-    .map((candle, index) => {
-      const next = candles[index + 1];
-      if (!next) {
-        return null;
-      }
-
-      const delta = next.timestamp.getTime() - candle.timestamp.getTime();
-      return delta > 0 ? delta : null;
-    })
-    .filter((value): value is number => value !== null)
-    .sort((left, right) => left - right);
-
-  if (deltas.length === 0) {
-    return 1;
-  }
-
-  return deltas[Math.floor(deltas.length / 2)]!;
-}
-
-function buildIntrabougiePath(candle: HistoricalCandle, intervalMs: number) {
-  const start = candle.timestamp.getTime();
-  const lowHighSplit = Math.max(1, Math.floor(intervalMs / 3));
-  const midSplit = Math.max(lowHighSplit + 1, Math.floor((intervalMs * 2) / 3));
-  const end = start + Math.max(intervalMs, 1);
-  const bullish = candle.close >= candle.open;
-  const orderedPrices = bullish ? [candle.open, candle.low, candle.high, candle.close] : [candle.open, candle.high, candle.low, candle.close];
-
-  return orderedPrices.map((price, index) => ({
-    price,
-    timestamp: new Date([start, start + lowHighSplit, start + midSplit, end][index] ?? end)
-  }));
 }
 
 function quantile(sortedValues: number[], q: number) {
@@ -1075,7 +1233,30 @@ function computeMaxDrawdownPct(points: BacktestReplayPoint[], startingBudgetUsd:
   return round(maxDrawdown, 8);
 }
 
-function computeTimeRatio(points: BacktestReplayPoint[], lowPrice: number, highPrice: number, inRange: boolean) {
+function computeAverageSlippageBps(executions: BacktestReplayExecution[]) {
+  const values = executions
+    .map((execution) => {
+      if (execution.targetPrice <= 0 || execution.fillPrice <= 0) {
+        return null;
+      }
+
+      const diff =
+        execution.side === TradeSide.Buy
+          ? execution.fillPrice - execution.targetPrice
+          : execution.targetPrice - execution.fillPrice;
+
+      return Math.max(0, (diff / execution.targetPrice) * 10_000);
+    })
+    .filter((value): value is number => value !== null);
+
+  if (values.length === 0) {
+    return 0;
+  }
+
+  return round(values.reduce((sum, value) => sum + value, 0) / values.length, 8);
+}
+
+function computeTimeRatio(points: BacktestReplayPoint[], inRange: boolean) {
   if (points.length < 2) {
     return inRange ? 100 : 0;
   }
@@ -1088,7 +1269,7 @@ function computeTimeRatio(points: BacktestReplayPoint[], lowPrice: number, highP
     const next = points[index + 1]!;
     const delta = Math.max(0, next.timestamp.getTime() - current.timestamp.getTime());
     totalMs += delta;
-    const currentlyInRange = current.price >= lowPrice && current.price <= highPrice;
+    const currentlyInRange = current.price >= current.activeLowPrice && current.price <= current.activeHighPrice;
     if (currentlyInRange === inRange) {
       qualifyingMs += delta;
     }
@@ -1099,4 +1280,19 @@ function computeTimeRatio(points: BacktestReplayPoint[], lowPrice: number, highP
   }
 
   return round((qualifyingMs / totalMs) * 100, 8);
+}
+
+function countTrailingOutsideCloses(candles: HistoricalCandle[], config: Pick<BacktestConfig, "lowPrice" | "highPrice">) {
+  let count = 0;
+
+  for (let index = candles.length - 1; index >= 0; index -= 1) {
+    const close = candles[index]?.close;
+    if (close === undefined || (close >= config.lowPrice && close <= config.highPrice)) {
+      break;
+    }
+
+    count += 1;
+  }
+
+  return count;
 }

@@ -3,9 +3,15 @@ import "server-only";
 import {
   IndicatorService,
   MarketRegimeService,
+  RangePlanService,
+  StrategySelectionService,
+  type BacktestConfig,
+  type BacktestMetrics,
   type BacktestMarketSeries,
   type IndicatorSummary,
-  type MarketRegimeAssessment
+  type MarketRegimeAssessment,
+  type RangePlanDecision,
+  type StrategySelectionDecision
 } from "@grid-bot/core";
 
 import type { HistoryResolution } from "@/lib/charting";
@@ -13,6 +19,38 @@ import { type LabLookbackDays, type LabPair, type LabResolution } from "@/lib/ba
 import { fetchMarketHistoryLookback } from "@/lib/market-history";
 
 type LabIndicatorSummary = Pick<IndicatorSummary, "latest" | "hasVolume">;
+
+export function buildAdaptiveRangePlan(input: {
+  series: BacktestMarketSeries;
+  config: BacktestConfig;
+  indicators: LabIndicatorSummary;
+  marketRegime: MarketRegimeAssessment;
+}): RangePlanDecision {
+  const latestPrice = input.series.candles.at(-1)?.close ?? input.config.lowPrice;
+
+  return new RangePlanService().plan({
+    currentPrice: latestPrice,
+    currentLowPrice: input.config.lowPrice,
+    currentHighPrice: input.config.highPrice,
+    currentLevelCount: input.config.levelCount,
+    budgetUsd: input.config.budgetUsd,
+    minOrderQuoteAmount: input.config.minOrderQuoteAmount,
+    indicators: input.indicators.latest,
+    marketRegime: input.marketRegime
+  });
+}
+
+export function buildStrategySelection(input: {
+  marketRegime: MarketRegimeAssessment;
+  rangePlan: RangePlanDecision;
+  validationMetrics: Pick<BacktestMetrics, "timeInRangePct" | "timeOutOfRangePct" | "maxOccupancyPct" | "maxDrawdownPct" | "closedCycleCount">;
+}): StrategySelectionDecision {
+  return new StrategySelectionService().select({
+    marketRegime: input.marketRegime,
+    rangePlan: input.rangePlan,
+    validationMetrics: input.validationMetrics
+  });
+}
 
 export async function fetchBacktestSeries(input: {
   pair: LabPair;

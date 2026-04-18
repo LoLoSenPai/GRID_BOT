@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { FlaskConical, Play, RotateCcw } from "lucide-react";
-import { GridType, MinOrderMode, StrategyMode } from "@grid-bot/core/enums";
+import { GridType, MinOrderMode, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
 
 import { BacktestEquityChart } from "@/components/backtest-equity-chart";
 import { BotPriceChart } from "@/components/bot-price-chart";
@@ -48,12 +48,18 @@ type SerializedBacktestMetrics = {
   executedBuyCount: number;
   executedSellCount: number;
   blockedOrderCount: number;
+  simulatedOrderCount: number;
+  recenterCount: number;
+  totalFeesUsd: number;
+  averageSlippageBps: number;
 };
 
 type SerializedBacktestReplayPoint = {
   timestamp: string;
   price: number;
   phase: "train" | "validation";
+  activeLowPrice: number;
+  activeHighPrice: number;
   totalEquityUsd: number;
 };
 
@@ -66,6 +72,22 @@ type SerializedBacktestReplayExecution = {
   outputAmount: number;
   feeAmount: number;
   timestamp: string;
+};
+
+type SerializedBacktestRecenterEvent = {
+  id: string;
+  phase: "train" | "validation";
+  timestamp: string;
+  mode: "none" | "soft" | "hybrid" | "hard";
+  side: "inside" | "above" | "below";
+  previousLowPrice: number;
+  previousHighPrice: number;
+  nextLowPrice: number;
+  nextHighPrice: number;
+  allowNewBuys: boolean;
+  allowRecoverySells: boolean;
+  risk: "low" | "medium" | "high";
+  reason: string;
 };
 
 type SerializedIndicatorSnapshot = {
@@ -104,15 +126,73 @@ type SerializedMarketRegime = {
   evaluatedAt: string;
 };
 
+type SerializedRecenterAdvice = {
+  mode: "none" | "soft" | "hybrid" | "hard";
+  side: "inside" | "above" | "below";
+  allowNewBuys: boolean;
+  allowRecoverySells: boolean;
+  suggestedLowPrice: number | null;
+  suggestedHighPrice: number | null;
+  risk: "low" | "medium" | "high";
+  operatorAction: string;
+  reasons: string[];
+};
+
+type SerializedRangePlan = {
+  recommendedLowPrice: number;
+  recommendedHighPrice: number;
+  recommendedLevelCount: number;
+  recommendedGridType: SerializedBacktestConfig["gridType"];
+  widthPct: number;
+  stepPct: number;
+  basis: "atr" | "donchian" | "bollinger" | "current_range";
+  confidence: number;
+  risk: "low" | "medium" | "high";
+  operatorAction: string;
+  reasons: string[];
+};
+
+type SerializedStrategySelection = {
+  recommendedFamily: "range_grid" | "trend_following" | "capital_defense";
+  posture: "active" | "caution" | "pause" | "watch";
+  confidence: number;
+  operatorAction: string;
+  reasons: string[];
+  candidates: Array<{
+    family: "range_grid" | "trend_following" | "capital_defense";
+    score: number;
+    reason: string;
+  }>;
+};
+
+type SerializedBacktestAssumptions = {
+  candleTraversal: "bullish_open_low_high_close_bearish_open_high_low_close";
+  fillPolicy: "immediate_on_confirmed_level_cross";
+  executionCostModel: "pessimistic_slippage_plus_fee";
+  maxSlippageBps: number;
+  executionFeeBps: number;
+  trainValidationSplit: number;
+  recenterMode: string;
+  recenterScope: "advisory_only" | "simulated_when_auto_recenter";
+  outOfRangeModel: "pause_new_entries_allow_recovery_sells";
+  excludedCosts: string[];
+  notes: string[];
+};
+
 type SerializedBacktestRunResult = {
   config: SerializedBacktestConfig;
   replayPoints: SerializedBacktestReplayPoint[];
   executions: SerializedBacktestReplayExecution[];
+  recenterEvents: SerializedBacktestRecenterEvent[];
+  recenterAdvice: SerializedRecenterAdvice;
+  rangePlan?: SerializedRangePlan;
+  strategySelection?: SerializedStrategySelection;
   indicators?: SerializedIndicatorSummary;
   marketRegime?: SerializedMarketRegime;
   trainMetrics: SerializedBacktestMetrics;
   validationMetrics: SerializedBacktestMetrics;
   overallMetrics: SerializedBacktestMetrics;
+  assumptions: SerializedBacktestAssumptions;
   meta: {
     symbol: string;
     pair: string;
@@ -142,6 +222,8 @@ type SerializedBacktestRecommendation = {
   bestConfig: SerializedBacktestConfig;
   indicators?: SerializedIndicatorSummary;
   marketRegime?: SerializedMarketRegime;
+  rangePlan?: SerializedRangePlan;
+  strategySelection?: SerializedStrategySelection;
   leaderboard: Array<{
     rank: number;
     config: SerializedBacktestConfig;
@@ -149,15 +231,18 @@ type SerializedBacktestRecommendation = {
     validationMetrics: SerializedBacktestMetrics;
   }>;
   bestReplay: SerializedBacktestRunResult;
+  recenterAdvice: SerializedRecenterAdvice;
   trainMetrics: SerializedBacktestMetrics;
   validationMetrics: SerializedBacktestMetrics;
   operatorGuidance: {
     status: "Healthy" | "Caution" | "Fragile";
     summary: string;
     stopRule: string;
+    recenterAction: string;
     timeInRangePct: number;
     maxOccupancyPct: number;
   };
+  assumptions: SerializedBacktestAssumptions;
   meta: {
     symbol: string;
     pair: string;
@@ -169,6 +254,21 @@ type SerializedBacktestRecommendation = {
       source: string;
     };
   };
+};
+
+type ScenarioComparisonId = "current_setup" | "current_recenter" | "optimizer_best" | "adaptive_plan";
+
+type ScenarioComparisonRow = {
+  id: ScenarioComparisonId;
+  label: string;
+  description: string;
+  config: SerializedBacktestConfig;
+  replay: SerializedBacktestRunResult;
+};
+
+type SerializedBacktestCompareResponse = {
+  recommendation: SerializedBacktestRecommendation;
+  rows: ScenarioComparisonRow[];
 };
 
 function inferPairFromDraft(draft: BotFormDraft): LabPair {
@@ -201,7 +301,18 @@ function buildReplayConfigFromDraft(draft: BotFormDraft): SerializedBacktestConf
     maxConsecutiveFailures: normalizedDraft.maxConsecutiveFailures,
     levelLockMs: normalizedDraft.levelLockMs,
     priceConfirmationWindowMs: normalizedDraft.priceConfirmationWindowMs,
+    recenterMode: RecenterMode.Manual,
     outOfRangePause: normalizedDraft.outOfRangePause
+  };
+}
+
+function buildAdaptiveReplayConfig(baseConfig: SerializedBacktestConfig, rangePlan: SerializedRangePlan): SerializedBacktestConfig {
+  return {
+    ...baseConfig,
+    lowPrice: rangePlan.recommendedLowPrice,
+    highPrice: rangePlan.recommendedHighPrice,
+    levelCount: rangePlan.recommendedLevelCount,
+    gridType: rangePlan.recommendedGridType
   };
 }
 
@@ -215,8 +326,17 @@ function getConfigSignature(config: SerializedBacktestConfig) {
     config.budgetUsd,
     config.minOrderQuoteAmount,
     config.maxSlippageBps,
-    config.executionFeeBps ?? 10
+    config.executionFeeBps ?? 10,
+    config.recenterMode ?? RecenterMode.Manual
   ].join(":");
+}
+
+function getValidationNet(metrics: SerializedBacktestMetrics) {
+  return metrics.endingEquityUsd - metrics.startingBudgetUsd;
+}
+
+function formatBps(value: number) {
+  return `${formatNumber(value, value % 1 === 0 ? 0 : 1)} bps`;
 }
 
 function formatSpacingLabel(gridType: SerializedBacktestConfig["gridType"]) {
@@ -292,6 +412,95 @@ function formatRegimeScore(value: number) {
   return formatNumber(value, value % 1 === 0 ? 0 : 1);
 }
 
+function formatRecenterMode(mode: SerializedRecenterAdvice["mode"]) {
+  switch (mode) {
+    case "none":
+      return "Keep";
+    case "soft":
+      return "Soft defense";
+    case "hybrid":
+      return "Hybrid recenter";
+    case "hard":
+      return "Hard recreate";
+  }
+}
+
+function formatAssumptionRecenterMode(mode: string) {
+  if (mode === RecenterMode.Manual) {
+    return "Manual only";
+  }
+
+  if (mode === RecenterMode.Auto) {
+    return "Simulated auto";
+  }
+
+  return mode.replaceAll("_", " ");
+}
+
+function formatRecenterTone(risk: SerializedRecenterAdvice["risk"]) {
+  switch (risk) {
+    case "low":
+      return "text-[var(--green)] border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)]";
+    case "high":
+      return "text-[var(--red)] border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.08)]";
+    default:
+      return "text-[var(--amber)] border-[color:rgba(248,200,108,0.18)] bg-[color:rgba(248,200,108,0.08)]";
+  }
+}
+
+function formatRangePlanTone(risk: SerializedRangePlan["risk"]) {
+  switch (risk) {
+    case "low":
+      return "text-[var(--green)] border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)]";
+    case "high":
+      return "text-[var(--red)] border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.08)]";
+    default:
+      return "text-[var(--amber)] border-[color:rgba(248,200,108,0.18)] bg-[color:rgba(248,200,108,0.08)]";
+  }
+}
+
+function formatRangePlanBasis(basis: SerializedRangePlan["basis"]) {
+  switch (basis) {
+    case "current_range":
+      return "Current range";
+    case "atr":
+      return "ATR";
+    case "donchian":
+      return "Donchian";
+    case "bollinger":
+      return "Bollinger";
+  }
+}
+
+function formatStrategyFamilyLabel(family: SerializedStrategySelection["recommendedFamily"]) {
+  switch (family) {
+    case "range_grid":
+      return "Range grid";
+    case "trend_following":
+      return "Trend watch";
+    case "capital_defense":
+      return "Capital defense";
+  }
+}
+
+function formatStrategyPostureTone(posture: SerializedStrategySelection["posture"]) {
+  switch (posture) {
+    case "active":
+      return "text-[var(--green)] border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)]";
+    case "pause":
+      return "text-[var(--red)] border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.08)]";
+    case "watch":
+      return "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]";
+    default:
+      return "text-[var(--amber)] border-[color:rgba(248,200,108,0.18)] bg-[color:rgba(248,200,108,0.08)]";
+  }
+}
+
+function formatScenarioDescription(row: ScenarioComparisonRow) {
+  const recenterSuffix = row.config.recenterMode === RecenterMode.Auto ? " · recenter" : "";
+  return `${formatGoalLabel(row.config.strategyMode)} · ${formatSpacingLabel(row.config.gridType)} · ${row.config.levelCount} rails${recenterSuffix}`;
+}
+
 export function BacktestLabConsole({
   bots,
   selectedBotId,
@@ -310,11 +519,16 @@ export function BacktestLabConsole({
   const [recommendation, setRecommendation] = useState<SerializedBacktestRecommendation | null>(null);
   const [activeReplay, setActiveReplay] = useState<SerializedBacktestRunResult | null>(null);
   const [activeConfigKey, setActiveConfigKey] = useState<string | null>(null);
+  const [scenarioComparison, setScenarioComparison] = useState<ScenarioComparisonRow[]>([]);
 
   const selectedBot = useMemo(() => bots.find((bot) => bot.id === selectedBotId) ?? bots[0] ?? null, [bots, selectedBotId]);
   const selectedBotReplayConfig = useMemo(
     () => (selectedBot ? buildReplayConfigFromDraft(selectedBot.config) : null),
     [selectedBot]
+  );
+  const selectedBotRecenterReplayConfig = useMemo(
+    () => (selectedBotReplayConfig ? { ...selectedBotReplayConfig, recenterMode: RecenterMode.Auto } : null),
+    [selectedBotReplayConfig]
   );
 
   useEffect(() => {
@@ -326,22 +540,40 @@ export function BacktestLabConsole({
     setBudgetUsd(selectedBot.config.totalBudgetUsd);
   }, [selectedBot]);
 
+  useEffect(() => {
+    setFeedback(null);
+    setRecommendation(null);
+    setActiveReplay(null);
+    setActiveConfigKey(null);
+    setScenarioComparison([]);
+  }, [pair, budgetUsd, lookbackDays, resolution, selectedBot?.id]);
+
   const displayedReplay = activeReplay ?? recommendation?.bestReplay ?? null;
   const displayedGuidance = recommendation?.operatorGuidance ?? null;
+  const displayedRecenterAdvice = displayedReplay?.recenterAdvice ?? recommendation?.recenterAdvice ?? null;
+  const displayedRangePlan = displayedReplay?.rangePlan ?? recommendation?.rangePlan ?? null;
+  const displayedStrategySelection = displayedReplay?.strategySelection ?? recommendation?.strategySelection ?? null;
+  const displayedBaseConfig = displayedReplay?.config ?? recommendation?.bestConfig ?? null;
+  const displayedAssumptions = displayedReplay?.assumptions ?? recommendation?.assumptions ?? null;
+  const adaptiveReplayConfig = useMemo(
+    () => (displayedBaseConfig && displayedRangePlan ? buildAdaptiveReplayConfig(displayedBaseConfig, displayedRangePlan) : null),
+    [displayedBaseConfig, displayedRangePlan]
+  );
   const displayedIndicators = displayedReplay?.indicators ?? recommendation?.indicators ?? null;
   const latestIndicators = displayedIndicators?.latest ?? null;
   const displayedRegime = displayedReplay?.marketRegime ?? recommendation?.marketRegime ?? null;
+  const lastReplayPoint = displayedReplay?.replayPoints.at(-1) ?? null;
   const chartLevels = useMemo(
     () =>
       displayedReplay
         ? calculateGridLevels({
-            lowPrice: displayedReplay.config.lowPrice,
-            highPrice: displayedReplay.config.highPrice,
+            lowPrice: lastReplayPoint?.activeLowPrice ?? displayedReplay.config.lowPrice,
+            highPrice: lastReplayPoint?.activeHighPrice ?? displayedReplay.config.highPrice,
             levelCount: displayedReplay.config.levelCount,
             gridType: displayedReplay.config.gridType
           })
         : [],
-    [displayedReplay]
+    [displayedReplay, lastReplayPoint?.activeHighPrice, lastReplayPoint?.activeLowPrice]
   );
   const chartMarkers = useMemo(
     () =>
@@ -382,8 +614,6 @@ export function BacktestLabConsole({
       })) ?? [],
     [displayedReplay]
   );
-  const lastReplayPoint = displayedReplay?.replayPoints.at(-1) ?? null;
-
   async function postJson<T>(url: string, body: unknown): Promise<T> {
     const response = await fetch(url, {
       method: "POST",
@@ -401,19 +631,44 @@ export function BacktestLabConsole({
     return payload;
   }
 
+  function requestRecommendation() {
+    return postJson<SerializedBacktestRecommendation>("/api/backtest/lab/recommend", {
+      pair,
+      budgetUsd,
+      lookbackDays,
+      resolution
+    });
+  }
+
+  function requestReplay(config: SerializedBacktestConfig) {
+    return postJson<SerializedBacktestRunResult>("/api/backtest/lab/replay", {
+      pair,
+      budgetUsd,
+      lookbackDays,
+      resolution,
+      config
+    });
+  }
+
+  function requestScenarioComparison(config: SerializedBacktestConfig) {
+    return postJson<SerializedBacktestCompareResponse>("/api/backtest/lab/compare", {
+      pair,
+      budgetUsd,
+      lookbackDays,
+      resolution,
+      config
+    });
+  }
+
   async function runRecommendation() {
     setFeedback(null);
     setIsPending(true);
     try {
-      const payload = await postJson<SerializedBacktestRecommendation>("/api/backtest/lab/recommend", {
-        pair,
-        budgetUsd,
-        lookbackDays,
-        resolution
-      });
+      const payload = await requestRecommendation();
       setRecommendation(payload);
       setActiveReplay(payload.bestReplay);
       setActiveConfigKey(getConfigSignature(payload.bestConfig));
+      setScenarioComparison([]);
     } catch (error) {
       setFeedback({
         tone: "error",
@@ -428,19 +683,43 @@ export function BacktestLabConsole({
     setFeedback(null);
     setIsPending(true);
     try {
-      const payload = await postJson<SerializedBacktestRunResult>("/api/backtest/lab/replay", {
-        pair,
-        budgetUsd,
-        lookbackDays,
-        resolution,
-        config
-      });
+      const payload = await requestReplay(config);
       setActiveReplay(payload);
       setActiveConfigKey(getConfigSignature(config));
     } catch (error) {
       setFeedback({
         tone: "error",
         message: error instanceof Error ? error.message : "Unable to replay this config."
+      });
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  async function runScenarioComparison() {
+    if (!selectedBotReplayConfig) {
+      setFeedback({
+        tone: "error",
+        message: "Select an existing bot before comparing scenarios."
+      });
+      return;
+    }
+
+    setFeedback(null);
+    setIsPending(true);
+    try {
+      const payload = await requestScenarioComparison(selectedBotReplayConfig);
+      setRecommendation(payload.recommendation);
+      setScenarioComparison(payload.rows);
+      const first = payload.rows[0] ?? null;
+      if (first) {
+        setActiveReplay(first.replay);
+        setActiveConfigKey(getConfigSignature(first.config));
+      }
+    } catch (error) {
+      setFeedback({
+        tone: "error",
+        message: error instanceof Error ? error.message : "Unable to compare lab scenarios."
       });
     } finally {
       setIsPending(false);
@@ -630,11 +909,34 @@ export function BacktestLabConsole({
                         Replay current setup
                       </button>
                     ) : null}
+                    {selectedBotRecenterReplayConfig ? (
+                      <button
+                        type="button"
+                        onClick={() => replayConfig(selectedBotRecenterReplayConfig)}
+                        disabled={isPending}
+                        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] px-3 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-[var(--accent-line)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)] disabled:pointer-events-none disabled:opacity-50"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5 shrink-0" />
+                        Replay with recenter
+                      </button>
+                    ) : null}
                     {selectedBotReplayConfig ? (
                       <div className="text-[11px] leading-4 text-[var(--muted)]">
-                        Run one backtest with the selected bot config as-is, without searching for a better one.
+                        Current setup is manual. Recenter replay simulates auto-recenter in Lab only and does not update the live bot.
                       </div>
                     ) : null}
+                    <button
+                      type="button"
+                      onClick={runScenarioComparison}
+                      disabled={isPending || budgetUsd <= 0}
+                      className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] px-3 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-[var(--accent-line)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)] disabled:pointer-events-none disabled:opacity-50"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5 shrink-0" />
+                      Compare scenarios
+                    </button>
+                    <div className="text-[11px] leading-4 text-[var(--muted)]">
+                      Runs current setup, current + recenter, optimizer best, and adaptive plan on the same window when available.
+                    </div>
                   </div>
                 </div>
               </LabSection>
@@ -652,6 +954,7 @@ export function BacktestLabConsole({
                       <div className="font-mono text-[10px] uppercase tracking-[0.16em]">{recommendation.operatorGuidance.status}</div>
                       <div className="mt-1 text-white">{recommendation.operatorGuidance.summary}</div>
                       <div className="mt-2 text-[11px] leading-4 text-[var(--muted)]">{recommendation.operatorGuidance.stopRule}</div>
+                      <div className="mt-2 text-[11px] leading-4 text-[var(--muted)]">{recommendation.operatorGuidance.recenterAction}</div>
                     </div>
                   </div>
                 ) : (
@@ -666,9 +969,259 @@ export function BacktestLabConsole({
                     <LabMetric label="Validation PnL" value={formatCurrency(displayedReplay.validationMetrics.totalPnlUsd)} hint={formatPercent(displayedReplay.validationMetrics.returnPct, 2)} />
                     <LabMetric label="Overall PnL" value={formatCurrency(displayedReplay.overallMetrics.totalPnlUsd)} hint={formatPercent(displayedReplay.overallMetrics.returnPct, 2)} />
                     <LabMetric label="Max occupancy" value={formatPercent(displayedReplay.validationMetrics.maxOccupancyPct, 1)} hint="Validation window" />
+                    <LabMetric label="Fees" value={formatCurrency(displayedReplay.overallMetrics.totalFeesUsd)} hint={`${displayedReplay.overallMetrics.simulatedOrderCount} simulated fills`} />
+                    <LabMetric label="Avg slippage" value={formatBps(displayedReplay.overallMetrics.averageSlippageBps)} hint="Pessimistic fill model" />
+                    <LabMetric
+                      label="Recenters"
+                      value={formatNumber(displayedReplay.overallMetrics.recenterCount, 0)}
+                      hint={displayedReplay.assumptions.recenterScope === "simulated_when_auto_recenter" ? "Lab simulation" : "Advisory only"}
+                    />
                   </div>
                 ) : (
                   <div className="text-sm text-[var(--muted)]">No replay yet. Run Replay current setup to test the selected bot config, or Find best setup to search for a better one first.</div>
+                )}
+              </LabSection>
+
+              <LabSection title="Replay assumptions">
+                {displayedAssumptions ? (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 gap-2">
+                      <LabMetric label="Candle path" value="OHLC replay" hint="Bullish low-first, bearish high-first" />
+                      <LabMetric
+                        label="Cost model"
+                        value={`${formatBps(displayedAssumptions.maxSlippageBps)} slip + ${formatBps(displayedAssumptions.executionFeeBps)} fee`}
+                        hint="Pessimistic deterministic fills"
+                      />
+                      <LabMetric
+                        label="Split"
+                        value={`${formatPercent(displayedAssumptions.trainValidationSplit * 100, 0)} train`}
+                        hint={`${formatPercent((1 - displayedAssumptions.trainValidationSplit) * 100, 0)} validation`}
+                      />
+                      <LabMetric
+                        label="Recenter"
+                        value={formatAssumptionRecenterMode(displayedAssumptions.recenterMode)}
+                        hint={displayedAssumptions.recenterScope === "simulated_when_auto_recenter" ? "Lab simulation" : "Advisory only"}
+                      />
+                    </div>
+                    <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
+                      Excludes {displayedAssumptions.excludedCosts.join(", ")}. This is candle-level replay, not tick-level execution.
+                    </div>
+                    <div className="space-y-1.5">
+                      {displayedAssumptions.notes.map((note) => (
+                        <div key={note} className="text-[11px] leading-4 text-[var(--muted)]">
+                          {note}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-[var(--muted)]">Run a replay or recommendation to see the exact simulation assumptions used for the result.</div>
+                )}
+              </LabSection>
+
+              <LabSection title="Scenario comparison" defaultOpen>
+                {scenarioComparison.length ? (
+                  <div className="space-y-2">
+                    {scenarioComparison.map((row) => {
+                      const active = getConfigSignature(row.config) === activeConfigKey;
+                      const validationNet = getValidationNet(row.replay.validationMetrics);
+                      return (
+                        <button
+                          key={row.id}
+                          type="button"
+                          onClick={() => {
+                            setActiveReplay(row.replay);
+                            setActiveConfigKey(getConfigSignature(row.config));
+                          }}
+                          className={cn(
+                            "w-full rounded-md border px-2.5 py-2 text-left transition",
+                            active
+                              ? "border-[var(--accent-line)] bg-[var(--accent-soft)]"
+                              : "border-[var(--line)] bg-[var(--bg)] hover:border-white/12 hover:bg-white/[0.04]"
+                          )}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="font-mono text-[10px] uppercase tracking-[0.13em] text-white">{row.label}</div>
+                              <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">{formatScenarioDescription(row)}</div>
+                              <div className="mt-1 text-[10px] leading-4 text-[var(--muted)]">{row.description}</div>
+                            </div>
+                            <div className={cn("shrink-0 font-mono text-[11px]", validationNet >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
+                              {formatCurrency(validationNet)}
+                            </div>
+                          </div>
+                          <div className="mt-2 grid grid-cols-3 gap-1.5">
+                            <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
+                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">DD</div>
+                              <div className="mt-0.5 text-[10px] text-white">{formatPercent(row.replay.validationMetrics.maxDrawdownPct, 1)}</div>
+                            </div>
+                            <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
+                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Range</div>
+                              <div className="mt-0.5 text-[10px] text-white">{formatPercent(row.replay.validationMetrics.timeInRangePct, 0)}</div>
+                            </div>
+                            <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
+                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Cycles</div>
+                              <div className="mt-0.5 text-[10px] text-white">{formatNumber(row.replay.validationMetrics.closedCycleCount, 0)}</div>
+                            </div>
+                            <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
+                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Fees</div>
+                              <div className="mt-0.5 text-[10px] text-white">{formatCurrency(row.replay.validationMetrics.totalFeesUsd)}</div>
+                            </div>
+                            <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
+                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Slip</div>
+                              <div className="mt-0.5 text-[10px] text-white">{formatBps(row.replay.validationMetrics.averageSlippageBps)}</div>
+                            </div>
+                            <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
+                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Blocked</div>
+                              <div className="mt-0.5 text-[10px] text-white">{formatNumber(row.replay.validationMetrics.blockedOrderCount, 0)}</div>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="text-sm text-[var(--muted)]">
+                    Use Compare scenarios to test the selected bot, the optimizer winner, and the adaptive range plan on the same history window.
+                  </div>
+                )}
+              </LabSection>
+
+              <LabSection title="Adaptive range plan" defaultOpen>
+                {displayedRangePlan ? (
+                  <div className="space-y-3">
+                    <div className={cn("rounded-md border px-3 py-2", formatRangePlanTone(displayedRangePlan.risk))}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="font-mono text-[10px] uppercase tracking-[0.16em]">Lab-only suggestion</div>
+                          <div className="mt-1 text-base font-medium text-white">
+                            {formatNumber(displayedRangePlan.recommendedLowPrice, displayedRangePlan.recommendedLowPrice >= 1000 ? 0 : 2)} {"->"}{" "}
+                            {formatNumber(displayedRangePlan.recommendedHighPrice, displayedRangePlan.recommendedHighPrice >= 1000 ? 0 : 2)}
+                          </div>
+                        </div>
+                        <div className="text-right font-mono text-[11px] uppercase tracking-[0.12em]">{displayedRangePlan.risk}</div>
+                      </div>
+                      <div className="mt-2 text-[11px] leading-4 text-[var(--muted)]">{displayedRangePlan.operatorAction}</div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <LabMetric label="Rails" value={formatNumber(displayedRangePlan.recommendedLevelCount, 0)} hint={`${formatPercent(displayedRangePlan.stepPct, 2)} step`} />
+                      <LabMetric label="Spacing" value={formatSpacingLabel(displayedRangePlan.recommendedGridType)} hint={`${formatPercent(displayedRangePlan.widthPct, 1)} width`} />
+                      <LabMetric label="Basis" value={formatRangePlanBasis(displayedRangePlan.basis)} hint="Indicator source" />
+                      <LabMetric label="Confidence" value={formatPercent(displayedRangePlan.confidence * 100, 0)} hint="Heuristic score" />
+                    </div>
+                    {adaptiveReplayConfig ? (
+                      <button
+                        type="button"
+                        onClick={() => replayConfig(adaptiveReplayConfig)}
+                        disabled={isPending}
+                        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--accent-line)] bg-[var(--accent-soft)] px-3 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--accent)] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition hover:border-[rgba(121,184,255,0.45)] hover:bg-[rgba(121,184,255,0.14)] hover:text-white disabled:pointer-events-none disabled:opacity-50"
+                      >
+                        <Play className="h-3.5 w-3.5 shrink-0" />
+                        Replay adaptive plan
+                      </button>
+                    ) : null}
+                    <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
+                      <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">Why</div>
+                      <div className="mt-2 space-y-1.5">
+                        {displayedRangePlan.reasons.map((reason) => (
+                          <div key={reason} className="text-[11px] leading-4 text-[var(--muted)]">
+                            {reason}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-[var(--muted)]">Run a replay or recommendation to derive an adaptive range candidate from indicators and regime.</div>
+                )}
+              </LabSection>
+
+              <LabSection title="Meta decision" defaultOpen>
+                {displayedStrategySelection ? (
+                  <div className="space-y-3">
+                    <div className={cn("rounded-md border px-3 py-2", formatStrategyPostureTone(displayedStrategySelection.posture))}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="font-mono text-[10px] uppercase tracking-[0.16em]">Read-only selector</div>
+                          <div className="mt-1 text-base font-medium text-white">
+                            {formatStrategyFamilyLabel(displayedStrategySelection.recommendedFamily)}
+                          </div>
+                        </div>
+                        <div className="text-right font-mono text-[11px] uppercase tracking-[0.12em]">{displayedStrategySelection.posture}</div>
+                      </div>
+                      <div className="mt-2 text-[11px] leading-4 text-[var(--muted)]">{displayedStrategySelection.operatorAction}</div>
+                    </div>
+                    <LabMetric label="Selector confidence" value={formatPercent(displayedStrategySelection.confidence * 100, 0)} hint="Heuristic score" />
+                    <div className="grid grid-cols-1 gap-2">
+                      {displayedStrategySelection.candidates.map((candidate) => (
+                        <div key={candidate.family} className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-white">
+                              {formatStrategyFamilyLabel(candidate.family)}
+                            </div>
+                            <div className="font-mono text-[10px] text-[var(--muted)]">{formatPercent(candidate.score * 100, 0)}</div>
+                          </div>
+                          <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">{candidate.reason}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
+                      <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">Why</div>
+                      <div className="mt-2 space-y-1.5">
+                        {displayedStrategySelection.reasons.map((reason) => (
+                          <div key={reason} className="text-[11px] leading-4 text-[var(--muted)]">
+                            {reason}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-[var(--muted)]">
+                    Run a replay or recommendation to classify whether the current context favors range grid, defense, or a future trend module.
+                  </div>
+                )}
+              </LabSection>
+
+              <LabSection title="Recenter advice" defaultOpen>
+                {displayedRecenterAdvice ? (
+                  <div className="space-y-3">
+                    <div className={cn("rounded-md border px-3 py-2", formatRecenterTone(displayedRecenterAdvice.risk))}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="font-mono text-[10px] uppercase tracking-[0.16em]">
+                            {displayedAssumptions?.recenterScope === "simulated_when_auto_recenter" ? "Lab simulation" : "Advisory only"}
+                          </div>
+                          <div className="mt-1 text-base font-medium text-white">{formatRecenterMode(displayedRecenterAdvice.mode)}</div>
+                        </div>
+                        <div className="text-right font-mono text-[11px] uppercase tracking-[0.12em]">{displayedRecenterAdvice.risk}</div>
+                      </div>
+                      <div className="mt-2 text-[11px] leading-4 text-[var(--muted)]">{displayedRecenterAdvice.operatorAction}</div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <LabMetric label="New buys" value={displayedRecenterAdvice.allowNewBuys ? "Allowed" : "Paused"} hint={`Breakout ${displayedRecenterAdvice.side}`} />
+                      <LabMetric label="Recovery sells" value={displayedRecenterAdvice.allowRecoverySells ? "Allowed" : "Paused"} hint="Open cycle exits" />
+                    </div>
+                    {displayedRecenterAdvice.suggestedLowPrice !== null && displayedRecenterAdvice.suggestedHighPrice !== null ? (
+                      <LabMetric
+                        label="Suggested range"
+                        value={`${formatNumber(displayedRecenterAdvice.suggestedLowPrice, displayedRecenterAdvice.suggestedLowPrice >= 1000 ? 0 : 2)} -> ${formatNumber(displayedRecenterAdvice.suggestedHighPrice, displayedRecenterAdvice.suggestedHighPrice >= 1000 ? 0 : 2)}`}
+                        hint="Do not auto-apply in v1"
+                      />
+                    ) : null}
+                    <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
+                      <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">Why</div>
+                      <div className="mt-2 space-y-1.5">
+                        {displayedRecenterAdvice.reasons.map((reason) => (
+                          <div key={reason} className="text-[11px] leading-4 text-[var(--muted)]">
+                            {reason}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-[var(--muted)]">Run a replay or recommendation to get a recenter recommendation for the final simulated state.</div>
                 )}
               </LabSection>
 

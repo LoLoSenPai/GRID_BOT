@@ -41,9 +41,12 @@ export type BacktestReplayRequestBody = BacktestRecommendRequestBody & {
     | "maxConsecutiveFailures"
     | "levelLockMs"
     | "priceConfirmationWindowMs"
+    | "recenterMode"
     | "outOfRangePause"
   >;
 };
+
+export type BacktestCompareRequestBody = BacktestReplayRequestBody;
 
 function asObject(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -160,14 +163,22 @@ export function parseBacktestReplayRequest(body: unknown): BacktestReplayRequest
         0,
         parseFiniteNumber(configRecord.priceConfirmationWindowMs, "config.priceConfirmationWindowMs")
       ),
+      recenterMode:
+        configRecord.recenterMode === undefined
+          ? RecenterMode.Manual
+          : parseEnumValue(configRecord.recenterMode, [RecenterMode.Manual, RecenterMode.Auto] as const, "config.recenterMode"),
       outOfRangePause: parseBoolean(configRecord.outOfRangePause, "config.outOfRangePause")
     }
   };
 }
 
+export function parseBacktestCompareRequest(body: unknown): BacktestCompareRequestBody {
+  return parseBacktestReplayRequest(body);
+}
+
 export function buildReplayConfig(input: BacktestReplayRequestBody["config"]): BacktestConfig {
   return {
     ...input,
-    recenterMode: RecenterMode.Manual
+    recenterMode: input.recenterMode ?? RecenterMode.Manual
   };
 }

@@ -263,6 +263,84 @@ export interface MarketRegimeAssessment {
   evaluatedAt: Date;
 }
 
+export type RecenterPolicyMode = "none" | "soft" | "hybrid" | "hard";
+export type RecenterBreakoutSide = "inside" | "above" | "below";
+export type RecenterPolicyRisk = "low" | "medium" | "high";
+
+export interface RecenterPolicyInput {
+  currentPrice: number;
+  lowPrice: number;
+  highPrice: number;
+  openCycleCount: number;
+  maxOccupancyPct: number;
+  consecutiveOutsideBars: number;
+  marketRegime?: MarketRegimeAssessment | null;
+}
+
+export interface RecenterPolicyDecision {
+  mode: RecenterPolicyMode;
+  side: RecenterBreakoutSide;
+  allowNewBuys: boolean;
+  allowRecoverySells: boolean;
+  suggestedLowPrice: number | null;
+  suggestedHighPrice: number | null;
+  risk: RecenterPolicyRisk;
+  operatorAction: string;
+  reasons: string[];
+}
+
+export type RangePlanRisk = "low" | "medium" | "high";
+export type RangePlanBasis = "atr" | "donchian" | "bollinger" | "current_range";
+
+export interface RangePlanInput {
+  currentPrice: number;
+  currentLowPrice: number;
+  currentHighPrice: number;
+  currentLevelCount: number;
+  budgetUsd: number;
+  minOrderQuoteAmount: number;
+  indicators?: IndicatorSnapshot | null;
+  marketRegime?: MarketRegimeAssessment | null;
+}
+
+export interface RangePlanDecision {
+  recommendedLowPrice: number;
+  recommendedHighPrice: number;
+  recommendedLevelCount: number;
+  recommendedGridType: GridType;
+  widthPct: number;
+  stepPct: number;
+  basis: RangePlanBasis;
+  confidence: number;
+  risk: RangePlanRisk;
+  operatorAction: string;
+  reasons: string[];
+}
+
+export type StrategyFamily = "range_grid" | "trend_following" | "capital_defense";
+export type StrategyPosture = "active" | "caution" | "pause" | "watch";
+
+export interface StrategyCandidateScore {
+  family: StrategyFamily;
+  score: number;
+  reason: string;
+}
+
+export interface StrategySelectionInput {
+  marketRegime: MarketRegimeAssessment;
+  rangePlan: RangePlanDecision;
+  validationMetrics?: Pick<BacktestMetrics, "timeInRangePct" | "timeOutOfRangePct" | "maxOccupancyPct" | "maxDrawdownPct" | "closedCycleCount"> | null;
+}
+
+export interface StrategySelectionDecision {
+  recommendedFamily: StrategyFamily;
+  posture: StrategyPosture;
+  confidence: number;
+  operatorAction: string;
+  reasons: string[];
+  candidates: StrategyCandidateScore[];
+}
+
 export interface BacktestConfig {
   budgetUsd: number;
   lowPrice: number;
@@ -284,6 +362,25 @@ export interface BacktestConfig {
   outOfRangePause: boolean;
 }
 
+export interface ExecutionCostModelInput {
+  side: TradeSide;
+  levelPrice: number;
+  requestedQuoteAmount?: number;
+  requestedBaseAmount?: number;
+  maxSlippageBps: number;
+  executionFeeBps?: number;
+}
+
+export interface ExecutionCostModelReport {
+  side: TradeSide;
+  fillPrice: number;
+  inputAmount: number;
+  outputAmount: number;
+  feeAmount: number;
+  maxSlippageBps: number;
+  executionFeeBps: number;
+}
+
 export interface BacktestReplayExecution {
   id: string;
   orderKey: string;
@@ -303,11 +400,29 @@ export interface BacktestReplayExecution {
   matchedLotIds?: string[];
 }
 
+export interface BacktestRecenterEvent {
+  id: string;
+  phase: "train" | "validation";
+  timestamp: Date;
+  mode: RecenterPolicyMode;
+  side: RecenterBreakoutSide;
+  previousLowPrice: number;
+  previousHighPrice: number;
+  nextLowPrice: number;
+  nextHighPrice: number;
+  allowNewBuys: boolean;
+  allowRecoverySells: boolean;
+  risk: RecenterPolicyRisk;
+  reason: string;
+}
+
 export interface BacktestReplayPoint {
   timestamp: Date;
   price: number;
   phase: "train" | "validation";
   status: BotStatus;
+  activeLowPrice: number;
+  activeHighPrice: number;
   availableQuoteAmount: number;
   availableBaseAmount: number;
   deployedQuoteAmount: number;
@@ -335,6 +450,10 @@ export interface BacktestMetrics {
   executedBuyCount: number;
   executedSellCount: number;
   blockedOrderCount: number;
+  simulatedOrderCount: number;
+  recenterCount: number;
+  totalFeesUsd: number;
+  averageSlippageBps: number;
 }
 
 export interface BacktestRunMeta {
@@ -351,14 +470,31 @@ export interface BacktestRunMeta {
   estimatedIntervalMs: number;
 }
 
+export interface BacktestAssumptions {
+  candleTraversal: "bullish_open_low_high_close_bearish_open_high_low_close";
+  fillPolicy: "immediate_on_confirmed_level_cross";
+  executionCostModel: "pessimistic_slippage_plus_fee";
+  maxSlippageBps: number;
+  executionFeeBps: number;
+  trainValidationSplit: number;
+  recenterMode: RecenterMode;
+  recenterScope: "advisory_only" | "simulated_when_auto_recenter";
+  outOfRangeModel: "pause_new_entries_allow_recovery_sells";
+  excludedCosts: string[];
+  notes: string[];
+}
+
 export interface BacktestRunResult {
   series: BacktestMarketSeries;
   config: BacktestConfig;
   replayPoints: BacktestReplayPoint[];
   executions: BacktestReplayExecution[];
+  recenterEvents: BacktestRecenterEvent[];
+  recenterAdvice: RecenterPolicyDecision;
   trainMetrics: BacktestMetrics;
   validationMetrics: BacktestMetrics;
   overallMetrics: BacktestMetrics;
+  assumptions: BacktestAssumptions;
   meta: BacktestRunMeta;
 }
 
@@ -373,6 +509,7 @@ export interface BacktestOperatorGuidance {
   status: "Healthy" | "Caution" | "Fragile";
   summary: string;
   stopRule: string;
+  recenterAction: string;
   timeInRangePct: number;
   maxOccupancyPct: number;
 }
@@ -381,9 +518,11 @@ export interface BacktestRecommendation {
   bestConfig: BacktestConfig;
   leaderboard: BacktestLeaderboardEntry[];
   bestReplay: BacktestRunResult;
+  recenterAdvice: RecenterPolicyDecision;
   trainMetrics: BacktestMetrics;
   validationMetrics: BacktestMetrics;
   operatorGuidance: BacktestOperatorGuidance;
+  assumptions: BacktestAssumptions;
   meta: BacktestRunMeta & {
     candidateCount: number;
     evaluatedCount: number;
