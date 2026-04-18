@@ -317,6 +317,17 @@ type LabConclusion = {
   details: string[];
 };
 
+type ReplayDefenseTimelineEntry = {
+  id: string;
+  timestamp: string;
+  phase: SerializedBacktestReplayPoint["phase"];
+  tone: "accent" | "green" | "amber" | "red";
+  eyebrow: string;
+  title: string;
+  range: string;
+  details: string[];
+};
+
 function inferPairFromDraft(draft: BotFormDraft): LabPair {
   const symbol = BOT_PAIR_PRESETS[draft.presetId].baseSymbol;
   return symbol === "BTC" ? "BTC" : "SOL";
@@ -382,6 +393,10 @@ function getConfigSignature(config: SerializedBacktestConfig) {
 
 function getValidationNet(metrics: SerializedBacktestMetrics) {
   return metrics.endingEquityUsd - metrics.startingBudgetUsd;
+}
+
+function getDefenseEventCount(metrics: SerializedBacktestMetrics) {
+  return metrics.recenterCount + metrics.rangeAdjustmentCount;
 }
 
 function formatBps(value: number) {
@@ -521,6 +536,78 @@ function formatRangePlanBasis(basis: SerializedRangePlan["basis"]) {
   }
 }
 
+function formatTimelinePrice(value: number) {
+  return formatNumber(value, value >= 1000 ? 0 : 2);
+}
+
+function formatTimelineRange(lowPrice: number, highPrice: number) {
+  return `${formatTimelinePrice(lowPrice)} -> ${formatTimelinePrice(highPrice)}`;
+}
+
+function formatRecenterSide(side: SerializedBacktestRecenterEvent["side"]) {
+  switch (side) {
+    case "above":
+      return "Breakout above";
+    case "below":
+      return "Breakout below";
+    default:
+      return "Inside range";
+  }
+}
+
+function formatDefenseTone(tone: ReplayDefenseTimelineEntry["tone"]) {
+  switch (tone) {
+    case "green":
+      return "border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.06)] text-[var(--green)]";
+    case "amber":
+      return "border-[color:rgba(248,200,108,0.18)] bg-[color:rgba(248,200,108,0.06)] text-[var(--amber)]";
+    case "red":
+      return "border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.06)] text-[var(--red)]";
+    default:
+      return "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]";
+  }
+}
+
+function buildReplayDefenseTimeline(replay: SerializedBacktestRunResult | null): ReplayDefenseTimelineEntry[] {
+  if (!replay) {
+    return [];
+  }
+
+  const recenterEntries: ReplayDefenseTimelineEntry[] = replay.recenterEvents.map((event) => ({
+    id: `recenter-${event.id}`,
+    timestamp: event.timestamp,
+    phase: event.phase,
+    tone: event.risk === "high" ? "red" : event.risk === "medium" ? "amber" : "green",
+    eyebrow: "Recenter defense",
+    title: `${formatRecenterMode(event.mode)} | ${formatRecenterSide(event.side)}`,
+    range: `${formatTimelineRange(event.previousLowPrice, event.previousHighPrice)} -> ${formatTimelineRange(event.nextLowPrice, event.nextHighPrice)}`,
+    details: [
+      event.allowNewBuys ? "New buys allowed" : "New buys paused",
+      event.allowRecoverySells ? "Recovery sells allowed" : "Recovery sells paused",
+      event.reason
+    ]
+  }));
+
+  const adaptiveEntries: ReplayDefenseTimelineEntry[] = replay.rangeAdjustmentEvents.map((event) => ({
+    id: `adaptive-${event.id}`,
+    timestamp: event.timestamp,
+    phase: event.phase,
+    tone: event.risk === "high" ? "red" : event.risk === "medium" ? "amber" : "accent",
+    eyebrow: "Adaptive range",
+    title: `Range shifted | ${formatRangePlanBasis(event.basis)}`,
+    range: `${formatTimelineRange(event.previousLowPrice, event.previousHighPrice)} -> ${formatTimelineRange(event.nextLowPrice, event.nextHighPrice)}`,
+    details: [
+      `Rails ${event.previousLevelCount} -> ${event.nextLevelCount}`,
+      `Confidence ${formatPercent(event.confidence * 100, 0)}`,
+      event.reason
+    ]
+  }));
+
+  return [...recenterEntries, ...adaptiveEntries]
+    .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
+    .slice(0, 6);
+}
+
 function formatStrategyFamilyLabel(family: SerializedStrategySelection["recommendedFamily"]) {
   switch (family) {
     case "range_grid":
@@ -645,14 +732,14 @@ function buildLabConclusion({
           : "positive";
     const bestLabel = formatScenarioLabel(best.id);
     const isCurrentGoodEnough = best.id === "current_setup" || currentGap <= materialGap;
+    const defenseEvents = getDefenseEventCount(best.replay.overallMetrics);
     const details = [
       `Best validation result: ${bestLabel} at ${formatCurrency(bestNet)} net.`,
       currentNet === null ? null : `Current setup gap: ${formatCurrency(currentGap)} versus the best scenario.`,
       `Risk check: ${formatPercent(best.replay.validationMetrics.maxDrawdownPct, 1)} max drawdown, ${formatPercent(best.replay.validationMetrics.timeInRangePct, 0)} in range.`,
-      best.replay.overallMetrics.recenterCount > 0 ? `${best.replay.overallMetrics.recenterCount} simulated recenter event(s).` : "No simulated recenter event on the selected winner.",
-      best.replay.overallMetrics.rangeAdjustmentCount > 0
-        ? `${best.replay.overallMetrics.rangeAdjustmentCount} Lab-only adaptive range shift(s).`
-        : "No adaptive range shift on the selected winner."
+      defenseEvents > 0
+        ? `${defenseEvents} defense event(s): ${best.replay.overallMetrics.recenterCount} recenter, ${best.replay.overallMetrics.rangeAdjustmentCount} adaptive shift.`
+        : "No defensive recenter/adaptive event on the selected winner."
     ].filter((detail): detail is string => Boolean(detail));
 
     if (isCurrentGoodEnough) {
@@ -861,6 +948,7 @@ export function BacktestLabConsole({
       })) ?? [],
     [displayedReplay]
   );
+  const defenseTimeline = useMemo(() => buildReplayDefenseTimeline(displayedReplay), [displayedReplay]);
   async function postJson<T>(url: string, body: unknown): Promise<T> {
     const response = await fetch(url, {
       method: "POST",
@@ -1217,23 +1305,59 @@ export function BacktestLabConsole({
 
               <LabSection title="Current replay" defaultOpen>
                 {displayedReplay ? (
-                  <div className="grid grid-cols-1 gap-2">
-                    <LabMetric label="Train PnL" value={formatCurrency(displayedReplay.trainMetrics.totalPnlUsd)} hint={formatPercent(displayedReplay.trainMetrics.returnPct, 2)} />
-                    <LabMetric label="Validation PnL" value={formatCurrency(displayedReplay.validationMetrics.totalPnlUsd)} hint={formatPercent(displayedReplay.validationMetrics.returnPct, 2)} />
-                    <LabMetric label="Overall PnL" value={formatCurrency(displayedReplay.overallMetrics.totalPnlUsd)} hint={formatPercent(displayedReplay.overallMetrics.returnPct, 2)} />
-                    <LabMetric label="Max occupancy" value={formatPercent(displayedReplay.validationMetrics.maxOccupancyPct, 1)} hint="Validation window" />
-                    <LabMetric label="Fees" value={formatCurrency(displayedReplay.overallMetrics.totalFeesUsd)} hint={`${displayedReplay.overallMetrics.simulatedOrderCount} simulated fills`} />
-                    <LabMetric label="Avg slippage" value={formatBps(displayedReplay.overallMetrics.averageSlippageBps)} hint="Pessimistic fill model" />
-                    <LabMetric
-                      label="Recenters"
-                      value={formatNumber(displayedReplay.overallMetrics.recenterCount, 0)}
-                      hint={displayedReplay.assumptions.recenterScope === "simulated_when_auto_recenter" ? "Lab simulation" : "Advisory only"}
-                    />
-                    <LabMetric
-                      label="Range shifts"
-                      value={formatNumber(displayedReplay.overallMetrics.rangeAdjustmentCount, 0)}
-                      hint={displayedReplay.assumptions.rangeControlMode === "adaptive_lab_only" ? "Adaptive Lab simulation" : "Static range"}
-                    />
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 gap-2">
+                      <LabMetric label="Train PnL" value={formatCurrency(displayedReplay.trainMetrics.totalPnlUsd)} hint={formatPercent(displayedReplay.trainMetrics.returnPct, 2)} />
+                      <LabMetric label="Validation PnL" value={formatCurrency(displayedReplay.validationMetrics.totalPnlUsd)} hint={formatPercent(displayedReplay.validationMetrics.returnPct, 2)} />
+                      <LabMetric label="Overall PnL" value={formatCurrency(displayedReplay.overallMetrics.totalPnlUsd)} hint={formatPercent(displayedReplay.overallMetrics.returnPct, 2)} />
+                      <LabMetric label="Max occupancy" value={formatPercent(displayedReplay.validationMetrics.maxOccupancyPct, 1)} hint="Validation window" />
+                      <LabMetric label="Fees" value={formatCurrency(displayedReplay.overallMetrics.totalFeesUsd)} hint={`${displayedReplay.overallMetrics.simulatedOrderCount} simulated fills`} />
+                      <LabMetric label="Avg slippage" value={formatBps(displayedReplay.overallMetrics.averageSlippageBps)} hint="Pessimistic fill model" />
+                      <LabMetric
+                        label="Defense events"
+                        value={formatNumber(getDefenseEventCount(displayedReplay.overallMetrics), 0)}
+                        hint="Recenter + adaptive shifts"
+                      />
+                      <LabMetric
+                        label="Open cycles"
+                        value={formatNumber(displayedReplay.overallMetrics.openCycleCount, 0)}
+                        hint={`${formatNumber(displayedReplay.overallMetrics.closedCycleCount, 0)} closed cycles`}
+                      />
+                    </div>
+
+                    <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">Defense timeline</div>
+                        <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">Latest first</div>
+                      </div>
+                      {defenseTimeline.length ? (
+                        <div className="mt-2 space-y-2">
+                          {defenseTimeline.map((event) => (
+                            <div key={event.id} className={cn("rounded-md border px-2 py-1.5", formatDefenseTone(event.tone))}>
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="font-mono text-[8px] uppercase tracking-[0.13em] opacity-80">{event.eyebrow}</div>
+                                  <div className="mt-0.5 text-[11px] font-medium text-white">{event.title}</div>
+                                </div>
+                                <div className="shrink-0 text-right font-mono text-[9px] uppercase tracking-[0.12em] opacity-80">{event.phase}</div>
+                              </div>
+                              <div className="mt-1 font-mono text-[10px] text-white">{event.range}</div>
+                              <div className="mt-1 space-y-0.5">
+                                {event.details.map((detail) => (
+                                  <div key={detail} className="text-[10px] leading-4 text-[var(--muted)]">
+                                    {detail}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-[11px] leading-4 text-[var(--muted)]">
+                          No simulated recenter or adaptive range shift happened in this replay.
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <div className="text-sm text-[var(--muted)]">No replay yet. Run Compare scenarios to compare your selected bot against Lab alternatives.</div>
@@ -1335,8 +1459,8 @@ export function BacktestLabConsole({
                               <div className="mt-0.5 text-[10px] text-white">{formatBps(row.replay.validationMetrics.averageSlippageBps)}</div>
                             </div>
                             <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
-                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Adaptive</div>
-                              <div className="mt-0.5 text-[10px] text-white">{formatNumber(row.replay.validationMetrics.rangeAdjustmentCount, 0)}</div>
+                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Defense</div>
+                              <div className="mt-0.5 text-[10px] text-white">{formatNumber(getDefenseEventCount(row.replay.validationMetrics), 0)}</div>
                             </div>
                           </div>
                         </button>
