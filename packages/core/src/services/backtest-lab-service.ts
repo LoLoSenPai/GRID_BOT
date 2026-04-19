@@ -911,6 +911,7 @@ export class BacktestLabService {
 
     state.consecutiveOutsideCloses += 1;
     const maxOccupancyPct = state.config.budgetUsd > 0 ? round((state.deployedQuoteAmount / state.config.budgetUsd) * 100, 8) : 0;
+    const previousGuard = state.recenterGuard;
     const decision = this.recenterPolicyService.evaluate({
       currentPrice: candle.close,
       lowPrice: state.config.lowPrice,
@@ -921,35 +922,29 @@ export class BacktestLabService {
       marketRegime
     });
 
-    state.recenterGuard = {
+    const nextGuard = {
       mode: decision.mode,
       side: decision.side,
       allowNewBuys: decision.allowNewBuys,
       allowRecoverySells: decision.allowRecoverySells
     };
+    const guardUnchanged =
+      previousGuard?.mode === nextGuard.mode &&
+      previousGuard.side === nextGuard.side &&
+      previousGuard.allowNewBuys === nextGuard.allowNewBuys &&
+      previousGuard.allowRecoverySells === nextGuard.allowRecoverySells;
+
+    state.recenterGuard = nextGuard;
 
     if ((decision.mode !== "hybrid" && decision.mode !== "hard") || decision.suggestedLowPrice === null || decision.suggestedHighPrice === null) {
       return null;
     }
 
-    if (decision.mode === "hard" && state.openLots.length > 0) {
-      return null;
-    }
-
     const previousLowPrice = state.config.lowPrice;
     const previousHighPrice = state.config.highPrice;
-    state.config = {
-      ...state.config,
-      lowPrice: decision.suggestedLowPrice,
-      highPrice: decision.suggestedHighPrice
-    };
-    state.metadata.pendingSignal = null;
-    state.metadata.levelLocks = {};
-    state.metadata.recenterHistory = [...state.metadata.recenterHistory, candle.timestamp.toISOString()].slice(-50);
-    state.lastRecenterAt = candle.timestamp;
-    state.consecutiveOutsideCloses = 0;
-
-    return {
+    const nextLowPrice = decision.suggestedLowPrice;
+    const nextHighPrice = decision.suggestedHighPrice;
+    const buildEvent = (applied: boolean, reason = decision.operatorAction): BacktestRecenterEvent => ({
       id: `recenter-${phase}-${candle.timestamp.getTime()}`,
       phase,
       timestamp: candle.timestamp,
@@ -957,13 +952,38 @@ export class BacktestLabService {
       side: decision.side,
       previousLowPrice,
       previousHighPrice,
-      nextLowPrice: decision.suggestedLowPrice,
-      nextHighPrice: decision.suggestedHighPrice,
+      nextLowPrice,
+      nextHighPrice,
       allowNewBuys: decision.allowNewBuys,
       allowRecoverySells: decision.allowRecoverySells,
+      applied,
       risk: decision.risk,
-      reason: decision.operatorAction
+      reason
+    });
+
+    if (state.openLots.length > 0) {
+      if (guardUnchanged) {
+        return null;
+      }
+
+      return buildEvent(
+        false,
+        `${decision.operatorAction} Guard-only in Lab v1 because open cycles keep their original exits.`
+      );
+    }
+
+    state.config = {
+      ...state.config,
+      lowPrice: nextLowPrice,
+      highPrice: nextHighPrice
     };
+    state.metadata.pendingSignal = null;
+    state.metadata.levelLocks = {};
+    state.metadata.recenterHistory = [...state.metadata.recenterHistory, candle.timestamp.toISOString()].slice(-50);
+    state.lastRecenterAt = candle.timestamp;
+    state.consecutiveOutsideCloses = 0;
+
+    return buildEvent(true);
   }
 
   private maybeApplyAdaptiveRangePlan(
@@ -1005,7 +1025,7 @@ export class BacktestLabService {
       marketRegime
     });
 
-    if (rangePlan.risk === "high" || marketRegime.regime === "CHAOTIC_HIGH_VOL") {
+    if (rangePlan.risk === "high" || marketRegime.regime !== "RANGE" || marketRegime.confidence < 0.45) {
       state.recenterGuard = {
         mode: "soft",
         side: candle.close > state.config.highPrice ? "above" : candle.close < state.config.lowPrice ? "below" : "inside",

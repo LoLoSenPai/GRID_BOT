@@ -1,5 +1,5 @@
 import { GridType } from "../domain/enums";
-import type { RangePlanBasis, RangePlanDecision, RangePlanInput, RangePlanRisk } from "../domain/types";
+import type { RangePlanBasis, RangePlanDecision, RangePlanInput, RangePlanMidBasis, RangePlanRisk } from "../domain/types";
 import { round } from "../utils/math";
 
 const MIN_WIDTH_PCT = 4;
@@ -20,6 +20,16 @@ export class RangePlanService {
 
     const regime = input.marketRegime ?? null;
     const indicators = input.indicators ?? null;
+    const mid = deriveMidPrice({
+      currentPrice,
+      currentLowPrice,
+      currentHighPrice,
+      donchianHigh: indicators?.donchianHigh20 ?? null,
+      donchianLow: indicators?.donchianLow20 ?? null,
+      ema20: indicators?.ema20 ?? null,
+      ema50: indicators?.ema50 ?? null,
+      regime: regime?.regime ?? null
+    });
     const width = deriveWidthPct({
       currentWidthPct,
       atrPct: indicators?.atrPct14 ?? null,
@@ -31,7 +41,8 @@ export class RangePlanService {
     if (regime?.regime === "CHAOTIC_HIGH_VOL" && regime.confidence >= 0.45) {
       return {
         ...buildPlan({
-          currentPrice,
+          midPrice: mid.price,
+          midBasis: mid.basis,
           widthPct: Math.max(width.widthPct, clamp(currentWidthPct, MIN_WIDTH_PCT, MAX_WIDTH_PCT)),
           basis: width.basis,
           anchorRatio: 0.5,
@@ -53,7 +64,8 @@ export class RangePlanService {
     const risk = getRisk(regime?.regime ?? null, regime?.confidence ?? 0, width.widthPct, input.budgetUsd, input.minOrderQuoteAmount);
     const confidence = getConfidence(regime?.confidence ?? 0.35, width.basis, indicators !== null);
     const plan = buildPlan({
-      currentPrice,
+      midPrice: mid.price,
+      midBasis: mid.basis,
       widthPct: width.widthPct,
       basis: width.basis,
       anchorRatio,
@@ -70,9 +82,49 @@ export class RangePlanService {
         regime?.regime === "RANGE"
           ? "Use this as a candidate range in Lab before recreating a bot."
           : "Treat this as a defensive candidate; trend or low confidence means the static grid can become fragile.",
-      reasons: buildReasons(width, regime?.regime ?? null, regime?.confidence ?? null, plan)
+      reasons: buildReasons(width, mid, regime?.regime ?? null, regime?.confidence ?? null, plan)
     };
   }
+}
+
+function deriveMidPrice(input: {
+  currentPrice: number;
+  currentLowPrice: number;
+  currentHighPrice: number;
+  donchianHigh: number | null;
+  donchianLow: number | null;
+  ema20: number | null;
+  ema50: number | null;
+  regime: string | null;
+}): { price: number; basis: RangePlanMidBasis } {
+  if (input.regime === "RANGE" && isPositive(input.donchianHigh) && isPositive(input.donchianLow) && input.donchianHigh > input.donchianLow) {
+    return {
+      price: round((input.donchianHigh + input.donchianLow) / 2, 8),
+      basis: "donchian_mid"
+    };
+  }
+
+  if (input.regime === "RANGE" && isPositive(input.ema20) && isPositive(input.ema50)) {
+    const emaSpreadPct = Math.abs(input.ema20 - input.ema50) / ((input.ema20 + input.ema50) / 2) * 100;
+    if (emaSpreadPct <= 2) {
+      return {
+        price: round((input.ema20 + input.ema50) / 2, 8),
+        basis: "ema_cluster"
+      };
+    }
+  }
+
+  if (isPositive(input.currentLowPrice) && isPositive(input.currentHighPrice) && input.currentHighPrice > input.currentLowPrice) {
+    return {
+      price: round((input.currentLowPrice + input.currentHighPrice) / 2, 8),
+      basis: "current_range_mid"
+    };
+  }
+
+  return {
+    price: round(input.currentPrice, 8),
+    basis: "current_price"
+  };
 }
 
 function deriveWidthPct(input: {
@@ -113,7 +165,8 @@ function deriveWidthPct(input: {
 }
 
 function buildPlan(input: {
-  currentPrice: number;
+  midPrice: number;
+  midBasis: RangePlanMidBasis;
   widthPct: number;
   basis: RangePlanBasis;
   anchorRatio: number;
@@ -123,8 +176,8 @@ function buildPlan(input: {
   risk: RangePlanRisk;
   confidence: number;
 }): RangePlanDecision {
-  const widthPrice = input.currentPrice * (input.widthPct / 100);
-  const low = Math.max(input.currentPrice - widthPrice * input.anchorRatio, input.currentPrice * 0.01);
+  const widthPrice = input.midPrice * (input.widthPct / 100);
+  const low = Math.max(input.midPrice - widthPrice * input.anchorRatio, input.midPrice * 0.01);
   const high = low + widthPrice;
   const cycles = deriveCycleCount(input.budgetUsd, input.minOrderQuoteAmount, input.widthPct, input.currentLevelCount);
   const stepPct = cycles > 0 ? input.widthPct / cycles : input.widthPct;
@@ -134,6 +187,8 @@ function buildPlan(input: {
     recommendedHighPrice: round(high, 8),
     recommendedLevelCount: cycles + 1,
     recommendedGridType: input.widthPct >= 14 ? GridType.Geometric : GridType.Arithmetic,
+    midPrice: round(input.midPrice, 8),
+    midBasis: input.midBasis,
     widthPct: round(input.widthPct, 4),
     stepPct: round(stepPct, 4),
     basis: input.basis,
@@ -187,11 +242,13 @@ function getConfidence(regimeConfidence: number, basis: RangePlanBasis, hasIndic
 
 function buildReasons(
   width: { widthPct: number; basis: RangePlanBasis },
+  mid: { price: number; basis: RangePlanMidBasis },
   regime: string | null,
   regimeConfidence: number | null,
   plan: RangePlanDecision
 ) {
   const reasons = [`Width comes from ${width.basis.replace("_", " ")} at ${round(width.widthPct, 2)}%.`];
+  reasons.push(`Center comes from ${mid.basis.replace(/_/g, " ")} at ${round(mid.price, 4)}.`);
 
   if (regime) {
     reasons.push(`Market regime is ${regime}${regimeConfidence === null ? "" : ` with ${Math.round(regimeConfidence * 100)}% confidence`}.`);
@@ -213,6 +270,8 @@ function keepCurrentRange(input: RangePlanInput, reason: string): RangePlanDecis
     recommendedHighPrice: Number.isFinite(high) ? round(high, 8) : 0,
     recommendedLevelCount: Math.max(2, input.currentLevelCount),
     recommendedGridType: GridType.Arithmetic,
+    midPrice: Number.isFinite(low) && Number.isFinite(high) ? round((low + high) / 2, 8) : 0,
+    midBasis: "current_range_mid",
     widthPct: round(widthPct, 4),
     stepPct: round(widthPct / cycles, 4),
     basis: "current_range",

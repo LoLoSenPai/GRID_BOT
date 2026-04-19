@@ -66,7 +66,26 @@ describe("RangePlanService", () => {
     expect(plan.recommendedHighPrice).toBeGreaterThan(100);
     expect(plan.recommendedLevelCount).toBeGreaterThanOrEqual(5);
     expect(plan.recommendedGridType).toBe(GridType.Arithmetic);
+    expect(plan.midPrice).toBe(100);
+    expect(plan.midBasis).toBe("donchian_mid");
     expect(plan.reasons.join(" ")).toMatch(/RANGE|rails|Spacing/);
+  });
+
+  it("uses a stable EMA center when range candles do not have Donchian bounds", () => {
+    const plan = service.plan(
+      input({
+        indicators: indicators({
+          donchianHigh20: null,
+          donchianLow20: null,
+          donchianWidthPct20: null,
+          ema20: 101,
+          ema50: 100
+        })
+      })
+    );
+
+    expect(plan.midBasis).toBe("ema_cluster");
+    expect(plan.midPrice).toBe(100.5);
   });
 
   it("skews the range upward during an uptrend", () => {

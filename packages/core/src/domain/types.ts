@@ -291,6 +291,7 @@ export interface RecenterPolicyDecision {
 
 export type RangePlanRisk = "low" | "medium" | "high";
 export type RangePlanBasis = "atr" | "donchian" | "bollinger" | "current_range";
+export type RangePlanMidBasis = "current_price" | "donchian_mid" | "ema_cluster" | "current_range_mid";
 
 export interface RangePlanInput {
   currentPrice: number;
@@ -308,6 +309,8 @@ export interface RangePlanDecision {
   recommendedHighPrice: number;
   recommendedLevelCount: number;
   recommendedGridType: GridType;
+  midPrice: number;
+  midBasis: RangePlanMidBasis;
   widthPct: number;
   stepPct: number;
   basis: RangePlanBasis;
@@ -429,6 +432,7 @@ export interface BacktestRecenterEvent {
   nextHighPrice: number;
   allowNewBuys: boolean;
   allowRecoverySells: boolean;
+  applied: boolean;
   risk: RecenterPolicyRisk;
   reason: string;
 }

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { BotStatus, GridType, MinOrderMode, OrderStatus, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
 import { BacktestLabService, compareBacktestLeaderboardEntries, generateBacktestCandidates } from "../services/backtest-lab-service";
 import type { BacktestConfig, BacktestLeaderboardEntry, BacktestMarketSeries } from "../domain/types";
+import { MarketRegimeService } from "../services/market-regime-service";
 
 const service = new BacktestLabService();
 
@@ -192,9 +193,44 @@ describe("BacktestLabService", () => {
     expect(result.recenterEvents.length).toBeGreaterThan(0);
     expect(result.recenterEvents[0]?.mode).toBe("hybrid");
     expect(result.recenterEvents[0]?.side).toBe("below");
+    expect(result.recenterEvents[0]?.applied).toBe(false);
     expect(result.overallMetrics.recenterCount).toBe(result.recenterEvents.length);
-    expect(result.replayPoints.at(-1)?.activeLowPrice).toBeLessThan(100);
+    expect(result.replayPoints.at(-1)?.activeLowPrice).toBe(100);
     expect(result.assumptions.recenterScope).toBe("simulated_when_auto_recenter");
+  });
+
+  it("applies simulated recenter when no open cycle needs protection", () => {
+    const result = service.replay({
+      series: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        resolution: "1h",
+        candles: [
+          candle("2026-04-01T00:00:00Z", 112, 113, 111, 112),
+          candle("2026-04-01T01:00:00Z", 112, 115, 112, 114),
+          candle("2026-04-01T02:00:00Z", 114, 116, 113, 115),
+          candle("2026-04-01T03:00:00Z", 115, 117, 114, 116)
+        ]
+      },
+      config: {
+        ...buildBacktestConfig(StrategyMode.AccumulateUsdc),
+        highPrice: 110,
+        levelCount: 3,
+        recenterMode: RecenterMode.Auto
+      },
+      marketRegime: {
+        regime: "RANGE",
+        confidence: 0.8,
+        scores: { range: 4, trendUp: 0, trendDown: 0, chaoticHighVol: 0 },
+        reasons: ["test"],
+        evaluatedAt: new Date("2026-04-01T03:00:00Z")
+      }
+    });
+
+    expect(result.recenterEvents.length).toBeGreaterThan(0);
+    expect(result.recenterEvents[0]?.mode).toBe("hybrid");
+    expect(result.recenterEvents[0]?.applied).toBe(true);
+    expect(result.replayPoints.at(-1)?.activeLowPrice).toBeGreaterThan(100);
   });
 
   it("simulates adaptive range shifts in Lab while the replay is flat", () => {
@@ -232,6 +268,63 @@ describe("BacktestLabService", () => {
     expect(result.assumptions.rangeControlMode).toBe("adaptive_lab_only");
     expect(result.rangeAdjustmentEvents[0]?.previousLowPrice).toBe(100);
     expect(result.rangeAdjustmentEvents[0]?.nextLowPrice).toBeGreaterThan(100);
+  });
+
+  it("does not chase a trend with adaptive range shifts", () => {
+    class TrendRegimeService extends MarketRegimeService {
+      override assess() {
+        return {
+          regime: "TREND_UP" as const,
+          confidence: 0.8,
+          scores: { range: 0, trendUp: 4, trendDown: 0, chaoticHighVol: 0 },
+          reasons: ["test trend"],
+          evaluatedAt: new Date("2026-04-02T23:00:00Z")
+        };
+      }
+    }
+
+    const trendService = new BacktestLabService(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      new TrendRegimeService()
+    );
+    const candles = Array.from({ length: 48 }, (_, index) => {
+      const price = 100 + index * 0.25;
+      return candle(
+        new Date(Date.UTC(2026, 3, 1, index)).toISOString(),
+        price,
+        price + 0.12,
+        price - 0.12,
+        price + 0.1
+      );
+    });
+
+    const result = trendService.replay({
+      series: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        resolution: "1h",
+        candles
+      },
+      config: {
+        ...buildBacktestConfig(StrategyMode.AccumulateUsdc),
+        budgetUsd: 100,
+        rangeControlMode: "adaptive",
+        minOrderMode: MinOrderMode.Manual,
+        minOrderQuoteAmount: 10,
+        lowPrice: 95,
+        highPrice: 105
+      }
+    });
+
+    expect(result.rangeAdjustmentEvents).toEqual([]);
+    expect(result.replayPoints.at(-1)?.activeLowPrice).toBe(95);
+    expect(result.replayPoints.at(-1)?.activeHighPrice).toBe(105);
   });
 
   it("does not move adaptive rails while open cycles exist", () => {

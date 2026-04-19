@@ -88,6 +88,7 @@ type SerializedBacktestRecenterEvent = {
   nextHighPrice: number;
   allowNewBuys: boolean;
   allowRecoverySells: boolean;
+  applied: boolean;
   risk: "low" | "medium" | "high";
   reason: string;
 };
@@ -163,6 +164,8 @@ type SerializedRangePlan = {
   recommendedHighPrice: number;
   recommendedLevelCount: number;
   recommendedGridType: SerializedBacktestConfig["gridType"];
+  midPrice: number;
+  midBasis: "current_price" | "donchian_mid" | "ema_cluster" | "current_range_mid";
   widthPct: number;
   stepPct: number;
   basis: "atr" | "donchian" | "bollinger" | "current_range";
@@ -536,6 +539,19 @@ function formatRangePlanBasis(basis: SerializedRangePlan["basis"]) {
   }
 }
 
+function formatRangePlanMidBasis(basis: SerializedRangePlan["midBasis"]) {
+  switch (basis) {
+    case "donchian_mid":
+      return "Donchian mid";
+    case "ema_cluster":
+      return "EMA cluster";
+    case "current_range_mid":
+      return "Current range";
+    case "current_price":
+      return "Current price";
+  }
+}
+
 function formatTimelinePrice(value: number) {
   return formatNumber(value, value >= 1000 ? 0 : 2);
 }
@@ -579,9 +595,10 @@ function buildReplayDefenseTimeline(replay: SerializedBacktestRunResult | null):
     phase: event.phase,
     tone: event.risk === "high" ? "red" : event.risk === "medium" ? "amber" : "green",
     eyebrow: "Recenter defense",
-    title: `${formatRecenterMode(event.mode)} | ${formatRecenterSide(event.side)}`,
-    range: `${formatTimelineRange(event.previousLowPrice, event.previousHighPrice)} -> ${formatTimelineRange(event.nextLowPrice, event.nextHighPrice)}`,
+    title: `${formatRecenterMode(event.mode)} ${event.applied ? "applied" : "guard"} | ${formatRecenterSide(event.side)}`,
+    range: `${event.applied ? "" : "Suggested "}${formatTimelineRange(event.previousLowPrice, event.previousHighPrice)} -> ${formatTimelineRange(event.nextLowPrice, event.nextHighPrice)}`,
     details: [
+      event.applied ? "Range applied in replay" : "Guard only; existing rails were not moved",
       event.allowNewBuys ? "New buys allowed" : "New buys paused",
       event.allowRecoverySells ? "Recovery sells allowed" : "Recovery sells paused",
       event.reason
@@ -1572,6 +1589,7 @@ export function BacktestLabConsole({
                       <LabMetric label="Rails" value={formatNumber(displayedRangePlan.recommendedLevelCount, 0)} hint={`${formatPercent(displayedRangePlan.stepPct, 2)} step`} />
                       <LabMetric label="Spacing" value={formatSpacingLabel(displayedRangePlan.recommendedGridType)} hint={`${formatPercent(displayedRangePlan.widthPct, 1)} width`} />
                       <LabMetric label="Basis" value={formatRangePlanBasis(displayedRangePlan.basis)} hint="Indicator source" />
+                      <LabMetric label="Center" value={formatNumber(displayedRangePlan.midPrice, displayedRangePlan.midPrice >= 1000 ? 0 : 2)} hint={formatRangePlanMidBasis(displayedRangePlan.midBasis)} />
                       <LabMetric label="Confidence" value={formatPercent(displayedRangePlan.confidence * 100, 0)} hint="Heuristic score" />
                     </div>
                     {adaptiveReplayConfig ? (
