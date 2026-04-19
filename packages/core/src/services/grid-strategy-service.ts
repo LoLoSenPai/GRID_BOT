@@ -129,7 +129,10 @@ export class GridStrategyService {
     const requestedBaseAmount = round(Math.min(eligibleLot.remainingBaseAmount, targetQuoteAmount / executionPrice), 8);
     const requestedQuoteAmount = round(requestedBaseAmount * executionPrice, 2);
 
-    if (requestedBaseAmount <= 0 || requestedQuoteAmount < bot.config.minOrderQuoteAmount) {
+    // Existing lots must remain sellable even after a later budget increase raises
+    // the configured min order. The min-order guard is an entry-sizing rule, not
+    // a reason to trap older, smaller lots forever.
+    if (requestedBaseAmount <= 0 || requestedQuoteAmount <= 0) {
       return null;
     }
 

@@ -262,6 +262,69 @@ describe("GridStrategyService", () => {
     expect(order?.requestedBaseAmount).toBe(1);
   });
 
+  it("keeps older small lots sellable after a budget increase raises the min order", () => {
+    const order = service.buildOrderIntent(
+      {
+        ...aggregate,
+        config: {
+          ...aggregate.config,
+          totalBudgetUsd: 300,
+          maxDeployableUsd: 300,
+          minOrderQuoteAmount: 25
+        },
+        latestState: {
+          ...aggregate.latestState!,
+          metadata: {
+            ...aggregate.latestState!.metadata,
+            gridCycles: {
+              "1": {
+                buyLevelIndex: 1,
+                sellLevelIndex: 2,
+                lotId: "lot-small",
+                openedAt: "2026-04-18T10:00:00.000Z"
+              }
+            }
+          }
+        },
+        bot: {
+          ...aggregate.bot,
+          strategyMode: StrategyMode.AccumulateUsdc
+        },
+        openLots: [
+          {
+            id: "lot-small",
+            botId: "bot_1",
+            originalBaseAmount: 0.15,
+            remainingBaseAmount: 0.15,
+            entryPrice: 82,
+            costQuote: 12.3,
+            openedByExecutionId: "exec-small",
+            closedByExecutionId: null,
+            openedAt: new Date("2026-04-18T10:00:00.000Z"),
+            closedAt: null
+          }
+        ]
+      },
+      {
+        levelIndex: 2,
+        side: TradeSide.Sell,
+        levelPrice: 84,
+        observedPrice: 84.2,
+        idempotencyKey: "signal-small-sell",
+        triggeredAt: new Date("2026-04-18T11:00:00.000Z")
+      }
+    );
+
+    expect(order).toEqual(
+      expect.objectContaining({
+        side: TradeSide.Sell,
+        requestedQuoteAmount: 12.6,
+        requestedBaseAmount: 0.15,
+        matchedLotIds: ["lot-small"]
+      })
+    );
+  });
+
   it("skips sells when no profitable lot is available", () => {
     const order = service.buildOrderIntent(
       {

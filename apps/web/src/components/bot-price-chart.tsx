@@ -290,7 +290,7 @@ export function BotPriceChart({
   };
 
   const getDefaultVisibleLogicalRange = (barCount: number): LogicalRange => {
-    const visibleBars = Math.min(DEFAULT_VISIBLE_BARS[resolution], Math.max(barCount, 1));
+    const visibleBars = DEFAULT_VISIBLE_BARS[resolution];
     const to = Math.max(barCount - 1 + 3, visibleBars);
     const from = Math.max(to - visibleBars, 0);
 
@@ -300,7 +300,9 @@ export function BotPriceChart({
   const getRealtimeVisibleLogicalRange = (barCount: number): LogicalRange => {
     const currentRange = visibleLogicalRangeRef.current;
     const span =
-      currentRange && Number.isFinite(currentRange.to - currentRange.from) ? Math.max(currentRange.to - currentRange.from, 10) : DEFAULT_VISIBLE_BARS[resolution];
+      currentRange && Number.isFinite(currentRange.to - currentRange.from)
+        ? Math.max(currentRange.to - currentRange.from, 10)
+        : DEFAULT_VISIBLE_BARS[resolution];
     const to = Math.max(barCount - 1 + 3, span);
     const from = Math.max(to - span, 0);
 
@@ -481,7 +483,9 @@ export function BotPriceChart({
 
     if (!visibleLogicalRangeRef.current || isPinnedToRealtimeRef.current) {
       runViewportMutation(() => {
-        timeScale.setVisibleLogicalRange(getRealtimeVisibleLogicalRange(chartData.length));
+        timeScale.setVisibleLogicalRange(
+          hasUserNavigatedRef.current ? getRealtimeVisibleLogicalRange(chartData.length) : getDefaultVisibleLogicalRange(chartData.length)
+        );
       });
       sourceKeyRef.current = sourceLabel;
       return;

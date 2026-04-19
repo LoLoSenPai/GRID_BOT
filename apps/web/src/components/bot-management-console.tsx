@@ -377,17 +377,41 @@ export function BotManagementConsole({
 
     liveRefreshTimeoutRef.current = setTimeout(() => {
       liveRefreshTimeoutRef.current = null;
-      setBotBoardCache((current) => {
-        if (!current[botId]) {
-          return current;
-        }
+      void fetch(`/api/bots/${botId}/detail?${new URLSearchParams({ mode: deskMode }).toString()}`)
+        .then(async (response) => {
+          const payload = (await response.json().catch(() => null)) as { bot?: BotDetailViewData; error?: string } | null;
+          if (!response.ok || !payload?.bot) {
+            throw new Error(payload?.error ?? "Failed to refresh bot detail.");
+          }
 
-        const next = { ...current };
-        delete next[botId];
-        return next;
-      });
+          return payload.bot;
+        })
+        .then((board) => {
+          setBotBoardCache((current) => {
+            if (!current[botId]) {
+              return current;
+            }
+
+            return {
+              ...current,
+              [botId]: board
+            };
+          });
+        })
+        .catch(() => {
+          // Runtime SSE already updated the live desk; a detail refresh miss should not blank the chart.
+        });
     }, 1200);
   }
+
+  useEffect(() => {
+    return () => {
+      if (liveRefreshTimeoutRef.current) {
+        clearTimeout(liveRefreshTimeoutRef.current);
+        liveRefreshTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   function formatExecutionToast(
     execution: NonNullable<BotRuntimeTelemetry["latestExecution"]>,
