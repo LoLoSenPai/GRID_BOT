@@ -323,6 +323,7 @@ export interface RangePlanDecision {
 export type StrategyFamily = "range_grid" | "trend_following" | "capital_defense";
 export type StrategyPosture = "active" | "caution" | "pause" | "watch";
 export type StrategyReadiness = "live_ready" | "paper_only" | "advisory_only" | "planned";
+export type StrategyLiveAction = "keep_running" | "watch_only" | "pause_new_exposure" | "stop_or_recreate" | "paper_only";
 
 export interface StrategyDescriptor {
   family: StrategyFamily;
@@ -353,6 +354,7 @@ export interface StrategySelectionDecision {
   recommendedFamily: StrategyFamily;
   activeLiveFamily: StrategyFamily;
   posture: StrategyPosture;
+  liveAction: StrategyLiveAction;
   confidence: number;
   operatorAction: string;
   reasons: string[];

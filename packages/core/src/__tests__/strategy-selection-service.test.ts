@@ -9,6 +9,8 @@ const baseRangePlan: RangePlanDecision = {
   recommendedHighPrice: 88,
   recommendedLevelCount: 11,
   recommendedGridType: GridType.Arithmetic,
+  midPrice: 84,
+  midBasis: "donchian_mid",
   widthPct: 10,
   stepPct: 1,
   basis: "donchian",
@@ -46,6 +48,7 @@ describe("StrategySelectionService", () => {
     expect(decision.recommendedFamily).toBe("range_grid");
     expect(decision.activeLiveFamily).toBe("range_grid");
     expect(decision.posture).toBe("active");
+    expect(decision.liveAction).toBe("keep_running");
     expect(decision.candidates[0]?.family).toBe("range_grid");
     expect(decision.candidates[0]?.readiness).toBe("live_ready");
     expect(decision.registry.find((strategy) => strategy.family === "range_grid")?.liveEnabled).toBe(true);
@@ -79,6 +82,7 @@ describe("StrategySelectionService", () => {
     expect(decision.recommendedFamily).toBe("capital_defense");
     expect(decision.activeLiveFamily).toBe("range_grid");
     expect(decision.posture).toBe("pause");
+    expect(decision.liveAction).toBe("pause_new_exposure");
     expect(decision.candidates.find((candidate) => candidate.family === "capital_defense")?.readiness).toBe("advisory_only");
   });
 
@@ -109,7 +113,29 @@ describe("StrategySelectionService", () => {
     expect(decision.recommendedFamily).toBe("trend_following");
     expect(decision.activeLiveFamily).toBe("range_grid");
     expect(decision.posture).toBe("watch");
+    expect(decision.liveAction).toBe("watch_only");
     expect(decision.operatorAction).toContain("not live-ready");
     expect(decision.candidates.find((candidate) => candidate.family === "trend_following")?.liveEnabled).toBe(false);
+  });
+
+  it("escalates to stop or recreate when validation is broken and occupancy is extreme", () => {
+    const decision = new StrategySelectionService().select(
+      buildInput({
+        rangePlan: {
+          ...baseRangePlan,
+          risk: "high"
+        },
+        validationMetrics: {
+          timeInRangePct: 28,
+          timeOutOfRangePct: 72,
+          maxOccupancyPct: 99,
+          maxDrawdownPct: 21,
+          closedCycleCount: 1
+        }
+      })
+    );
+
+    expect(decision.liveAction).toBe("stop_or_recreate");
+    expect(decision.operatorAction).toContain("broken");
   });
 });

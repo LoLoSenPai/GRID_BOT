@@ -179,6 +179,7 @@ type SerializedStrategySelection = {
   recommendedFamily: "range_grid" | "trend_following" | "capital_defense";
   activeLiveFamily: "range_grid" | "trend_following" | "capital_defense";
   posture: "active" | "caution" | "pause" | "watch";
+  liveAction: "keep_running" | "watch_only" | "pause_new_exposure" | "stop_or_recreate" | "paper_only";
   confidence: number;
   operatorAction: string;
   reasons: string[];
@@ -672,6 +673,35 @@ function formatStrategyPostureTone(posture: SerializedStrategySelection["posture
       return "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]";
     default:
       return "text-[var(--amber)] border-[color:rgba(248,200,108,0.18)] bg-[color:rgba(248,200,108,0.08)]";
+  }
+}
+
+function formatStrategyLiveActionLabel(action: SerializedStrategySelection["liveAction"]) {
+  switch (action) {
+    case "keep_running":
+      return "Keep running";
+    case "watch_only":
+      return "Watch only";
+    case "pause_new_exposure":
+      return "Pause new buys";
+    case "stop_or_recreate":
+      return "Stop / recreate";
+    case "paper_only":
+      return "Paper only";
+  }
+}
+
+function formatStrategyLiveActionTone(action: SerializedStrategySelection["liveAction"]) {
+  switch (action) {
+    case "keep_running":
+      return "text-[var(--green)] border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)]";
+    case "pause_new_exposure":
+    case "paper_only":
+      return "text-[var(--amber)] border-[color:rgba(248,200,108,0.18)] bg-[color:rgba(248,200,108,0.08)]";
+    case "stop_or_recreate":
+      return "text-[var(--red)] border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.08)]";
+    default:
+      return "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]";
   }
 }
 
@@ -1633,6 +1663,11 @@ export function BacktestLabConsole({
                         <div className="text-right font-mono text-[11px] uppercase tracking-[0.12em]">{displayedStrategySelection.posture}</div>
                       </div>
                       <div className="mt-2 text-[11px] leading-4 text-[var(--muted)]">{displayedStrategySelection.operatorAction}</div>
+                    </div>
+                    <div className={cn("rounded-md border px-3 py-2", formatStrategyLiveActionTone(displayedStrategySelection.liveAction))}>
+                      <div className="font-mono text-[10px] uppercase tracking-[0.16em]">Live action</div>
+                      <div className="mt-1 text-base font-medium text-white">{formatStrategyLiveActionLabel(displayedStrategySelection.liveAction)}</div>
+                      <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">Read-only guidance. The worker will not auto-switch strategy in this phase.</div>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <LabMetric label="Selector confidence" value={formatPercent(displayedStrategySelection.confidence * 100, 0)} hint="Heuristic score" />

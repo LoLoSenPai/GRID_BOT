@@ -3,6 +3,7 @@ import type {
   StrategyDescriptor,
   StrategyCandidateScore,
   StrategyFamily,
+  StrategyLiveAction,
   StrategyPosture,
   StrategySelectionDecision,
   StrategySelectionInput
@@ -25,6 +26,7 @@ export class StrategySelectionService {
       candidates[0] ??
       buildCandidateScore(registry, "range_grid", 0.2, "Fallback to range grid until signals are available.");
     const posture = choosePosture(input, recommended.family);
+    const liveAction = chooseLiveAction(input, recommended.family, posture, recommended.readiness);
     const confidence = computeConfidence(candidates);
     const activeLiveFamily = getActiveLiveFamily(recommended.family, registry);
 
@@ -32,9 +34,10 @@ export class StrategySelectionService {
       recommendedFamily: recommended.family,
       activeLiveFamily,
       posture,
+      liveAction,
       confidence,
-      operatorAction: buildOperatorAction(input.marketRegime.regime, recommended.family, posture),
-      reasons: buildReasons(input, recommended.family),
+      operatorAction: buildOperatorAction(input.marketRegime.regime, recommended.family, posture, liveAction),
+      reasons: buildReasons(input, recommended.family, liveAction),
       candidates,
       registry
     };
@@ -109,7 +112,61 @@ function choosePosture(input: StrategySelectionInput, family: StrategyFamily): S
   return "caution";
 }
 
-function buildOperatorAction(regime: MarketRegime, family: StrategyFamily, posture: StrategyPosture) {
+function chooseLiveAction(
+  input: StrategySelectionInput,
+  family: StrategyFamily,
+  posture: StrategyPosture,
+  readiness: StrategyCandidateScore["readiness"]
+): StrategyLiveAction {
+  const metrics = input.validationMetrics ?? null;
+  const timeInRange = metrics?.timeInRangePct ?? 0;
+  const maxOccupancy = metrics?.maxOccupancyPct ?? 100;
+  const drawdown = metrics?.maxDrawdownPct ?? 0;
+
+  if (readiness === "paper_only") {
+    return "paper_only";
+  }
+
+  if (family === "trend_following") {
+    return "watch_only";
+  }
+
+  if (maxOccupancy > 98 || (timeInRange < 35 && drawdown >= 18)) {
+    return "stop_or_recreate";
+  }
+
+  if (family === "capital_defense" || posture === "pause" || input.marketRegime.regime === "CHAOTIC_HIGH_VOL") {
+    return "pause_new_exposure";
+  }
+
+  if (family === "range_grid" && posture === "active") {
+    return "keep_running";
+  }
+
+  if (input.rangePlan.risk === "high" || timeInRange < 50 || maxOccupancy > 95 || drawdown >= 12) {
+    return "pause_new_exposure";
+  }
+
+  return "watch_only";
+}
+
+function buildOperatorAction(regime: MarketRegime, family: StrategyFamily, posture: StrategyPosture, liveAction: StrategyLiveAction) {
+  if (liveAction === "keep_running") {
+    return "Keep the range grid running. Recreate only if the compared Lab scenario clearly improves validation.";
+  }
+
+  if (liveAction === "pause_new_exposure") {
+    return "Do not add new exposure here. Pause or avoid new buys, keep recovery sells available, and wait for a cleaner range.";
+  }
+
+  if (liveAction === "stop_or_recreate") {
+    return "Treat this setup as broken or over-occupied. Stop/recreate only after checking open lots and recovery exits.";
+  }
+
+  if (liveAction === "paper_only") {
+    return "This candidate is not live-ready. Test it in paper/Lab before considering any live migration.";
+  }
+
   if (family === "range_grid" && posture === "active") {
     return "Range grid is the preferred model here. Replay the adaptive plan, then recreate manually only if validation stays healthy.";
   }
@@ -127,10 +184,11 @@ function buildOperatorAction(regime: MarketRegime, family: StrategyFamily, postu
     : "Prefer capital defense over adding exposure. Wait for range conditions to return before recreating a grid.";
 }
 
-function buildReasons(input: StrategySelectionInput, family: StrategyFamily) {
+function buildReasons(input: StrategySelectionInput, family: StrategyFamily, liveAction: StrategyLiveAction) {
   const reasons = [
     `Detected regime is ${input.marketRegime.regime} with ${Math.round(input.marketRegime.confidence * 100)}% confidence.`,
-    `Adaptive range risk is ${input.rangePlan.risk}.`
+    `Adaptive range risk is ${input.rangePlan.risk}.`,
+    `Live action is ${liveAction.replace(/_/g, " ")}.`
   ];
 
   if (input.validationMetrics) {
