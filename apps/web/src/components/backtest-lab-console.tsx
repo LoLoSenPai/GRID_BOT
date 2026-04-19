@@ -832,6 +832,144 @@ function getConclusionToneClass(tone: LabConclusionTone) {
   }
 }
 
+function ScenarioComparisonBoard({
+  rows,
+  activeConfigKey,
+  onSelect
+}: {
+  rows: ScenarioComparisonRow[];
+  activeConfigKey: string | null;
+  onSelect: (row: ScenarioComparisonRow) => void;
+}) {
+  if (!rows.length) {
+    return (
+      <section className="mb-3 border border-[var(--line)] bg-[linear-gradient(180deg,rgba(121,184,255,0.045),rgba(5,12,22,0.36))] px-4 py-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">Lab workflow</div>
+            <div className="mt-1 text-base font-semibold text-white">Start with Compare scenarios</div>
+            <div className="mt-1 max-w-3xl text-sm leading-5 text-[var(--muted)]">
+              This is the main decision mode. It compares the selected bot against recenter, optimizer, and adaptive candidates on the same history window.
+            </div>
+          </div>
+          <div className="rounded-md border border-[var(--accent-line)] bg-[var(--accent-soft)] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--accent)]">
+            No live mutation
+          </div>
+        </div>
+        <div className="mt-3 grid gap-2 md:grid-cols-3">
+          <div className="border border-[rgba(255,255,255,0.07)] bg-[rgba(0,0,0,0.14)] px-3 py-2">
+            <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--accent)]">1. Compare</div>
+            <div className="mt-1 text-sm text-white">Run the four scenarios first.</div>
+            <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">Current bot, recenter, optimizer winner, adaptive range.</div>
+          </div>
+          <div className="border border-[rgba(255,255,255,0.07)] bg-[rgba(0,0,0,0.14)] px-3 py-2">
+            <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--accent)]">2. Decide</div>
+            <div className="mt-1 text-sm text-white">Read the top decision panel.</div>
+            <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">It should tell you keep, recreate, or paper-test recenter.</div>
+          </div>
+          <div className="border border-[rgba(255,255,255,0.07)] bg-[rgba(0,0,0,0.14)] px-3 py-2">
+            <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--accent)]">3. Inspect</div>
+            <div className="mt-1 text-sm text-white">Open diagnostics only if needed.</div>
+            <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">Regime, indicators, recenter, and assumptions explain surprises.</div>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  const rankedRows = rankScenarioRows(rows);
+  const winner = rankedRows[0] ?? null;
+
+  return (
+    <section className="mb-3 border border-[var(--line)] bg-[rgba(5,12,22,0.54)] px-4 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">Decision board</div>
+          <div className="mt-1 text-base font-semibold text-white">Same window, four ways to run the bot</div>
+          <div className="mt-1 max-w-3xl text-sm leading-5 text-[var(--muted)]">
+            Ranking uses validation first. Click a scenario to inspect its chart, equity curve, defense events, and assumptions.
+          </div>
+        </div>
+        {winner ? (
+          <div className="rounded-md border border-[var(--accent-line)] bg-[var(--accent-soft)] px-3 py-2 text-right">
+            <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--muted)]">Current winner</div>
+            <div className="mt-0.5 text-sm font-medium text-white">{formatScenarioLabel(winner.id)}</div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="mt-3 grid gap-2 xl:grid-cols-4">
+        {rows.map((row) => {
+          const active = getConfigSignature(row.config) === activeConfigKey;
+          const winnerRow = winner?.id === row.id;
+          const validationNet = getValidationNet(row.replay.validationMetrics);
+          const defensiveCount = getDefenseEventCount(row.replay.validationMetrics);
+          const fragile = row.replay.validationMetrics.timeInRangePct < 50 || row.replay.validationMetrics.maxDrawdownPct > 20;
+          return (
+            <button
+              key={row.id}
+              type="button"
+              onClick={() => onSelect(row)}
+              className={cn(
+                "group flex min-h-[220px] flex-col rounded-md border px-3 py-3 text-left transition",
+                active
+                  ? "border-[var(--accent-line)] bg-[var(--accent-soft)] shadow-[0_0_0_1px_rgba(121,184,255,0.12)]"
+                  : "border-[var(--line)] bg-[rgba(0,0,0,0.14)] hover:border-white/12 hover:bg-white/[0.035]"
+              )}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-white">{row.label}</div>
+                  <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">{formatScenarioDescription(row)}</div>
+                </div>
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  {winnerRow ? (
+                    <span className="rounded border border-[var(--accent-line)] bg-[var(--accent-soft)] px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--accent)]">
+                      Winner
+                    </span>
+                  ) : null}
+                  {fragile ? (
+                    <span className="rounded border border-[color:rgba(248,200,108,0.22)] bg-[color:rgba(248,200,108,0.08)] px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--amber)]">
+                      Fragile
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className={cn("mt-3 text-2xl font-semibold tracking-[-0.04em]", validationNet >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
+                {formatCurrency(validationNet)}
+              </div>
+              <div className="mt-1 font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">Validation net</div>
+
+              <div className="mt-3 grid grid-cols-2 gap-1.5">
+                <ScenarioMiniMetric label="DD" value={formatPercent(row.replay.validationMetrics.maxDrawdownPct, 1)} />
+                <ScenarioMiniMetric label="Range" value={formatPercent(row.replay.validationMetrics.timeInRangePct, 0)} />
+                <ScenarioMiniMetric label="Cycles" value={formatNumber(row.replay.validationMetrics.closedCycleCount, 0)} />
+                <ScenarioMiniMetric label="Defense" value={formatNumber(defensiveCount, 0)} />
+              </div>
+
+              <div className="mt-auto pt-3">
+                <div className="border-t border-[rgba(255,255,255,0.07)] pt-2 text-[11px] leading-4 text-[var(--muted)]">
+                  {getScenarioSummaryAction(row.id)}
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function ScenarioMiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-[rgba(255,255,255,0.07)] bg-[rgba(255,255,255,0.025)] px-2 py-1.5">
+      <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">{label}</div>
+      <div className="mt-0.5 text-[11px] font-medium text-white">{value}</div>
+    </div>
+  );
+}
+
 export function BacktestLabConsole({
   bots,
   selectedBotId,
@@ -1083,6 +1221,14 @@ export function BacktestLabConsole({
       ) : null}
 
       <LabConclusionPanel conclusion={labConclusion} />
+      <ScenarioComparisonBoard
+        rows={scenarioComparison}
+        activeConfigKey={activeConfigKey}
+        onSelect={(row) => {
+          setActiveReplay(row.replay);
+          setActiveConfigKey(getConfigSignature(row.config));
+        }}
+      />
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_400px]">
         <div className="min-w-0 border-r border-[var(--line)]">
@@ -1282,7 +1428,7 @@ export function BacktestLabConsole({
                 </div>
               </LabSection>
 
-              <LabSection title="Best setup found" defaultOpen>
+              <LabSection title="Best setup found">
                 {recommendation ? (
                   <div className="space-y-3">
                     <div className="grid grid-cols-1 gap-2">
@@ -1303,7 +1449,7 @@ export function BacktestLabConsole({
                 )}
               </LabSection>
 
-              <LabSection title="Current replay" defaultOpen>
+              <LabSection title="Current replay">
                 {displayedReplay ? (
                   <div className="space-y-3">
                     <div className="grid grid-cols-1 gap-2">
@@ -1403,74 +1549,6 @@ export function BacktestLabConsole({
                   </div>
                 ) : (
                   <div className="text-sm text-[var(--muted)]">Run a replay or recommendation to see the exact simulation assumptions used for the result.</div>
-                )}
-              </LabSection>
-
-              <LabSection title="Scenario comparison" defaultOpen>
-                {scenarioComparison.length ? (
-                  <div className="space-y-2">
-                    {scenarioComparison.map((row) => {
-                      const active = getConfigSignature(row.config) === activeConfigKey;
-                      const validationNet = getValidationNet(row.replay.validationMetrics);
-                      return (
-                        <button
-                          key={row.id}
-                          type="button"
-                          onClick={() => {
-                            setActiveReplay(row.replay);
-                            setActiveConfigKey(getConfigSignature(row.config));
-                          }}
-                          className={cn(
-                            "w-full rounded-md border px-2.5 py-2 text-left transition",
-                            active
-                              ? "border-[var(--accent-line)] bg-[var(--accent-soft)]"
-                              : "border-[var(--line)] bg-[var(--bg)] hover:border-white/12 hover:bg-white/[0.04]"
-                          )}
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="font-mono text-[10px] uppercase tracking-[0.13em] text-white">{row.label}</div>
-                              <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">{formatScenarioDescription(row)}</div>
-                              <div className="mt-1 text-[10px] leading-4 text-[var(--muted)]">{row.description}</div>
-                            </div>
-                            <div className={cn("shrink-0 font-mono text-[11px]", validationNet >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
-                              {formatCurrency(validationNet)}
-                            </div>
-                          </div>
-                          <div className="mt-2 grid grid-cols-3 gap-1.5">
-                            <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
-                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">DD</div>
-                              <div className="mt-0.5 text-[10px] text-white">{formatPercent(row.replay.validationMetrics.maxDrawdownPct, 1)}</div>
-                            </div>
-                            <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
-                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Range</div>
-                              <div className="mt-0.5 text-[10px] text-white">{formatPercent(row.replay.validationMetrics.timeInRangePct, 0)}</div>
-                            </div>
-                            <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
-                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Cycles</div>
-                              <div className="mt-0.5 text-[10px] text-white">{formatNumber(row.replay.validationMetrics.closedCycleCount, 0)}</div>
-                            </div>
-                            <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
-                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Fees</div>
-                              <div className="mt-0.5 text-[10px] text-white">{formatCurrency(row.replay.validationMetrics.totalFeesUsd)}</div>
-                            </div>
-                            <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
-                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Slip</div>
-                              <div className="mt-0.5 text-[10px] text-white">{formatBps(row.replay.validationMetrics.averageSlippageBps)}</div>
-                            </div>
-                            <div className="rounded border border-[var(--line)] bg-[rgba(255,255,255,0.02)] px-1.5 py-1">
-                              <div className="font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--muted)]">Defense</div>
-                              <div className="mt-0.5 text-[10px] text-white">{formatNumber(getDefenseEventCount(row.replay.validationMetrics), 0)}</div>
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="text-sm text-[var(--muted)]">
-                    Use Compare scenarios to test the selected bot, selected bot + recenter, optimizer winner, and adaptive range plan on the same history window.
-                  </div>
                 )}
               </LabSection>
 
