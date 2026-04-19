@@ -180,6 +180,18 @@ type RuntimeDeskEvent = {
   execution: BotRuntimeTelemetry["latestExecution"];
 };
 
+type ExecutionRefreshSource =
+  | BotRuntimeTelemetry["latestExecution"]
+  | BotDetailViewData["executions"][number];
+
+function buildExecutionRefreshKey(execution: NonNullable<ExecutionRefreshSource>) {
+  const runtimeTime =
+    "completedAt" in execution
+      ? (execution.completedAt ?? execution.createdAt)
+      : execution.time;
+  return `${execution.id}:${execution.status}:${runtimeTime}`;
+}
+
 type FeedbackState =
   | {
     tone: "success" | "error" | "info";
@@ -246,7 +258,15 @@ export function BotManagementConsole({
       return accumulator;
     }, {})
   );
-  const liveRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveRefreshTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>[]>>(new Map());
+  const latestExecutionKeyRef = useRef<Record<string, string>>(
+    bots.reduce<Record<string, string>>((accumulator, bot) => {
+      if (bot.latestExecution) {
+        accumulator[bot.id] = buildExecutionRefreshKey(bot.latestExecution);
+      }
+      return accumulator;
+    }, {})
+  );
 
   const runtimeBots = useMemo(() => bots.map((bot) => applyTelemetry(bot, liveTelemetry[bot.id])), [bots, liveTelemetry]);
   const hasBots = runtimeBots.length > 0;
@@ -370,46 +390,52 @@ export function BotManagementConsole({
     setDeskToasts((current) => current.filter((toast) => toast.id !== id));
   }
 
+  async function refreshBotDetail(botId: string) {
+    const response = await fetch(`/api/bots/${botId}/detail?${new URLSearchParams({ mode: deskMode }).toString()}`);
+    const payload = (await response.json().catch(() => null)) as { bot?: BotDetailViewData; error?: string } | null;
+    if (!response.ok || !payload?.bot) {
+      throw new Error(payload?.error ?? "Failed to refresh bot detail.");
+    }
+
+    setBotBoardCache((current) => {
+      if (!current[botId]) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [botId]: payload.bot
+      };
+    });
+  }
+
   function scheduleLiveRefresh(botId: string) {
-    if (liveRefreshTimeoutRef.current) {
+    if (liveRefreshTimeoutsRef.current.has(botId)) {
       return;
     }
 
-    liveRefreshTimeoutRef.current = setTimeout(() => {
-      liveRefreshTimeoutRef.current = null;
-      void fetch(`/api/bots/${botId}/detail?${new URLSearchParams({ mode: deskMode }).toString()}`)
-        .then(async (response) => {
-          const payload = (await response.json().catch(() => null)) as { bot?: BotDetailViewData; error?: string } | null;
-          if (!response.ok || !payload?.bot) {
-            throw new Error(payload?.error ?? "Failed to refresh bot detail.");
-          }
-
-          return payload.bot;
-        })
-        .then((board) => {
-          setBotBoardCache((current) => {
-            if (!current[botId]) {
-              return current;
-            }
-
-            return {
-              ...current,
-              [botId]: board
-            };
-          });
-        })
-        .catch(() => {
+    const delaysMs = [700, 2000, 4500];
+    const timeouts = delaysMs.map((delayMs, index) =>
+      setTimeout(() => {
+        void refreshBotDetail(botId).catch(() => {
           // Runtime SSE already updated the live desk; a detail refresh miss should not blank the chart.
         });
-    }, 1200);
+        if (index === delaysMs.length - 1) {
+          liveRefreshTimeoutsRef.current.delete(botId);
+        }
+      }, delayMs)
+    );
+    liveRefreshTimeoutsRef.current.set(botId, timeouts);
   }
 
   useEffect(() => {
     return () => {
-      if (liveRefreshTimeoutRef.current) {
-        clearTimeout(liveRefreshTimeoutRef.current);
-        liveRefreshTimeoutRef.current = null;
+      for (const timeouts of liveRefreshTimeoutsRef.current.values()) {
+        for (const timeout of timeouts) {
+          clearTimeout(timeout);
+        }
       }
+      liveRefreshTimeoutsRef.current.clear();
     };
   }, []);
 
@@ -511,6 +537,14 @@ export function BotManagementConsole({
           }
 
           botStatusRef.current[bot.id] = bot.status;
+
+          if (bot.latestExecution) {
+            const executionKey = buildExecutionRefreshKey(bot.latestExecution);
+            if (latestExecutionKeyRef.current[bot.id] !== executionKey) {
+              latestExecutionKeyRef.current[bot.id] = executionKey;
+              scheduleLiveRefresh(bot.id);
+            }
+          }
         }
       } catch {
         return;
@@ -607,14 +641,6 @@ export function BotManagementConsole({
 
     return () => window.clearTimeout(timeoutId);
   }, [deskToasts]);
-
-  useEffect(() => {
-    return () => {
-      if (liveRefreshTimeoutRef.current) {
-        clearTimeout(liveRefreshTimeoutRef.current);
-      }
-    };
-  }, []);
 
   useEffect(() => {
     if (!panelKind && !drawerBotId) {
