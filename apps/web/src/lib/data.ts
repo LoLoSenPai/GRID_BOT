@@ -1,6 +1,8 @@
 import { BotMode } from "@grid-bot/core/enums";
 import { prisma } from "@grid-bot/db";
 
+const BOT_DETAIL_EXECUTION_HISTORY_LIMIT = 500;
+
 function isVisibleIncidentAlert(alert: { type: string; bot?: { status: string } | null }) {
   if (alert.type === "bot_out_of_range") {
     return false;
@@ -232,7 +234,11 @@ export async function getBotDetail(botId: string, mode?: BotMode) {
       alerts: { orderBy: { createdAt: "desc" }, take: 8 },
       systemLogs: { orderBy: { createdAt: "desc" }, take: 8 },
       priceSnapshots: { orderBy: { capturedAt: "desc" }, take: 32 },
-      executions: { orderBy: { createdAt: "desc" }, take: 12, include: { order: true } }
+      executions: {
+        orderBy: { createdAt: "desc" },
+        take: BOT_DETAIL_EXECUTION_HISTORY_LIMIT,
+        include: { order: true }
+      }
     }
   });
 

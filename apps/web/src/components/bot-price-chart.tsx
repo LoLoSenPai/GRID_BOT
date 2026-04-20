@@ -359,8 +359,8 @@ export function BotPriceChart({
         textColor: "#91a5bc"
       },
       grid: {
-        vertLines: { color: "rgba(255,255,255,0.04)" },
-        horzLines: { color: "rgba(255,255,255,0.06)" }
+        vertLines: { color: "transparent" },
+        horzLines: { color: "transparent" }
       },
       rightPriceScale: {
         borderColor: "rgba(255,255,255,0.08)",
@@ -510,6 +510,17 @@ export function BotPriceChart({
 
       const markerTime = new Date(marker.time).getTime();
       const targetBucket = bucketTimestamp(markerTime, resolution);
+      const firstAnchorTime = markerAnchorTimes[0] ?? null;
+      const lastAnchorTime = markerAnchorTimes.at(-1) ?? null;
+      if (
+        firstAnchorTime === null ||
+        lastAnchorTime === null ||
+        targetBucket < firstAnchorTime ||
+        targetBucket > lastAnchorTime
+      ) {
+        return accumulator;
+      }
+
       let snappedAnchorTime = markerAnchorTimes.find((anchor) => anchor === targetBucket) ?? null;
       let nearestDistance = Number.POSITIVE_INFINITY;
 

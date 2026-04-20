@@ -315,6 +315,24 @@ export function BotManagementConsole({
       totalEquityUsd: selectedBot.runtime.totalEquityUsd
     };
   }, [selectedBoard, selectedBot, selectedTelemetry]);
+  const selectedTitleSymbol = selectedBot?.pairLabel.split("/")[0] ?? null;
+  const selectedTitlePrice = selectedBot?.currentPrice ?? null;
+
+  useEffect(() => {
+    if (!selectedTitleSymbol || selectedTitlePrice === null || !Number.isFinite(selectedTitlePrice)) {
+      document.title = "Grid Bot";
+      return;
+    }
+
+    const formattedPrice = formatNumber(selectedTitlePrice, selectedTitlePrice >= 1000 ? 0 : 2);
+    document.title = `${selectedTitleSymbol} ${formattedPrice} | Grid Bot`;
+  }, [selectedTitlePrice, selectedTitleSymbol]);
+
+  useEffect(() => {
+    return () => {
+      document.title = "Grid Bot";
+    };
+  }, []);
 
   useEffect(() => {
     setBotBoardCache((current) => ({
