@@ -55,6 +55,17 @@ export class GridDecisionService {
       return this.materializeCrossedSignal(input.botId, actionableSignal, input.now);
     }
 
+    const actionableSell = this.selectActionableSellAtCurrentPrice({
+      botId: input.botId,
+      levels: input.levels,
+      currentPrice: input.currentPrice,
+      now: input.now,
+      canBuildOrder: input.canBuildOrder
+    });
+    if (actionableSell) {
+      return actionableSell;
+    }
+
     const pending = input.pendingSignal;
     if (!pending) {
       return null;
@@ -133,6 +144,26 @@ export class GridDecisionService {
       return confirmedCrossing;
     }
 
+    return this.selectActionableSellAtCurrentPrice({
+      botId: input.botId,
+      levels: input.levels,
+      currentPrice: input.currentPrice,
+      now: input.now,
+      canBuildOrder: input.canBuildOrder
+    });
+  }
+
+  priceStillConfirms(side: TradeSide, levelPrice: number, currentPrice: number): boolean {
+    return side === TradeSide.Buy ? currentPrice <= levelPrice : currentPrice >= levelPrice;
+  }
+
+  private selectActionableSellAtCurrentPrice(input: {
+    botId: string;
+    levels: GridLevel[];
+    currentPrice: number;
+    now: Date;
+    canBuildOrder: (signal: TriggerSignal) => boolean;
+  }): TriggerSignal | null {
     for (const level of [...input.levels].reverse()) {
       if (!this.priceStillConfirms(TradeSide.Sell, level.price, input.currentPrice)) {
         continue;
@@ -153,10 +184,6 @@ export class GridDecisionService {
     }
 
     return null;
-  }
-
-  priceStillConfirms(side: TradeSide, levelPrice: number, currentPrice: number): boolean {
-    return side === TradeSide.Buy ? currentPrice <= levelPrice : currentPrice >= levelPrice;
   }
 
   private selectActionableCrossedSignal(input: {

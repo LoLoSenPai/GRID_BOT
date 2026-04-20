@@ -114,6 +114,32 @@ describe("GridDecisionService", () => {
     expect(result).toBeNull();
   });
 
+  it("returns an already exceeded sell level even without a fresh crossing", () => {
+    const now = new Date("2026-04-17T10:00:00.000Z");
+    const canBuildOrder = vi.fn((candidate: TriggerSignal) => candidate.levelIndex === 2);
+    const service = new GridDecisionService();
+
+    const result = service.getConfirmedSignal({
+      botId: "bot-1",
+      botStatus: BotStatus.Running,
+      latestStatus: BotStatus.Running,
+      pendingSignal: null,
+      currentPrice: 85,
+      now,
+      levels,
+      crossedSignals: [],
+      priceConfirmationWindowMs: 10_000,
+      canBuildOrder
+    });
+
+    expect(result).toMatchObject({
+      levelIndex: 2,
+      side: TradeSide.Sell,
+      levelPrice: 84,
+      idempotencyKey: `bot-1:recovery:sell:2:${now.getTime()}`
+    });
+  });
+
   it("returns the highest actionable recovery sell when price is above range", () => {
     const canBuildOrder = vi.fn((candidate: TriggerSignal) => candidate.levelIndex === 2);
     const service = new GridDecisionService();
