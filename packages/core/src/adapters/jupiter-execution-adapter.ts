@@ -79,7 +79,7 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       requestId: order.requestId,
       route: order.router ?? null,
       rawQuote: order,
-      expectedPrice: Number(order.outAmount) === 0 ? 0 : params.amount / (Number(order.outAmount) / 10 ** params.outputDecimals)
+      expectedPrice: this.calculateEffectivePrice(params, Number(order.outAmount) / 10 ** params.outputDecimals)
     };
   }
 
@@ -124,8 +124,7 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       txId: executeResponse.signature ?? null,
       inputAmount: params.amount,
       outputAmount: Number(order.outAmount) / 10 ** params.outputDecimals,
-      effectivePrice:
-        Number(order.outAmount) === 0 ? 0 : params.amount / (Number(order.outAmount) / 10 ** params.outputDecimals),
+      effectivePrice: this.calculateEffectivePrice(params, Number(order.outAmount) / 10 ** params.outputDecimals),
       feeAmount: 0,
       rawReport: {
         order,
@@ -175,6 +174,14 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
     return this.fetchJson<JupiterOrderResponse>(`https://api.jup.ag/swap/v2/order?${query.toString()}`, {
       headers
     });
+  }
+
+  private calculateEffectivePrice(params: ExecuteSwapParams, outputAmount: number): number {
+    if (outputAmount <= 0 || params.amount <= 0) {
+      return 0;
+    }
+
+    return params.tradeSide === "sell" ? outputAmount / params.amount : params.amount / outputAmount;
   }
 
   private async fetchJson<T>(url: string, init?: RequestInit): Promise<T> {

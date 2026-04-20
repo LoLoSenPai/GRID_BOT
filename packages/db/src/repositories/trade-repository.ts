@@ -65,6 +65,7 @@ export class PrismaTradeRepository implements TradeRepository {
       data: {
         status: report.status as never,
         txId: report.txId ?? undefined,
+        quotePrice: report.effectivePrice || undefined,
         executedInputAmount: report.inputAmount,
         executedOutputAmount: report.outputAmount,
         executedFeeAmount: report.feeAmount,

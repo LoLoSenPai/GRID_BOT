@@ -37,7 +37,7 @@ function deriveExecutionAmounts(
   const executedOutputAmount = execution.executedOutputAmount ? Number(execution.executedOutputAmount) : null;
   const quoteAmount = side === "buy" ? executedInputAmount ?? requestedQuoteAmount : executedOutputAmount ?? requestedQuoteAmount;
   const baseAmount = side === "buy" ? executedOutputAmount ?? requestedBaseAmount : executedInputAmount ?? requestedBaseAmount;
-  const effectivePrice = execution.quotePrice ? Number(execution.quotePrice) : quoteAmount > 0 && baseAmount > 0 ? quoteAmount / baseAmount : null;
+  const effectivePrice = quoteAmount > 0 && baseAmount > 0 ? quoteAmount / baseAmount : execution.quotePrice ? Number(execution.quotePrice) : null;
 
   return {
     quoteAmount,
@@ -260,7 +260,7 @@ export function serializeBotOverview(bot: OverviewBot) {
       latestExecutionStatus: latestExecution?.status ?? null,
       latestExecutionInputAmount: latestExecution?.executedInputAmount ? Number(latestExecution.executedInputAmount) : null,
       latestExecutionOutputAmount: latestExecution?.executedOutputAmount ? Number(latestExecution.executedOutputAmount) : null,
-      latestExecutionPrice: latestExecution?.quotePrice ? Number(latestExecution.quotePrice) : price,
+        latestExecutionPrice: latestExecutionAmounts?.effectivePrice ?? price,
       latestExecutionTxId: latestExecution?.txId ?? null,
       latestOrderSide: latestOrder?.side ?? null,
       latestOrderStatus: latestOrder?.status ?? null,

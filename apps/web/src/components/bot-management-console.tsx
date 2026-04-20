@@ -273,7 +273,19 @@ export function BotManagementConsole({
 
   const selectedBot = useMemo(() => runtimeBots.find((bot) => bot.id === selectedBotId) ?? runtimeBots[0] ?? null, [runtimeBots, selectedBotId]);
   const selectedBoard = selectedBot ? botBoardCache[selectedBot.id] ?? null : null;
-  const drawerBot = useMemo(() => (drawerBotId ? botBoardCache[drawerBotId] ?? null : null), [botBoardCache, drawerBotId]);
+  const drawerBot = useMemo(() => {
+    if (!drawerBotId) {
+      return null;
+    }
+
+    const board = botBoardCache[drawerBotId];
+    if (!board) {
+      return null;
+    }
+
+    const runtimeBot = runtimeBots.find((bot) => bot.id === drawerBotId);
+    return runtimeBot ? applyRuntimeToBoard(board, runtimeBot) : board;
+  }, [botBoardCache, drawerBotId, runtimeBots]);
   const boardsBySymbol = useMemo(
     () =>
       Object.values(botBoardCache).reduce<Partial<Record<"SOL" | "BTC", BotDetailViewData>>>((accumulator, board) => {
@@ -1614,6 +1626,40 @@ function applyTelemetry(bot: ManagedBot, telemetry?: BotRuntimeTelemetry): Manag
       latestOrderStatus: telemetry.paperSession.latestOrderStatus,
       latestOrderAt: telemetry.paperSession.latestOrderAt
     }
+  };
+}
+
+function applyRuntimeToBoard(board: BotDetailViewData, runtimeBot: ManagedBot): BotDetailViewData {
+  const latestExecution = runtimeBot.latestExecution;
+  const executions =
+    latestExecution && !board.executions.some((execution) => execution.id === latestExecution.id)
+      ? [latestExecution, ...board.executions]
+      : board.executions.map((execution) => (latestExecution?.id === execution.id ? latestExecution : execution));
+
+  return {
+    ...board,
+    status: runtimeBot.status,
+    currentPrice: runtimeBot.currentPrice ?? board.currentPrice,
+    lastHeartbeatAt: runtimeBot.lastHeartbeatAt,
+    position: board.position
+      ? {
+          ...board.position,
+          averageEntryPrice: runtimeBot.runtime.averageEntryPrice ?? board.position.averageEntryPrice,
+          realizedPnlUsd: runtimeBot.runtime.realizedPnlUsd,
+          unrealizedPnlUsd: runtimeBot.runtime.unrealizedPnlUsd
+        }
+      : board.position,
+    metrics: {
+      ...board.metrics,
+      deployedQuoteAmount: runtimeBot.metrics.deployedQuoteAmount,
+      inventoryValue: Math.max(runtimeBot.runtime.totalEquityUsd - runtimeBot.runtime.availableQuoteAmount, 0),
+      rangeProgress: runtimeBot.metrics.rangeProgress,
+      deployableUsage:
+        runtimeBot.config.maxDeployableUsd > 0
+          ? (runtimeBot.metrics.deployedQuoteAmount / runtimeBot.config.maxDeployableUsd) * 100
+          : board.metrics.deployableUsage
+    },
+    executions
   };
 }
 

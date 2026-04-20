@@ -64,4 +64,41 @@ describe("JupiterExecutionAdapter", () => {
     expect(quote.estimatedFeeAmount).toBe(0);
     expect(estimate.estimatedFeeAmount).toBe(0);
   });
+
+  it("reports sell effective price as quote per base", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          inputMint: "SOL",
+          outputMint: "USDC",
+          inAmount: "150000000",
+          outAmount: "12810000",
+          signatureFeeLamports: 5000,
+          prioritizationFeeLamports: 20000,
+          rentFeeLamports: 0
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }
+      )
+    ) as typeof fetch;
+
+    const adapter = new JupiterExecutionAdapter();
+    const estimate = await adapter.estimateExecution({
+      botId: "bot-1",
+      inputMint: "SOL",
+      outputMint: "USDC",
+      amount: 0.15,
+      tradeSide: TradeSide.Sell,
+      inputDecimals: 9,
+      outputDecimals: 6,
+      slippageBps: 50,
+      clientOrderId: "client-1",
+      referencePrice: 85.36
+    });
+
+    expect(estimate.expectedOutputAmount).toBe(12.81);
+    expect(estimate.expectedPrice).toBeCloseTo(85.4, 6);
+  });
 });

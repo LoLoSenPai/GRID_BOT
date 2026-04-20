@@ -71,10 +71,10 @@ function buildLatestExecution(execution: {
       ? executedOutputAmount ?? requestedBaseAmount
       : executedInputAmount ?? requestedBaseAmount;
   const effectivePrice =
-    execution.quotePrice
-      ? Number(execution.quotePrice)
-      : quoteAmount > 0 && baseAmount > 0
-        ? quoteAmount / baseAmount
+    quoteAmount > 0 && baseAmount > 0
+      ? quoteAmount / baseAmount
+      : execution.quotePrice
+        ? Number(execution.quotePrice)
         : null;
 
   return {
