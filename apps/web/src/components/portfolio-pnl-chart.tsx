@@ -71,9 +71,7 @@ export function PortfolioPnlChart({ points }: { points: PortfolioPnlPoint[] }) {
       <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--line)] px-5 py-4">
         <div>
           <div className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">Global PnL history</div>
-          <div className="mt-2 text-sm text-[var(--muted)]">
-            Long-term portfolio rollup. Runtime snapshots can stay short-lived; this series is kept separately.
-          </div>
+          <div className="mt-2 text-sm text-[var(--muted)]">Combined realized + unrealized PnL across the selected desk mode.</div>
         </div>
         <div className="text-right">
           <div className={`text-2xl font-semibold ${tone}`}>{formatCurrency(latest.totalPnlUsd)}</div>

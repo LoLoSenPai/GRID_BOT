@@ -21,7 +21,7 @@ import {
 } from "@grid-bot/db";
 
 import { DiscordWebhookSink } from "./discord-webhook-sink";
-import { getPortfolioSnapshotIntervalMs, safeCreatePortfolioSnapshots } from "./portfolio-snapshots";
+import { getPortfolioSnapshotIntervalMs, safeBackfillPortfolioSnapshots, safeCreatePortfolioSnapshots } from "./portfolio-snapshots";
 import { PythPriceStreamService } from "./pyth-price-stream";
 import { getRuntimeMaintenanceIntervalMs, runRuntimeMaintenance } from "./runtime-maintenance";
 import { SymbolRunScheduler } from "./symbol-run-scheduler";
@@ -67,6 +67,7 @@ async function main() {
 
   logger.info({ tickIntervalMs: env.BOT_TICK_INTERVAL_MS }, "Worker started");
   priceStream.start();
+  await safeBackfillPortfolioSnapshots();
   await safeCreatePortfolioSnapshots();
   await runRuntimeMaintenance();
   await engine.runCycle();
