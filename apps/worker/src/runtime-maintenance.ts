@@ -1,6 +1,8 @@
 import { logger } from "@grid-bot/common";
 import { prisma } from "@grid-bot/db";
 
+import { prunePortfolioSnapshots } from "./portfolio-snapshots";
+
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 let lastMaintenanceStartedAt = 0;
 
@@ -21,6 +23,7 @@ export async function runRuntimeMaintenance(now = new Date()) {
       stateSnapshots,
       inventorySnapshots,
       pnlSnapshots,
+      portfolioSnapshots,
       infoLogs,
     ] = await prisma.$transaction([
       prisma.priceSnapshot.deleteMany({
@@ -51,6 +54,7 @@ export async function runRuntimeMaintenance(now = new Date()) {
           },
         },
       }),
+      prunePortfolioSnapshots(now),
       prisma.systemLog.deleteMany({
         where: {
           level: "info",
@@ -68,6 +72,7 @@ export async function runRuntimeMaintenance(now = new Date()) {
           stateSnapshots: stateSnapshots.count,
           inventorySnapshots: inventorySnapshots.count,
           pnlSnapshots: pnlSnapshots.count,
+          portfolioSnapshots: portfolioSnapshots.count,
           infoLogs: infoLogs.count,
         },
       },

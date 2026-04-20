@@ -280,6 +280,23 @@ model PnlSnapshot {
   @@map("pnl_snapshots")
 }
 
+model PortfolioSnapshot {
+  id                  String   @id @default(cuid())
+  mode                BotMode
+  botCount            Int      @map("bot_count")
+  activeBotCount      Int      @map("active_bot_count")
+  totalBudgetUsd      Decimal  @map("total_budget_usd") @db.Decimal(30, 10)
+  capitalDeployedUsd  Decimal  @map("capital_deployed_usd") @db.Decimal(30, 10)
+  realizedPnlUsd      Decimal  @map("realized_pnl_usd") @db.Decimal(30, 10)
+  unrealizedPnlUsd    Decimal  @map("unrealized_pnl_usd") @db.Decimal(30, 10)
+  totalPnlUsd         Decimal  @map("total_pnl_usd") @db.Decimal(30, 10)
+  totalEquityUsd      Decimal  @map("total_equity_usd") @db.Decimal(30, 10)
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@index([mode, createdAt(sort: Desc)])
+  @@map("portfolio_snapshots")
+}
+
 model Alert {
   id              String     @id @default(cuid())
   botId           String?

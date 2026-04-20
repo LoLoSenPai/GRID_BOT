@@ -4,6 +4,7 @@ import { AlertTriangle, ArrowUpRight, Clock3, Zap } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
 import { ManualRefresh } from "@/components/manual-refresh";
+import { PortfolioPnlChart } from "@/components/portfolio-pnl-chart";
 import { StatusBadge } from "@/components/status-badge";
 import { SurfaceCard } from "@/components/surface-card";
 import { requireSession } from "@/lib/auth";
@@ -63,6 +64,8 @@ export default async function DashboardPage({
             <StripMetric label="Incidents" value={String(data.alerts.length)} hint={`${data.statusCounts.error} bots in error`} tone={data.alerts.length ? "amber" : "green"} />
           </div>
         </SurfaceCard>
+
+        <PortfolioPnlChart points={data.portfolioHistory} />
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_360px]">
           <SurfaceCard padding="none" className="overflow-hidden">

@@ -21,6 +21,7 @@ import {
 } from "@grid-bot/db";
 
 import { DiscordWebhookSink } from "./discord-webhook-sink";
+import { getPortfolioSnapshotIntervalMs, safeCreatePortfolioSnapshots } from "./portfolio-snapshots";
 import { PythPriceStreamService } from "./pyth-price-stream";
 import { getRuntimeMaintenanceIntervalMs, runRuntimeMaintenance } from "./runtime-maintenance";
 import { SymbolRunScheduler } from "./symbol-run-scheduler";
@@ -66,17 +67,22 @@ async function main() {
 
   logger.info({ tickIntervalMs: env.BOT_TICK_INTERVAL_MS }, "Worker started");
   priceStream.start();
+  await safeCreatePortfolioSnapshots();
   await runRuntimeMaintenance();
   await engine.runCycle();
   const interval = setInterval(async () => {
     await engine.runCycle();
   }, env.BOT_TICK_INTERVAL_MS);
+  const portfolioSnapshotInterval = setInterval(async () => {
+    await safeCreatePortfolioSnapshots();
+  }, getPortfolioSnapshotIntervalMs());
   const maintenanceInterval = setInterval(async () => {
     await runRuntimeMaintenance();
   }, getRuntimeMaintenanceIntervalMs());
 
   const shutdown = async () => {
     clearInterval(interval);
+    clearInterval(portfolioSnapshotInterval);
     clearInterval(maintenanceInterval);
     await priceStream.stop();
     await prisma.$disconnect();

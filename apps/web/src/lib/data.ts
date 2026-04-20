@@ -2,6 +2,90 @@ import { BotMode } from "@grid-bot/core/enums";
 import { prisma } from "@grid-bot/db";
 
 const BOT_DETAIL_EXECUTION_HISTORY_LIMIT = 500;
+const PORTFOLIO_HISTORY_LOOKBACK_DAYS = 180;
+const PORTFOLIO_HISTORY_MAX_POINTS = 360;
+
+type PortfolioHistoryRow = {
+  bucket: Date;
+  bot_count: number;
+  active_bot_count: number;
+  total_budget_usd: unknown;
+  capital_deployed_usd: unknown;
+  realized_pnl_usd: unknown;
+  unrealized_pnl_usd: unknown;
+  total_pnl_usd: unknown;
+  total_equity_usd: unknown;
+};
+
+function numberFromDatabase(value: unknown) {
+  if (typeof value === "number") {
+    return value;
+  }
+
+  if (value && typeof value === "object" && "toNumber" in value && typeof value.toNumber === "function") {
+    return value.toNumber();
+  }
+
+  return Number(value ?? 0);
+}
+
+function downsamplePoints<T>(points: T[], maxPoints: number) {
+  if (points.length <= maxPoints) {
+    return points;
+  }
+
+  const step = Math.ceil(points.length / maxPoints);
+  return points.filter((_, index) => index % step === 0 || index === points.length - 1);
+}
+
+async function getPortfolioHistory(mode: BotMode) {
+  const cutoff = new Date(Date.now() - PORTFOLIO_HISTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  const rows = await prisma.$queryRaw<PortfolioHistoryRow[]>`
+    SELECT DISTINCT ON (bucket)
+      bucket,
+      "created_at",
+      "bot_count",
+      "active_bot_count",
+      "total_budget_usd",
+      "capital_deployed_usd",
+      "realized_pnl_usd",
+      "unrealized_pnl_usd",
+      "total_pnl_usd",
+      "total_equity_usd"
+    FROM (
+      SELECT
+        date_trunc('hour', "created_at") AS bucket,
+        "created_at",
+        "bot_count",
+        "active_bot_count",
+        "total_budget_usd",
+        "capital_deployed_usd",
+        "realized_pnl_usd",
+        "unrealized_pnl_usd",
+        "total_pnl_usd",
+        "total_equity_usd"
+      FROM "portfolio_snapshots"
+      WHERE "mode" = CAST(${mode} AS "BotMode")
+        AND "created_at" >= ${cutoff}
+    ) hourly
+    ORDER BY bucket ASC, "created_at" DESC
+  `;
+
+  return downsamplePoints(
+    rows.map((row) => ({
+      time: row.bucket.toISOString(),
+      botCount: row.bot_count,
+      activeBotCount: row.active_bot_count,
+      totalBudgetUsd: numberFromDatabase(row.total_budget_usd),
+      capitalDeployedUsd: numberFromDatabase(row.capital_deployed_usd),
+      realizedPnlUsd: numberFromDatabase(row.realized_pnl_usd),
+      unrealizedPnlUsd: numberFromDatabase(row.unrealized_pnl_usd),
+      totalPnlUsd: numberFromDatabase(row.total_pnl_usd),
+      totalEquityUsd: numberFromDatabase(row.total_equity_usd),
+    })),
+    PORTFOLIO_HISTORY_MAX_POINTS,
+  );
+}
 
 function isVisibleIncidentAlert(alert: { type: string; bot?: { status: string } | null }) {
   if (alert.type === "bot_out_of_range") {
@@ -91,8 +175,11 @@ export async function getDashboardData(mode?: BotMode) {
     const high = bot.config ? Number(bot.config.highPrice) : 0;
     const price = bot.currentPrice ? Number(bot.currentPrice) : latest?.currentPrice ? Number(latest.currentPrice) : null;
     const equity = latest ? Number(latest.totalEquityUsd) : 0;
-    const pnl = latest ? Number(latest.realizedPnlUsd) + Number(latest.unrealizedPnlUsd) : 0;
+    const realizedPnl = latest ? Number(latest.realizedPnlUsd) : 0;
+    const unrealizedPnl = latest ? Number(latest.unrealizedPnlUsd) : 0;
+    const pnl = realizedPnl + unrealizedPnl;
     const budgetUsed = latest ? Number(latest.deployedQuoteAmount) : 0;
+    const budgetUsd = bot.config ? Number(bot.config.maxDeployableUsd) : 0;
     const rangeSpan = high - low || 1;
 
     return {
@@ -109,7 +196,10 @@ export async function getDashboardData(mode?: BotMode) {
       price,
       budgetUsed,
       pnl,
+      realizedPnl,
+      unrealizedPnl,
       equity,
+      budgetUsd,
       sparkline: [],
       rangeProgress: price === null ? 0 : ((price - low) / rangeSpan) * 100,
       deployableUsage: bot.config ? (budgetUsed / Number(bot.config.maxDeployableUsd || 1)) * 100 : 0,
@@ -161,6 +251,18 @@ export async function getDashboardData(mode?: BotMode) {
   ]
     .sort((left, right) => right.timestamp.getTime() - left.timestamp.getTime())
     .slice(0, 10);
+  const portfolioHistory = await getPortfolioHistory(mode ?? BotMode.Paper);
+  const currentPortfolioPoint = {
+    time: new Date().toISOString(),
+    botCount: botCards.length,
+    activeBotCount: botCards.filter((bot) => bot.status === "running" || bot.status === "cooldown").length,
+    totalBudgetUsd: botCards.reduce((sum, bot) => sum + bot.budgetUsd, 0),
+    capitalDeployedUsd: capitalDeployed,
+    realizedPnlUsd: botCards.reduce((sum, bot) => sum + bot.realizedPnl, 0),
+    unrealizedPnlUsd: botCards.reduce((sum, bot) => sum + bot.unrealizedPnl, 0),
+    totalPnlUsd: totalPnl,
+    totalEquityUsd: totalEquity,
+  };
 
   return {
     totalEquity,
@@ -173,7 +275,8 @@ export async function getDashboardData(mode?: BotMode) {
     alerts,
     executions,
     logs,
-    activityStream
+    activityStream,
+    portfolioHistory: [...portfolioHistory, currentPortfolioPoint],
   };
 }
 
