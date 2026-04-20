@@ -1,5 +1,6 @@
 import {
   AlertType,
+  BotMode,
   BotStatus,
   ExecutionProvider,
   ExecutionStatus,
@@ -16,7 +17,16 @@ import type {
   SystemLogRepository,
   TradeRepository
 } from "../domain/contracts";
-import type { BotAggregate, BotRuntimeMetadata, GridCycle, MarketPrice, PositionLot, TriggerSignal } from "../domain/types";
+import type {
+  BotAggregate,
+  BotRuntimeMetadata,
+  ExecuteSwapParams,
+  GridCycle,
+  MarketPrice,
+  OrderIntent,
+  PositionLot,
+  TriggerSignal
+} from "../domain/types";
 import { AlertService } from "./alert-service";
 import { ExecutionService } from "./execution-service";
 import { GridDecisionService } from "./grid-decision-service";
@@ -26,11 +36,13 @@ import { RiskManagerService } from "./risk-manager-service";
 import { round } from "../utils/math";
 
 const HEARTBEAT_UPDATE_INTERVAL_MS = 2_000;
+const QUOTE_GUARD_LOG_INTERVAL_MS = 60_000;
 
 export class BotEngineService {
   private readonly passivePriceSnapshotWriteAt = new Map<string, number>();
   private readonly lastObservedPriceByBotId = new Map<string, number>();
   private readonly lastHeartbeatWriteAt = new Map<string, number>();
+  private readonly quoteGuardLogWriteAt = new Map<string, number>();
   private readonly gridDecisionService = new GridDecisionService();
 
   constructor(
@@ -266,6 +278,26 @@ export class BotEngineService {
       return true;
     }
 
+    const executionParams = this.buildExecutionParams(aggregate, signal, orderIntent);
+    const quoteGuard = await this.validateExecutionQuote(aggregate, signal, orderIntent, executionParams, now);
+    if (!quoteGuard.allowed) {
+      await this.maybeWriteQuoteGuardLog(botId, now, quoteGuard.message, quoteGuard.metadata);
+      await this.persistPassivePriceSnapshot(aggregate, marketPrice, now);
+      await this.persistPassiveState(
+        aggregate,
+        marketPrice.price,
+        now,
+        {
+          pendingSignal: this.toPendingSignal(aggregate, signal, marketPrice.price)
+        },
+        undefined,
+        undefined,
+        levels,
+        crossedSignals
+      );
+      return true;
+    }
+
     await this.persistPriceSnapshot(botId, marketPrice, now);
     const order = await this.tradeRepository.createOrder(orderIntent);
     const execution = await this.tradeRepository.createExecution({
@@ -288,18 +320,7 @@ export class BotEngineService {
       completedAt: null
     });
 
-    const report = await this.executionService.executeSwap(aggregate.bot, {
-      botId,
-      inputMint: signal.side === TradeSide.Buy ? aggregate.bot.quoteMint : aggregate.bot.baseMint,
-      outputMint: signal.side === TradeSide.Buy ? aggregate.bot.baseMint : aggregate.bot.quoteMint,
-      amount: signal.side === TradeSide.Buy ? orderIntent.requestedQuoteAmount : orderIntent.requestedBaseAmount,
-      tradeSide: signal.side,
-      inputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.quoteDecimals : aggregate.bot.baseDecimals,
-      outputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.baseDecimals : aggregate.bot.quoteDecimals,
-      slippageBps: aggregate.config.maxSlippageBps,
-      clientOrderId: orderIntent.orderKey,
-      referencePrice: orderIntent.targetPrice
-    });
+    const report = await this.executionService.executeSwap(aggregate.bot, executionParams);
 
     await this.tradeRepository.finalizeExecution(execution.id, report, null);
     await this.tradeRepository.markOrderStatus(
@@ -382,6 +403,136 @@ export class BotEngineService {
     });
 
     return true;
+  }
+
+  private buildExecutionParams(
+    aggregate: BotAggregate,
+    signal: TriggerSignal,
+    orderIntent: OrderIntent
+  ): ExecuteSwapParams {
+    return {
+      botId: aggregate.bot.id,
+      inputMint: signal.side === TradeSide.Buy ? aggregate.bot.quoteMint : aggregate.bot.baseMint,
+      outputMint: signal.side === TradeSide.Buy ? aggregate.bot.baseMint : aggregate.bot.quoteMint,
+      amount: signal.side === TradeSide.Buy ? orderIntent.requestedQuoteAmount : orderIntent.requestedBaseAmount,
+      tradeSide: signal.side,
+      inputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.quoteDecimals : aggregate.bot.baseDecimals,
+      outputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.baseDecimals : aggregate.bot.quoteDecimals,
+      slippageBps: aggregate.config.maxSlippageBps,
+      clientOrderId: orderIntent.orderKey,
+      referencePrice: orderIntent.targetPrice
+    };
+  }
+
+  private async validateExecutionQuote(
+    aggregate: BotAggregate,
+    signal: TriggerSignal,
+    orderIntent: OrderIntent,
+    executionParams: ExecuteSwapParams,
+    now: Date
+  ): Promise<{
+    allowed: boolean;
+    message: string;
+    metadata?: Record<string, unknown>;
+  }> {
+    if (aggregate.bot.mode === BotMode.Paper) {
+      return { allowed: true, message: "Paper execution does not require a live quote guard." };
+    }
+
+    const targetPrice = orderIntent.targetPrice;
+    const maxAdverseDriftBps = Math.max(0, aggregate.config.maxSlippageBps);
+
+    try {
+      const estimate = await this.executionService.estimateExecution(aggregate.bot, executionParams);
+      const estimatedPrice = estimate.expectedPrice;
+      if (!Number.isFinite(estimatedPrice) || estimatedPrice <= 0 || !Number.isFinite(targetPrice) || targetPrice <= 0) {
+        return {
+          allowed: false,
+          message: `Quote guard blocked ${signal.side}: invalid estimated price for level ${signal.levelIndex + 1}.`,
+          metadata: {
+            side: signal.side,
+            levelIndex: signal.levelIndex,
+            targetPrice,
+            estimatedPrice
+          }
+        };
+      }
+
+      const adverseDriftBps =
+        signal.side === TradeSide.Buy
+          ? ((estimatedPrice - targetPrice) / targetPrice) * 10_000
+          : ((targetPrice - estimatedPrice) / targetPrice) * 10_000;
+
+      if (adverseDriftBps <= maxAdverseDriftBps) {
+        return { allowed: true, message: "Quote is inside the execution guard." };
+      }
+
+      return {
+        allowed: false,
+        message:
+          `Quote guard blocked ${signal.side}: estimated ${estimatedPrice.toFixed(8)} is ` +
+          `${Math.max(0, adverseDriftBps).toFixed(1)} bps worse than target ${targetPrice.toFixed(8)} ` +
+          `(limit ${maxAdverseDriftBps} bps).`,
+        metadata: {
+          side: signal.side,
+          levelIndex: signal.levelIndex,
+          targetPrice,
+          estimatedPrice,
+          adverseDriftBps,
+          maxAdverseDriftBps,
+          requestedQuoteAmount: orderIntent.requestedQuoteAmount,
+          requestedBaseAmount: orderIntent.requestedBaseAmount,
+          checkedAt: now.toISOString()
+        }
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown quote estimation error";
+      return {
+        allowed: false,
+        message: `Quote guard blocked ${signal.side}: could not validate Jupiter quote (${message}).`,
+        metadata: {
+          side: signal.side,
+          levelIndex: signal.levelIndex,
+          targetPrice,
+          maxAdverseDriftBps,
+          checkedAt: now.toISOString()
+        }
+      };
+    }
+  }
+
+  private async maybeWriteQuoteGuardLog(
+    botId: string,
+    now: Date,
+    message: string,
+    metadata?: Record<string, unknown>
+  ): Promise<void> {
+    const lastWriteAt = this.quoteGuardLogWriteAt.get(botId);
+    if (lastWriteAt && now.getTime() - lastWriteAt < QUOTE_GUARD_LOG_INTERVAL_MS) {
+      return;
+    }
+
+    await this.logRepository.writeLog({
+      botId,
+      level: LogLevel.Warn,
+      category: "execution_guard",
+      message,
+      metadata
+    });
+    this.quoteGuardLogWriteAt.set(botId, now.getTime());
+  }
+
+  private toPendingSignal(aggregate: BotAggregate, signal: TriggerSignal, currentPrice: number) {
+    const currentPending = aggregate.latestState?.metadata.pendingSignal ?? null;
+    const keepsSamePending =
+      currentPending?.side === signal.side && currentPending.levelIndex === signal.levelIndex;
+
+    return {
+      levelIndex: signal.levelIndex,
+      side: signal.side,
+      firstObservedAt: keepsSamePending ? currentPending.firstObservedAt : signal.triggeredAt.toISOString(),
+      lastObservedPrice: currentPrice
+    };
   }
 
   private async handleOutOfRange(aggregate: BotAggregate, price: number, now: Date): Promise<void> {

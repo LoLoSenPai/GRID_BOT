@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AlertRepository, AlertSink, BotStateRepository, MarketPricePort, PriceSnapshotRepository, SystemLogRepository, TradeRepository } from "../domain/contracts";
 import { AlertType, BotMode, BotStatus, ExecutionProvider, ExecutionStatus, GridType, LogLevel, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
-import type { BotAggregate, ExecutionReport, MarketPrice, PositionLot } from "../domain/types";
+import type { BotAggregate, ExecutionEstimate, ExecutionReport, MarketPrice, PositionLot } from "../domain/types";
 import { AlertService } from "../services/alert-service";
 import { BotEngineService } from "../services/bot-engine-service";
 import { ExecutionService } from "../services/execution-service";
@@ -148,11 +148,15 @@ function createAlertService() {
 function createEngine({
   aggregate,
   marketPrice,
-  executionReport
+  executionReport,
+  executionEstimate,
+  liveTradingEnabled = false
 }: {
   aggregate: BotAggregate;
   marketPrice: MarketPrice;
   executionReport?: ExecutionReport;
+  executionEstimate?: ExecutionEstimate;
+  liveTradingEnabled?: boolean;
 }) {
   const botRepository = createBotRepository(aggregate);
   const tradeRepository = createTradeRepository();
@@ -177,10 +181,22 @@ function createEngine({
       effectivePrice: 125,
       feeAmount: 0.05
     } satisfies ExecutionReport);
+  const adapterEstimate =
+    executionEstimate ??
+    ({
+      provider: adapterReport.provider,
+      inputMint: aggregate.bot.quoteMint,
+      outputMint: aggregate.bot.baseMint,
+      inputAmount: adapterReport.inputAmount,
+      expectedOutputAmount: adapterReport.outputAmount,
+      estimatedFeeAmount: adapterReport.feeAmount,
+      priceImpactPct: 0,
+      expectedPrice: adapterReport.effectivePrice
+    } satisfies ExecutionEstimate);
 
   const executionAdapter = {
     getQuote: vi.fn(),
-    estimateExecution: vi.fn(),
+    estimateExecution: vi.fn(async () => adapterEstimate),
     executeSwap: vi.fn(async () => adapterReport),
     getExecutionReport: vi.fn()
   };
@@ -190,7 +206,7 @@ function createEngine({
       [ExecutionProvider.Jupiter]: executionAdapter,
       [ExecutionProvider.Dflow]: executionAdapter
     },
-    false
+    liveTradingEnabled
   );
   const alert = createAlertService();
 
@@ -702,6 +718,90 @@ describe("BotEngineService", () => {
         levelIndex: 0,
         targetPrice: 82,
       }),
+    );
+  });
+
+  it("blocks a live buy when the Jupiter quote is too far above the target rail", async () => {
+    const aggregate = createAggregate({
+      bot: {
+        mode: BotMode.Live,
+        executionProvider: ExecutionProvider.Jupiter
+      },
+      config: {
+        totalBudgetUsd: 140,
+        maxDeployableUsd: 140,
+        reserveQuoteAmount: 0,
+        lowPrice: 81,
+        highPrice: 87,
+        levelCount: 12,
+        gridType: GridType.Arithmetic,
+        minOrderQuoteAmount: 10,
+        maxSlippageBps: 50,
+        priceConfirmationWindowMs: 10_000
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 85,
+        availableQuoteAmount: 140,
+        availableBaseAmount: 0,
+        deployedQuoteAmount: 0,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {},
+          recenterHistory: [],
+          recentExecutions: []
+        }
+      },
+      position: null,
+      openLots: []
+    });
+
+    const { engine, tradeRepository, executionAdapter, logRepository, botRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 84.8,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol"
+      },
+      executionEstimate: {
+        provider: ExecutionProvider.Jupiter,
+        inputMint: "USDC",
+        outputMint: "SOL",
+        inputAmount: 12.73,
+        expectedOutputAmount: 0.149,
+        estimatedFeeAmount: 0,
+        priceImpactPct: 0,
+        expectedPrice: 85.45
+      },
+      liveTradingEnabled: true
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(executionAdapter.estimateExecution).toHaveBeenCalledOnce();
+    expect(tradeRepository.createOrder).not.toHaveBeenCalled();
+    expect(executionAdapter.executeSwap).not.toHaveBeenCalled();
+    expect(logRepository.writeLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: LogLevel.Warn,
+        category: "execution_guard",
+        message: expect.stringContaining("Quote guard blocked buy")
+      })
+    );
+    expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          pendingSignal: expect.objectContaining({
+            levelIndex: 7,
+            side: TradeSide.Buy
+          })
+        })
+      })
     );
   });
 
