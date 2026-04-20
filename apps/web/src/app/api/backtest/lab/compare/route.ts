@@ -130,6 +130,22 @@ export async function POST(request: Request) {
       marketRegime,
       config: adaptiveConfig
     });
+    const adaptiveRecenterConfig = buildReplayConfig({
+      ...recommendationBase.bestConfig,
+      lowPrice: bestRangePlan.recommendedLowPrice,
+      highPrice: bestRangePlan.recommendedHighPrice,
+      levelCount: bestRangePlan.recommendedLevelCount,
+      gridType: bestRangePlan.recommendedGridType,
+      recenterMode: RecenterMode.Auto,
+      rangeControlMode: "adaptive"
+    });
+    const adaptiveRecenterReplay = decorateReplay({
+      service,
+      series,
+      indicators,
+      marketRegime,
+      config: adaptiveRecenterConfig
+    });
 
     return NextResponse.json({
       recommendation,
@@ -161,6 +177,13 @@ export async function POST(request: Request) {
           description: "Best config with Lab-only dynamic range shifts while flat.",
           config: adaptiveConfig,
           replay: adaptiveReplay
+        },
+        {
+          id: "adaptive_recenter",
+          label: "Adaptive + recenter",
+          description: "Adaptive Lab range plus Lab-only recenter defense.",
+          config: adaptiveRecenterConfig,
+          replay: adaptiveRecenterReplay
         }
       ],
       meta: {

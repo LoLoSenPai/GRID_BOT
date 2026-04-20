@@ -295,7 +295,7 @@ type SerializedBacktestRecommendation = {
   };
 };
 
-type ScenarioComparisonId = "current_setup" | "current_recenter" | "optimizer_best" | "adaptive_plan";
+type ScenarioComparisonId = "current_setup" | "current_recenter" | "optimizer_best" | "adaptive_plan" | "adaptive_recenter";
 
 type ScenarioComparisonRow = {
   id: ScenarioComparisonId;
@@ -721,6 +721,8 @@ function formatScenarioLabel(id: ScenarioComparisonId) {
       return "Optimizer best";
     case "adaptive_plan":
       return "Adaptive plan";
+    case "adaptive_recenter":
+      return "Adaptive + recenter";
   }
 }
 
@@ -734,6 +736,8 @@ function getScenarioSummaryAction(id: ScenarioComparisonId) {
       return "Consider recreating the bot with the optimizer config.";
     case "adaptive_plan":
       return "Consider recreating with the adaptive range candidate, preferably in paper first.";
+    case "adaptive_recenter":
+      return "Paper-test the adaptive range plus recenter defense before any live rollout.";
   }
 }
 
@@ -896,7 +900,7 @@ function ScenarioComparisonBoard({
             <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">Lab workflow</div>
             <div className="mt-1 text-base font-semibold text-white">Start with Compare scenarios</div>
             <div className="mt-1 max-w-3xl text-sm leading-5 text-[var(--muted)]">
-              This is the main decision mode. It compares the selected bot against recenter, optimizer, and adaptive candidates on the same history window.
+              This is the main decision mode. It compares the selected bot against recenter, optimizer, adaptive, and adaptive+recenter candidates on the same history window.
             </div>
           </div>
           <div className="rounded-md border border-[var(--accent-line)] bg-[var(--accent-soft)] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--accent)]">
@@ -906,8 +910,8 @@ function ScenarioComparisonBoard({
         <div className="mt-3 grid gap-2 md:grid-cols-3">
           <div className="border border-[rgba(255,255,255,0.07)] bg-[rgba(0,0,0,0.14)] px-3 py-2">
             <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--accent)]">1. Compare</div>
-            <div className="mt-1 text-sm text-white">Run the four scenarios first.</div>
-            <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">Current bot, recenter, optimizer winner, adaptive range.</div>
+            <div className="mt-1 text-sm text-white">Run the scenario board first.</div>
+            <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">Current bot, recenter, optimizer winner, adaptive range, and the combo.</div>
           </div>
           <div className="border border-[rgba(255,255,255,0.07)] bg-[rgba(0,0,0,0.14)] px-3 py-2">
             <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--accent)]">2. Decide</div>
@@ -932,7 +936,7 @@ function ScenarioComparisonBoard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">Decision board</div>
-          <div className="mt-1 text-base font-semibold text-white">Same window, four ways to run the bot</div>
+          <div className="mt-1 text-base font-semibold text-white">Same window, multiple ways to run the bot</div>
           <div className="mt-1 max-w-3xl text-sm leading-5 text-[var(--muted)]">
             Ranking uses validation first. Click a scenario to inspect its chart, equity curve, defense events, and assumptions.
           </div>
@@ -945,8 +949,8 @@ function ScenarioComparisonBoard({
         ) : null}
       </div>
 
-      <div className="mt-3 grid gap-2 xl:grid-cols-4">
-        {rows.map((row) => {
+      <div className="mt-3 grid gap-2 xl:grid-cols-5">
+        {rankedRows.map((row) => {
           const active = getConfigSignature(row.config) === activeConfigKey;
           const winnerRow = winner?.id === row.id;
           const validationNet = getValidationNet(row.replay.validationMetrics);
@@ -1231,10 +1235,10 @@ export function BacktestLabConsole({
       const payload = await requestScenarioComparison(selectedBotReplayConfig);
       setRecommendation(payload.recommendation);
       setScenarioComparison(payload.rows);
-      const first = payload.rows[0] ?? null;
-      if (first) {
-        setActiveReplay(first.replay);
-        setActiveConfigKey(getConfigSignature(first.config));
+      const winner = rankScenarioRows(payload.rows)[0] ?? payload.rows[0] ?? null;
+      if (winner) {
+        setActiveReplay(winner.replay);
+        setActiveConfigKey(getConfigSignature(winner.config));
       }
     } catch (error) {
       setFeedback({
@@ -1430,7 +1434,7 @@ export function BacktestLabConsole({
                       {isPending ? "Running..." : "Compare scenarios"}
                     </button>
                     <div className="text-[11px] leading-4 text-[var(--muted)]">
-                      Best first step: current setup, current + recenter, optimizer best, and adaptive plan on the same window.
+                      Best first step: current setup, recenter, optimizer best, adaptive plan, and adaptive+recenter on the same window.
                     </div>
                     {selectedBotReplayConfig ? (
                       <button
