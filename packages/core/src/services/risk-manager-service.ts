@@ -14,6 +14,7 @@ export class RiskManagerService {
     const snapshot = bot.latestState;
     const metadata = snapshot?.metadata;
     const levelLockUntil = metadata?.levelLocks[String(signal.levelIndex)];
+    const isSell = signal.side === TradeSide.Sell;
 
     if (bot.bot.status === BotStatus.Stopped || bot.bot.status === BotStatus.Paused) {
       reasons.push(`bot is ${bot.bot.status}`);
@@ -27,15 +28,15 @@ export class RiskManagerService {
       reasons.push("bot is out of range");
     }
 
-    if (levelLockUntil && new Date(levelLockUntil) > now) {
+    if (!isSell && levelLockUntil && new Date(levelLockUntil) > now) {
       reasons.push("level is locked");
     }
 
-    if (snapshot?.lastExecutionAt && now.getTime() - snapshot.lastExecutionAt.getTime() < bot.config.cooldownMs) {
+    if (!isSell && snapshot?.lastExecutionAt && now.getTime() - snapshot.lastExecutionAt.getTime() < bot.config.cooldownMs) {
       reasons.push("bot is cooling down");
     }
 
-    if (snapshot && this.countExecutionsInLastHour(snapshot.metadata.recentExecutions, now) >= bot.config.maxOrdersPerHour) {
+    if (!isSell && snapshot && this.countExecutionsInLastHour(snapshot.metadata.recentExecutions, now) >= bot.config.maxOrdersPerHour) {
       return {
         allowed: false,
         reasons: ["max orders per hour reached"],
@@ -57,7 +58,7 @@ export class RiskManagerService {
       reasons.push("order exceeds max deployable budget");
     }
 
-    if (snapshot && snapshot.totalEquityUsd > 0) {
+    if (!isSell && snapshot && snapshot.totalEquityUsd > 0) {
       const drawdown = ((bot.config.totalBudgetUsd - snapshot.totalEquityUsd) / bot.config.totalBudgetUsd) * 100;
       if (drawdown >= bot.config.maxDrawdownPct) {
         return {
