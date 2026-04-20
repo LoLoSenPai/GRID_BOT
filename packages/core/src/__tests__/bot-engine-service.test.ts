@@ -888,6 +888,91 @@ describe("BotEngineService", () => {
     );
   });
 
+  it("executes an already exceeded sell by inferring the cycle from the open lot when metadata is missing", async () => {
+    const recentExecutionAt = new Date();
+    const aggregate = createAggregate({
+      config: {
+        totalBudgetUsd: 140,
+        maxDeployableUsd: 140,
+        reserveQuoteAmount: 0,
+        lowPrice: 81,
+        highPrice: 87,
+        levelCount: 12,
+        gridType: GridType.Arithmetic,
+        minOrderQuoteAmount: 10,
+        cooldownMs: 300_000,
+        priceConfirmationWindowMs: 10_000,
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 85.86,
+        availableQuoteAmount: 127.27,
+        availableBaseAmount: 0.15,
+        deployedQuoteAmount: 12.73,
+        lastExecutionAt: recentExecutionAt,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {},
+          recenterHistory: [],
+          recentExecutions: [recentExecutionAt.toISOString()],
+        },
+      },
+      position: {
+        baseAmount: 0.15,
+        quoteSpent: 12.73,
+        averageEntryPrice: 84.82,
+      },
+      openLots: [
+        {
+          id: "lot-1",
+          botId: "bot-1",
+          originalBaseAmount: 0.15,
+          remainingBaseAmount: 0.15,
+          entryPrice: 84.82,
+          costQuote: 12.73,
+          openedByExecutionId: "exec-1",
+          closedByExecutionId: null,
+          openedAt: recentExecutionAt,
+          closedAt: null,
+        },
+      ],
+    });
+
+    const { engine, tradeRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 85.91,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol",
+      },
+      executionReport: {
+        provider: ExecutionProvider.Paper,
+        status: ExecutionStatus.Simulated,
+        executionId: "sim-sell-1",
+        txId: null,
+        inputAmount: 0.15,
+        outputAmount: 12.81,
+        effectivePrice: 85.36,
+        feeAmount: 0,
+      },
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.createOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        side: TradeSide.Sell,
+        levelIndex: 8,
+        targetPrice: 85.36363636,
+      }),
+    );
+  });
+
   it("creates a simulated execution and enters cooldown after a confirmed signal", async () => {
     const aggregate = createAggregate({
       latestState: {

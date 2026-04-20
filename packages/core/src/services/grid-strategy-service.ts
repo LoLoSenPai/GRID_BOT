@@ -1,5 +1,5 @@
 import { OrderStatus, StrategyMode, TradeSide, type GridType } from "../domain/enums";
-import type { BotAggregate, GridLevel, OrderIntent, TriggerSignal } from "../domain/types";
+import type { BotAggregate, GridLevel, OrderIntent, PositionLot, TriggerSignal } from "../domain/types";
 import { round } from "../utils/math";
 
 export class GridStrategyService {
@@ -105,6 +105,16 @@ export class GridStrategyService {
     signalLevelIndex: number,
     executionPrice: number
   ): { requestedBaseAmount: number; requestedQuoteAmount: number; matchedLotIds: string[] } | null {
+    const eligibleLot = this.findCycleMatchedSellLot(bot, signalLevelIndex) ?? this.findInferredSellLot(bot, signalLevelIndex);
+
+    if (!eligibleLot) {
+      return null;
+    }
+
+    return this.buildSellPlanFromLot(bot, eligibleLot, executionPrice);
+  }
+
+  private findCycleMatchedSellLot(bot: BotAggregate, signalLevelIndex: number): PositionLot | null {
     const gridCycles = bot.latestState?.metadata.gridCycles ?? {};
     const activeCycle = Object.values(gridCycles)
       .filter((cycle) => cycle.sellLevelIndex === signalLevelIndex)
@@ -114,9 +124,48 @@ export class GridStrategyService {
       return null;
     }
 
-    const eligibleLot = bot.openLots.find((lot) => lot.id === activeCycle.lotId && lot.remainingBaseAmount > 0 && lot.costQuote > 0);
+    return bot.openLots.find((lot) => lot.id === activeCycle.lotId && this.isOpenLotSellable(lot)) ?? null;
+  }
 
-    if (!eligibleLot) {
+  private findInferredSellLot(bot: BotAggregate, signalLevelIndex: number): PositionLot | null {
+    const levels = this.calculateLevels(bot.config.lowPrice, bot.config.highPrice, bot.config.levelCount, bot.config.gridType);
+    const candidates = bot.openLots
+      .filter((lot) => this.isOpenLotSellable(lot))
+      .filter((lot) => this.inferSellLevelIndexForLot(levels, lot) === signalLevelIndex)
+      .sort((left, right) => left.openedAt.getTime() - right.openedAt.getTime());
+
+    return candidates[0] ?? null;
+  }
+
+  private inferSellLevelIndexForLot(levels: GridLevel[], lot: PositionLot): number | null {
+    const fallbackBaseAmount = lot.originalBaseAmount > 0 ? lot.originalBaseAmount : lot.remainingBaseAmount;
+    const entryPrice = lot.entryPrice > 0 ? lot.entryPrice : fallbackBaseAmount > 0 ? lot.costQuote / fallbackBaseAmount : 0;
+    if (entryPrice <= 0) {
+      return null;
+    }
+
+    let buyLevelIndex = -1;
+
+    for (const level of levels) {
+      if (level.price <= entryPrice + 0.00000001) {
+        buyLevelIndex = level.index;
+      }
+    }
+
+    if (buyLevelIndex < 0) {
+      buyLevelIndex = 0;
+    }
+
+    const sellLevelIndex = buyLevelIndex + 1;
+    return sellLevelIndex < levels.length ? sellLevelIndex : null;
+  }
+
+  private buildSellPlanFromLot(
+    bot: BotAggregate,
+    eligibleLot: PositionLot,
+    executionPrice: number
+  ): { requestedBaseAmount: number; requestedQuoteAmount: number; matchedLotIds: string[] } | null {
+    if (!this.isOpenLotSellable(eligibleLot)) {
       return null;
     }
 
@@ -141,6 +190,10 @@ export class GridStrategyService {
       requestedQuoteAmount,
       matchedLotIds: [eligibleLot.id]
     };
+  }
+
+  private isOpenLotSellable(lot: PositionLot): boolean {
+    return lot.remainingBaseAmount > 0 && lot.costQuote > 0 && !lot.closedAt;
   }
 
   private getTargetQuoteAmount(strategy: StrategyMode, remainingCostQuote: number, currentNotional: number): number {

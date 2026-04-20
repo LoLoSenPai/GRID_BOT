@@ -371,6 +371,113 @@ describe("GridStrategyService", () => {
     expect(order).toBeNull();
   });
 
+  it("infers a sell plan from open lots when grid cycle metadata is missing", () => {
+    const order = service.buildOrderIntent(
+      {
+        ...aggregate,
+        bot: {
+          ...aggregate.bot,
+          strategyMode: StrategyMode.AccumulateUsdc
+        },
+        config: {
+          ...aggregate.config,
+          lowPrice: 81,
+          highPrice: 87,
+          levelCount: 12,
+          minOrderQuoteAmount: 25
+        },
+        latestState: {
+          ...aggregate.latestState!,
+          metadata: {
+            ...aggregate.latestState!.metadata,
+            gridCycles: {}
+          }
+        },
+        openLots: [
+          {
+            id: "lot-inferred",
+            botId: "bot_1",
+            originalBaseAmount: 0.15,
+            remainingBaseAmount: 0.15,
+            entryPrice: 84.82,
+            costQuote: 12.73,
+            openedByExecutionId: "exec-inferred",
+            closedByExecutionId: null,
+            openedAt: new Date("2026-04-20T14:00:00.000Z"),
+            closedAt: null
+          }
+        ]
+      },
+      {
+        levelIndex: 8,
+        side: TradeSide.Sell,
+        levelPrice: 85.36363636,
+        observedPrice: 85.85,
+        idempotencyKey: "signal-inferred-sell",
+        triggeredAt: new Date("2026-04-20T15:00:00.000Z")
+      }
+    );
+
+    expect(order).toEqual(
+      expect.objectContaining({
+        side: TradeSide.Sell,
+        levelIndex: 8,
+        requestedQuoteAmount: 12.8,
+        requestedBaseAmount: 0.15,
+        matchedLotIds: ["lot-inferred"]
+      })
+    );
+  });
+
+  it("does not infer a sell on the wrong rail when cycle metadata is missing", () => {
+    const order = service.buildOrderIntent(
+      {
+        ...aggregate,
+        bot: {
+          ...aggregate.bot,
+          strategyMode: StrategyMode.AccumulateUsdc
+        },
+        config: {
+          ...aggregate.config,
+          lowPrice: 81,
+          highPrice: 87,
+          levelCount: 12
+        },
+        latestState: {
+          ...aggregate.latestState!,
+          metadata: {
+            ...aggregate.latestState!.metadata,
+            gridCycles: {}
+          }
+        },
+        openLots: [
+          {
+            id: "lot-inferred",
+            botId: "bot_1",
+            originalBaseAmount: 0.15,
+            remainingBaseAmount: 0.15,
+            entryPrice: 84.82,
+            costQuote: 12.73,
+            openedByExecutionId: "exec-inferred",
+            closedByExecutionId: null,
+            openedAt: new Date("2026-04-20T14:00:00.000Z"),
+            closedAt: null
+          }
+        ]
+      },
+      {
+        levelIndex: 9,
+        side: TradeSide.Sell,
+        levelPrice: 85.90909091,
+        observedPrice: 85.85,
+        idempotencyKey: "signal-wrong-sell",
+        triggeredAt: new Date("2026-04-20T15:00:00.000Z")
+      }
+    );
+
+    expect(order).toBeNull();
+  });
+
   it("skips a buy when the same level is already occupied by an active cycle", () => {
     const order = service.buildOrderIntent(
       {
