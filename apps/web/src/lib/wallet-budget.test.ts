@@ -36,6 +36,35 @@ describe("wallet budget allocation", () => {
     ).toBeCloseTo(800);
   });
 
+  it("releases realized profit from reserved quote so it can be reallocated", () => {
+    const reservedQuoteUsd = calculateReservedQuoteUsd([
+      {
+        totalBudgetUsd: 140,
+        availableQuoteAmount: 145.09,
+        realizedPnlUsd: 5.09,
+      },
+      {
+        totalBudgetUsd: 800,
+        availableQuoteAmount: 816.78,
+        realizedPnlUsd: 16.78,
+      },
+    ]);
+
+    expect(reservedQuoteUsd).toBeCloseTo(940);
+  });
+
+  it("does not increase available budget when realized pnl is negative", () => {
+    expect(
+      calculateReservedQuoteUsd([
+        {
+          totalBudgetUsd: 140,
+          availableQuoteAmount: 135,
+          realizedPnlUsd: -5,
+        },
+      ]),
+    ).toBe(135);
+  });
+
   it("counts an edited bot's non-quote equity toward its own budget capacity", () => {
     expect(
       calculateAvailableBudgetUsd({

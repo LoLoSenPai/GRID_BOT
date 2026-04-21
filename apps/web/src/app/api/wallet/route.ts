@@ -5,6 +5,7 @@ import { WalletService } from "@grid-bot/core";
 import { readSession } from "@/lib/auth";
 import {
   calculateAvailableBudgetUsd,
+  getAllocatedBudgetUsd,
   getReservedQuoteUsd,
 } from "@/lib/wallet-budget";
 
@@ -24,9 +25,10 @@ export async function GET() {
 
   try {
     const wallet = WalletService.fromEnv();
-    const [balances, reservedQuote] = await Promise.all([
+    const [balances, reservedQuote, allocatedBudget] = await Promise.all([
       wallet.getBalances(),
       getReservedQuoteUsd(),
+      getAllocatedBudgetUsd(),
     ]);
 
     return NextResponse.json(
@@ -35,7 +37,7 @@ export async function GET() {
         sol: balances.sol,
         usdc: balances.usdc,
         wbtc: balances.wbtc,
-        allocatedUsd: reservedQuote,
+        allocatedUsd: allocatedBudget,
         reservedUsd: reservedQuote,
         availableUsd: calculateAvailableBudgetUsd({
           walletUsdc: balances.usdc,

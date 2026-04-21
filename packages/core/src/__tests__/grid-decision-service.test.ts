@@ -140,6 +140,13 @@ describe("GridDecisionService", () => {
     });
   });
 
+  it("confirms rails that touch the displayed cent when the internal rail is between cents", () => {
+    const service = new GridDecisionService();
+
+    expect(service.priceStillConfirms(TradeSide.Sell, 86.45454545, 86.45)).toBe(true);
+    expect(service.priceStillConfirms(TradeSide.Buy, 84.54545455, 84.55)).toBe(true);
+  });
+
   it("returns the highest actionable recovery sell when price is above range", () => {
     const canBuildOrder = vi.fn((candidate: TriggerSignal) => candidate.levelIndex === 2);
     const service = new GridDecisionService();

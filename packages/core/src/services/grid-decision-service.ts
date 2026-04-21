@@ -1,5 +1,6 @@
 import { BotStatus, TradeSide } from "../domain/enums";
 import type { GridLevel, PendingSignal, TriggerSignal } from "../domain/types";
+import { priceConfirmsTrigger } from "../utils/price-trigger";
 
 interface SignalDecisionInput {
   botId: string;
@@ -154,7 +155,7 @@ export class GridDecisionService {
   }
 
   priceStillConfirms(side: TradeSide, levelPrice: number, currentPrice: number): boolean {
-    return side === TradeSide.Buy ? currentPrice <= levelPrice : currentPrice >= levelPrice;
+    return priceConfirmsTrigger(side, levelPrice, currentPrice);
   }
 
   private selectActionableSellAtCurrentPrice(input: {

@@ -95,6 +95,21 @@ describe("GridStrategyService", () => {
     expect(signal[0]?.side).toBe(TradeSide.Buy);
   });
 
+  it("detects a sell when price touches the displayed cent for a between-cent rail", () => {
+    const levels = service.calculateLevels(81, 87, 12, GridType.Arithmetic);
+    const signals = service.detectCrossedLevels(levels, 86.4, 86.45);
+
+    expect(signals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          levelIndex: 10,
+          side: TradeSide.Sell,
+          levelPrice: 86.45454545
+        })
+      ])
+    );
+  });
+
   it("ignores impossible boundary signals at the bottom of the grid", () => {
     const levels = service.calculateLevels(100, 160, 7, GridType.Arithmetic);
     const signal = service.detectCrossedLevels(levels, 95, 105);

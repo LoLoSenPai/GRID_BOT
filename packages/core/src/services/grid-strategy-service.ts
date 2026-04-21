@@ -1,6 +1,7 @@
 import { OrderStatus, StrategyMode, TradeSide, type GridType } from "../domain/enums";
 import type { BotAggregate, GridLevel, OrderIntent, PositionLot, TriggerSignal } from "../domain/types";
 import { round } from "../utils/math";
+import { priceMoveTouchesLevel } from "../utils/price-trigger";
 
 export class GridStrategyService {
   calculateLevels(lowPrice: number, highPrice: number, levelCount: number, gridType: GridType): GridLevel[] {
@@ -28,12 +29,10 @@ export class GridStrategyService {
       return [];
     }
 
-    const lower = Math.min(previousPrice, currentPrice);
-    const upper = Math.max(previousPrice, currentPrice);
     const side = currentPrice < previousPrice ? TradeSide.Buy : TradeSide.Sell;
 
     return levels
-      .filter((level) => level.price >= lower && level.price <= upper)
+      .filter((level) => priceMoveTouchesLevel(level.price, previousPrice, currentPrice))
       .filter((level) => this.isExecutableLevel(level.index, levels.length, side))
       .sort((left, right) => (side === TradeSide.Buy ? right.price - left.price : left.price - right.price))
       .map((level) => ({

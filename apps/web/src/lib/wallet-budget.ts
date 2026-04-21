@@ -6,6 +6,7 @@ import { prisma } from "@grid-bot/db";
 type ReservedQuoteSource = {
   totalBudgetUsd: number;
   availableQuoteAmount?: number | null;
+  realizedPnlUsd?: number | null;
 };
 
 export function calculateReservedQuoteUsd(
@@ -13,12 +14,15 @@ export function calculateReservedQuoteUsd(
 ): number {
   return sources.reduce((total, source) => {
     const fallbackBudget = Math.max(0, source.totalBudgetUsd);
-    const reservedQuote =
-      source.availableQuoteAmount == null
-        ? fallbackBudget
-        : Math.max(0, source.availableQuoteAmount);
+    if (source.availableQuoteAmount == null) {
+      return total + fallbackBudget;
+    }
 
-    return total + reservedQuote;
+    const idleQuote = Math.max(0, source.availableQuoteAmount);
+    const realizedProfit = Math.max(0, source.realizedPnlUsd ?? 0);
+    const reservedQuote = Math.max(0, idleQuote - realizedProfit);
+
+    return total + Math.min(fallbackBudget, reservedQuote);
   }, 0);
 }
 
@@ -57,6 +61,7 @@ export async function getReservedQuoteUsd(
         take: 1,
         select: {
           availableQuoteAmount: true,
+          realizedPnlUsd: true,
         },
       },
     },
@@ -67,6 +72,7 @@ export async function getReservedQuoteUsd(
       totalBudgetUsd: bot.config?.totalBudgetUsd.toNumber() ?? 0,
       availableQuoteAmount:
         bot.stateSnapshots[0]?.availableQuoteAmount.toNumber() ?? null,
+      realizedPnlUsd: bot.stateSnapshots[0]?.realizedPnlUsd.toNumber() ?? null,
     })),
   );
 }
@@ -74,7 +80,20 @@ export async function getReservedQuoteUsd(
 export async function getAllocatedBudgetUsd(
   excludeBotId?: string,
 ): Promise<number> {
-  return getReservedQuoteUsd(excludeBotId);
+  const result = await prisma.botConfig.aggregate({
+    where: {
+      bot: {
+        mode: BotMode.Live as never,
+        status: { notIn: ["stopped"] },
+        ...(excludeBotId ? { id: { not: excludeBotId } } : {}),
+      },
+    },
+    _sum: {
+      totalBudgetUsd: true,
+    },
+  });
+
+  return result._sum.totalBudgetUsd?.toNumber() ?? 0;
 }
 
 async function getCurrentBotNonQuoteEquityUsd(
