@@ -1,7 +1,7 @@
 import { BotMode } from "@grid-bot/core/enums";
 import { getEnv } from "@grid-bot/common";
 import { WalletService } from "@grid-bot/core";
-import { prisma } from "@grid-bot/db";
+import { findLatestBotStateSnapshot, findLatestBotStateSnapshots, prisma } from "@grid-bot/db";
 
 type ReservedQuoteSource = {
   totalBudgetUsd: number;
@@ -52,29 +52,28 @@ export async function getReservedQuoteUsd(
       ...(excludeBotId ? { id: { not: excludeBotId } } : {}),
     },
     select: {
+      id: true,
       config: {
         select: {
           totalBudgetUsd: true,
         },
       },
-      stateSnapshots: {
-        orderBy: { createdAt: "desc" },
-        take: 1,
-        select: {
-          availableQuoteAmount: true,
-          realizedPnlUsd: true,
-        },
-      },
     },
   });
+  const latestStateByBotId = await findLatestBotStateSnapshots(
+    bots.map((bot) => bot.id),
+  );
 
   return calculateReservedQuoteUsd(
-    bots.map((bot) => ({
-      totalBudgetUsd: bot.config?.totalBudgetUsd.toNumber() ?? 0,
-      availableQuoteAmount:
-        bot.stateSnapshots[0]?.availableQuoteAmount.toNumber() ?? null,
-      realizedPnlUsd: bot.stateSnapshots[0]?.realizedPnlUsd.toNumber() ?? null,
-    })),
+    bots.map((bot) => {
+      const latestState = latestStateByBotId.get(bot.id);
+      return {
+        totalBudgetUsd: bot.config?.totalBudgetUsd.toNumber() ?? 0,
+        availableQuoteAmount:
+          latestState?.availableQuoteAmount.toNumber() ?? null,
+        realizedPnlUsd: latestState?.realizedPnlUsd.toNumber() ?? null,
+      };
+    }),
   );
 }
 
@@ -108,18 +107,11 @@ async function getCurrentBotNonQuoteEquityUsd(
   const bot = await prisma.bot.findFirst({
     where: { id: botId, archivedAt: null },
     select: {
-      stateSnapshots: {
-        orderBy: { createdAt: "desc" },
-        take: 1,
-        select: {
-          availableQuoteAmount: true,
-          totalEquityUsd: true,
-        },
-      },
+      id: true,
     },
   });
 
-  const snapshot = bot?.stateSnapshots[0];
+  const snapshot = bot ? await findLatestBotStateSnapshot(bot.id) : null;
   if (!snapshot) {
     return 0;
   }

@@ -1,8 +1,9 @@
 import { BotMode } from "@grid-bot/core/enums";
-import { prisma } from "@grid-bot/db";
+import { findLatestBotStateSnapshot, findLatestBotStateSnapshots, prisma } from "@grid-bot/db";
 
 type RuntimeMode = BotMode | undefined;
 type RuntimeBotShape = Awaited<ReturnType<typeof getBotRuntimeListPayload>>["bots"][number];
+type LatestRuntimeState = NonNullable<Awaited<ReturnType<typeof findLatestBotStateSnapshot>>>;
 
 function buildLatestOrder(order: {
   id: string;
@@ -116,6 +117,28 @@ function buildPaperSessionFallback() {
   };
 }
 
+function buildRuntimeState(latestState: LatestRuntimeState | null | undefined) {
+  if (!latestState) {
+    return null;
+  }
+
+  return {
+    availableQuoteAmount: Number(latestState.availableQuoteAmount),
+    availableBaseAmount: Number(latestState.availableBaseAmount),
+    deployedQuoteAmount: Number(latestState.deployedQuoteAmount),
+    averageEntryPrice: latestState.averageEntryPrice
+      ? Number(latestState.averageEntryPrice)
+      : null,
+    realizedPnlUsd: Number(latestState.realizedPnlUsd),
+    unrealizedPnlUsd: Number(latestState.unrealizedPnlUsd),
+    totalEquityUsd: Number(latestState.totalEquityUsd),
+    consecutiveFailures: latestState.consecutiveFailures,
+    lastProcessedAt: latestState.lastProcessedAt?.toISOString() ?? null,
+    lastExecutionAt: latestState.lastExecutionAt?.toISOString() ?? null,
+    pendingSignal: latestState.metadata,
+  };
+}
+
 export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
   if (mode === BotMode.Live) {
     const bots = await prisma.bot.findMany({
@@ -125,24 +148,6 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
         status: true,
         currentPrice: true,
         lastHeartbeatAt: true,
-        stateSnapshots: {
-          orderBy: { createdAt: "desc" },
-          take: 1,
-          select: {
-            currentPrice: true,
-            availableQuoteAmount: true,
-            availableBaseAmount: true,
-            deployedQuoteAmount: true,
-            averageEntryPrice: true,
-            realizedPnlUsd: true,
-            unrealizedPnlUsd: true,
-            totalEquityUsd: true,
-            consecutiveFailures: true,
-            lastProcessedAt: true,
-            lastExecutionAt: true,
-            metadata: true,
-          },
-        },
         orders: {
           orderBy: { createdAt: "desc" },
           take: 1,
@@ -189,10 +194,11 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
       },
       orderBy: { createdAt: "asc" },
     });
+    const latestStateByBotId = await findLatestBotStateSnapshots(bots.map((bot) => bot.id));
 
     return {
       bots: bots.map((bot) => {
-        const latestState = bot.stateSnapshots[0];
+        const latestState = latestStateByBotId.get(bot.id);
         const latestOrder = buildLatestOrder(bot.orders[0]);
         const latestExecution = buildLatestExecution(bot.executions[0]);
 
@@ -205,23 +211,7 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
               ? Number(latestState.currentPrice)
               : null,
           lastHeartbeatAt: bot.lastHeartbeatAt?.toISOString() ?? null,
-          runtime: latestState
-            ? {
-                availableQuoteAmount: Number(latestState.availableQuoteAmount),
-                availableBaseAmount: Number(latestState.availableBaseAmount),
-                deployedQuoteAmount: Number(latestState.deployedQuoteAmount),
-                averageEntryPrice: latestState.averageEntryPrice
-                  ? Number(latestState.averageEntryPrice)
-                  : null,
-                realizedPnlUsd: Number(latestState.realizedPnlUsd),
-                unrealizedPnlUsd: Number(latestState.unrealizedPnlUsd),
-                totalEquityUsd: Number(latestState.totalEquityUsd),
-                consecutiveFailures: latestState.consecutiveFailures,
-                lastProcessedAt: latestState.lastProcessedAt?.toISOString() ?? null,
-                lastExecutionAt: latestState.lastExecutionAt?.toISOString() ?? null,
-                pendingSignal: latestState.metadata,
-              }
-            : null,
+          runtime: buildRuntimeState(latestState),
           latestOrder,
           latestExecution,
           paperSession: buildPaperSessionFallback(),
@@ -237,24 +227,6 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
       status: true,
       currentPrice: true,
       lastHeartbeatAt: true,
-      stateSnapshots: {
-        orderBy: { createdAt: "desc" },
-        take: 1,
-        select: {
-          currentPrice: true,
-          availableQuoteAmount: true,
-          availableBaseAmount: true,
-          deployedQuoteAmount: true,
-          averageEntryPrice: true,
-          realizedPnlUsd: true,
-          unrealizedPnlUsd: true,
-          totalEquityUsd: true,
-          consecutiveFailures: true,
-          lastProcessedAt: true,
-          lastExecutionAt: true,
-          metadata: true,
-        },
-      },
       orders: {
         orderBy: { createdAt: "desc" },
         take: 1,
@@ -307,10 +279,11 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
     },
     orderBy: { createdAt: "asc" },
   });
+  const latestStateByBotId = await findLatestBotStateSnapshots(bots.map((bot) => bot.id));
 
-    return {
-      bots: bots.map((bot) => {
-        const latestState = bot.stateSnapshots[0];
+  return {
+    bots: bots.map((bot) => {
+      const latestState = latestStateByBotId.get(bot.id);
       const latestOrder = buildLatestOrder(bot.orders[0]);
       const latestExecution = buildLatestExecution(bot.executions[0]);
 
@@ -323,25 +296,7 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
             ? Number(latestState.currentPrice)
             : null,
         lastHeartbeatAt: bot.lastHeartbeatAt?.toISOString() ?? null,
-        runtime: latestState
-          ? {
-              availableQuoteAmount: Number(latestState.availableQuoteAmount),
-              availableBaseAmount: Number(latestState.availableBaseAmount),
-              deployedQuoteAmount: Number(latestState.deployedQuoteAmount),
-              averageEntryPrice: latestState.averageEntryPrice
-                ? Number(latestState.averageEntryPrice)
-                : null,
-              realizedPnlUsd: Number(latestState.realizedPnlUsd),
-              unrealizedPnlUsd: Number(latestState.unrealizedPnlUsd),
-              totalEquityUsd: Number(latestState.totalEquityUsd),
-              consecutiveFailures: latestState.consecutiveFailures,
-              lastProcessedAt:
-                latestState.lastProcessedAt?.toISOString() ?? null,
-              lastExecutionAt:
-                latestState.lastExecutionAt?.toISOString() ?? null,
-              pendingSignal: latestState.metadata,
-            }
-          : null,
+        runtime: buildRuntimeState(latestState),
         latestOrder,
         latestExecution,
         paperSession: {
@@ -374,7 +329,6 @@ export async function getBotRuntimePayload(id: string) {
       status: true,
       currentPrice: true,
       lastHeartbeatAt: true,
-      stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
       executions: {
         orderBy: { createdAt: "desc" },
         take: 1,
@@ -410,7 +364,7 @@ export async function getBotRuntimePayload(id: string) {
     return null;
   }
 
-  const latestState = bot.stateSnapshots[0];
+  const latestState = await findLatestBotStateSnapshot(bot.id);
 
   return {
     id: bot.id,
@@ -421,23 +375,7 @@ export async function getBotRuntimePayload(id: string) {
         ? Number(latestState.currentPrice)
         : null,
     lastHeartbeatAt: bot.lastHeartbeatAt?.toISOString() ?? null,
-    runtime: latestState
-      ? {
-          availableQuoteAmount: Number(latestState.availableQuoteAmount),
-          availableBaseAmount: Number(latestState.availableBaseAmount),
-          deployedQuoteAmount: Number(latestState.deployedQuoteAmount),
-          averageEntryPrice: latestState.averageEntryPrice
-            ? Number(latestState.averageEntryPrice)
-            : null,
-          realizedPnlUsd: Number(latestState.realizedPnlUsd),
-          unrealizedPnlUsd: Number(latestState.unrealizedPnlUsd),
-          totalEquityUsd: Number(latestState.totalEquityUsd),
-          consecutiveFailures: latestState.consecutiveFailures,
-          lastProcessedAt: latestState.lastProcessedAt?.toISOString() ?? null,
-          lastExecutionAt: latestState.lastExecutionAt?.toISOString() ?? null,
-          pendingSignal: latestState.metadata,
-        }
-      : null,
+    runtime: buildRuntimeState(latestState),
     lastProcessedAt: latestState?.lastProcessedAt?.toISOString() ?? null,
     lastExecutionAt: latestState?.lastExecutionAt?.toISOString() ?? null,
     latestExecution: buildLatestExecution(bot.executions[0]),

@@ -12,7 +12,7 @@ import {
   type BotRuntimeMetadata,
   type MarketPricePort
 } from "@grid-bot/core";
-import { prisma } from "@grid-bot/db";
+import { findLatestBotStateSnapshot, prisma } from "@grid-bot/db";
 
 import { readSession } from "@/lib/auth";
 import { cloneStateSnapshot, createInitialStateSnapshot } from "@/lib/bot-management";
@@ -64,7 +64,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       where: { id, archivedAt: null },
       include: {
         config: true,
-        stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
         position: true,
         positionLots: { orderBy: { openedAt: "asc" } }
       }
@@ -78,7 +77,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: "Paper simulation is only available for paper bots." }, { status: 409 });
     }
 
-    const latestState = bot.stateSnapshots[0];
+    const latestState = await findLatestBotStateSnapshot(bot.id);
     const currentPrice = bot.currentPrice ? Number(bot.currentPrice) : latestState?.currentPrice ? Number(latestState.currentPrice) : null;
     if (!currentPrice || !Number.isFinite(currentPrice)) {
       return NextResponse.json({ error: "Current price is unavailable for this bot." }, { status: 409 });

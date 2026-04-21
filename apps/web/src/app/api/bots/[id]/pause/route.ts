@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { BotStatus } from "@grid-bot/core";
-import { prisma } from "@grid-bot/db";
+import { findLatestBotStateSnapshot, prisma } from "@grid-bot/db";
 
 import { readSession } from "@/lib/auth";
 import { cloneStateSnapshot, createInitialStateSnapshot } from "@/lib/bot-management";
@@ -15,8 +15,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const bot = await prisma.bot.findFirst({
     where: { id, archivedAt: null },
     include: {
-      config: true,
-      stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 }
+      config: true
     }
   });
 
@@ -28,9 +27,10 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     return NextResponse.json({ ok: true });
   }
 
+  const latestState = await findLatestBotStateSnapshot(bot.id);
   const snapshotData =
-    bot.stateSnapshots[0]
-      ? cloneStateSnapshot(bot.id, BotStatus.Paused, bot.stateSnapshots[0], {
+    latestState
+      ? cloneStateSnapshot(bot.id, BotStatus.Paused, latestState, {
           totalBudgetUsd: Number(bot.config.totalBudgetUsd),
           currentPrice: bot.currentPrice ? Number(bot.currentPrice) : null
         })

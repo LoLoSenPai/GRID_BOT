@@ -1,5 +1,5 @@
 import { BotMode } from "@grid-bot/core/enums";
-import { prisma } from "@grid-bot/db";
+import { findLatestBotStateSnapshot, findLatestBotStateSnapshots, prisma } from "@grid-bot/db";
 
 const BOT_DETAIL_EXECUTION_HISTORY_LIMIT = 500;
 const PORTFOLIO_HISTORY_LOOKBACK_DAYS = 180;
@@ -152,19 +152,13 @@ async function getArchivedClosedPnl(mode: BotMode) {
       archivedAt: { not: null },
     },
     select: {
-      stateSnapshots: {
-        orderBy: { createdAt: "desc" },
-        take: 1,
-        select: {
-          realizedPnlUsd: true,
-          unrealizedPnlUsd: true,
-        },
-      },
+      id: true,
     },
   });
+  const latestStateByBotId = await findLatestBotStateSnapshots(bots.map((bot) => bot.id));
 
   return bots.reduce((sum, bot) => {
-    const latest = bot.stateSnapshots[0];
+    const latest = latestStateByBotId.get(bot.id);
     return sum + numberFromDatabase(latest?.realizedPnlUsd) + numberFromDatabase(latest?.unrealizedPnlUsd);
   }, 0);
 }
@@ -176,7 +170,6 @@ export async function getDashboardData(mode?: BotMode) {
       where: buildVisibleBotWhere(mode),
       include: {
         config: true,
-        stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 }
       },
       orderBy: { createdAt: "asc" }
     }),
@@ -203,9 +196,10 @@ export async function getDashboardData(mode?: BotMode) {
 
   const alerts = rawAlerts.filter((alert) => isVisibleIncidentAlert(alert)).slice(0, 8);
   const logs = rawLogs.filter((log) => isVisibleSystemLog(log)).slice(0, 8);
+  const latestStateByBotId = await findLatestBotStateSnapshots(bots.map((bot) => bot.id));
 
   const botCards = bots.map((bot) => {
-    const latest = bot.stateSnapshots[0];
+    const latest = latestStateByBotId.get(bot.id);
     const low = bot.config ? Number(bot.config.lowPrice) : 0;
     const high = bot.config ? Number(bot.config.highPrice) : 0;
     const price = bot.currentPrice ? Number(bot.currentPrice) : latest?.currentPrice ? Number(latest.currentPrice) : null;
@@ -317,11 +311,10 @@ export async function getDashboardData(mode?: BotMode) {
 }
 
 export async function getBotsOverview(mode?: BotMode) {
-  return prisma.bot.findMany({
+  const bots = await prisma.bot.findMany({
     where: buildVisibleBotWhere(mode),
     include: {
       config: true,
-      stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
       orders: {
         orderBy: { createdAt: "desc" },
         take: 1,
@@ -343,6 +336,12 @@ export async function getBotsOverview(mode?: BotMode) {
     },
     orderBy: { createdAt: "asc" }
   });
+  const latestStateByBotId = await findLatestBotStateSnapshots(bots.map((bot) => bot.id));
+
+  return bots.map((bot) => ({
+    ...bot,
+    stateSnapshots: latestStateByBotId.get(bot.id) ? [latestStateByBotId.get(bot.id)!] : [],
+  }));
 }
 
 export async function getBotDetail(botId: string, mode?: BotMode) {
@@ -354,7 +353,6 @@ export async function getBotDetail(botId: string, mode?: BotMode) {
     },
     include: {
       config: true,
-      stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
       position: true,
       positionLots: {
         where: { remainingBaseAmount: { gt: 0 } },
@@ -385,9 +383,11 @@ export async function getBotDetail(botId: string, mode?: BotMode) {
   if (!bot) {
     return null;
   }
+  const latestState = await findLatestBotStateSnapshot(bot.id);
 
   return {
     ...bot,
+    stateSnapshots: latestState ? [latestState] : [],
     alerts: bot.alerts.filter((alert) => isVisibleIncidentAlert({ ...alert, bot })).slice(0, 8),
     systemLogs: bot.systemLogs.filter((log) => isVisibleSystemLog(log)).slice(0, 8)
   };

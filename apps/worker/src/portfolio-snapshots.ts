@@ -1,6 +1,6 @@
 import { logger } from "@grid-bot/common";
 import { BotMode, BotStatus } from "@grid-bot/core";
-import { prisma } from "@grid-bot/db";
+import { findLatestBotStateSnapshots, prisma } from "@grid-bot/db";
 
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 export const PORTFOLIO_SNAPSHOT_RETENTION_DAYS = 730;
@@ -164,16 +164,6 @@ async function createPortfolioSnapshot(mode: BotMode, now: Date) {
           maxDeployableUsd: true,
         },
       },
-      stateSnapshots: {
-        orderBy: { createdAt: "desc" },
-        take: 1,
-        select: {
-          deployedQuoteAmount: true,
-          realizedPnlUsd: true,
-          unrealizedPnlUsd: true,
-          totalEquityUsd: true,
-        },
-      },
     },
     orderBy: { createdAt: "asc" },
   });
@@ -182,9 +172,13 @@ async function createPortfolioSnapshot(mode: BotMode, now: Date) {
     return null;
   }
 
+  const latestStateByBotId = await findLatestBotStateSnapshots(
+    bots.map((bot) => bot.id),
+  );
+
   const totals = bots.reduce(
     (accumulator, bot) => {
-      const latest = bot.stateSnapshots[0];
+      const latest = latestStateByBotId.get(bot.id);
       const budget = toNumber(bot.config?.maxDeployableUsd);
       const realizedPnl = toNumber(latest?.realizedPnlUsd);
       const unrealizedPnl = toNumber(latest?.unrealizedPnlUsd);

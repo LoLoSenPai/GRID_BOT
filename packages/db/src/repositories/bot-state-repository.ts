@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 
 import { prisma } from "../client";
 import { mapAggregate } from "../mappers";
+import { findLatestBotStateSnapshot, findLatestBotStateSnapshots } from "./latest-state-snapshots";
 
 export class PrismaBotStateRepository implements BotStateRepository {
   async listRunnableBots() {
@@ -15,10 +16,6 @@ export class PrismaBotStateRepository implements BotStateRepository {
       },
       include: {
         config: true,
-        stateSnapshots: {
-          orderBy: { createdAt: "desc" },
-          take: 1
-        },
         position: true,
         positionLots: {
           orderBy: { openedAt: "asc" }
@@ -26,13 +23,14 @@ export class PrismaBotStateRepository implements BotStateRepository {
       },
       orderBy: { createdAt: "asc" }
     });
+    const latestStateByBotId = await findLatestBotStateSnapshots(bots.map((bot) => bot.id));
 
     return bots
       .map((bot) =>
         mapAggregate({
           bot,
           config: bot.config,
-          stateSnapshots: bot.stateSnapshots,
+          stateSnapshots: latestStateByBotId.get(bot.id) ? [latestStateByBotId.get(bot.id)!] : [],
           position: bot.position,
           positionLots: bot.positionLots
         })
@@ -45,21 +43,18 @@ export class PrismaBotStateRepository implements BotStateRepository {
       where: { id: botId, archivedAt: null },
       include: {
         config: true,
-        stateSnapshots: {
-          orderBy: { createdAt: "desc" },
-          take: 1
-        },
         position: true,
         positionLots: {
           orderBy: { openedAt: "asc" }
         }
       }
     });
+    const latestState = bot ? await findLatestBotStateSnapshot(bot.id) : null;
     return bot
       ? mapAggregate({
           bot,
           config: bot.config,
-          stateSnapshots: bot.stateSnapshots,
+          stateSnapshots: latestState ? [latestState] : [],
           position: bot.position,
           positionLots: bot.positionLots
         })

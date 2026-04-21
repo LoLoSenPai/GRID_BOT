@@ -64,15 +64,37 @@ async function main() {
     marketPriceService.setLatestPrice(marketPrice);
     symbolRunScheduler.schedule(marketPrice.symbol);
   });
+  let fullCycleRunning = false;
+  let fullCycleQueued = false;
+  const runFullCycle = async (reason: string) => {
+    if (fullCycleRunning) {
+      fullCycleQueued = true;
+      return;
+    }
+
+    fullCycleRunning = true;
+    try {
+      do {
+        fullCycleQueued = false;
+        try {
+          await engine.runCycle();
+        } catch (error) {
+          logger.error({ error, reason }, "Worker cycle failed");
+        }
+      } while (fullCycleQueued);
+    } finally {
+      fullCycleRunning = false;
+    }
+  };
 
   logger.info({ tickIntervalMs: env.BOT_TICK_INTERVAL_MS }, "Worker started");
   priceStream.start();
   await safeBackfillPortfolioSnapshots();
   await safeCreatePortfolioSnapshots();
   await runRuntimeMaintenance();
-  await engine.runCycle();
+  await runFullCycle("startup");
   const interval = setInterval(async () => {
-    await engine.runCycle();
+    await runFullCycle("interval");
   }, env.BOT_TICK_INTERVAL_MS);
   const portfolioSnapshotInterval = setInterval(async () => {
     await safeCreatePortfolioSnapshots();

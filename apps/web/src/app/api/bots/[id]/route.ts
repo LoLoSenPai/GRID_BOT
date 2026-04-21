@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getEnv } from "@grid-bot/common";
 import { BotMode, type BotStatus } from "@grid-bot/core/enums";
-import { prisma } from "@grid-bot/db";
+import { findLatestBotStateSnapshot, prisma } from "@grid-bot/db";
 
 import { readSession } from "@/lib/auth";
 import {
@@ -27,7 +27,6 @@ export async function PATCH(
       where: { id, archivedAt: null },
       include: {
         config: true,
-        stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
       },
     });
 
@@ -78,6 +77,9 @@ export async function PATCH(
       }
     }
 
+    const latestState =
+      budgetDeltaUsd > 0 ? await findLatestBotStateSnapshot(bot.id) : null;
+
     await prisma.$transaction(async (tx) => {
       await tx.bot.update({
         where: { id },
@@ -115,11 +117,11 @@ export async function PATCH(
       });
 
       if (budgetDeltaUsd > 0) {
-        const snapshotData = bot.stateSnapshots[0]
+        const snapshotData = latestState
           ? cloneStateSnapshot(
               id,
               bot.status as BotStatus,
-              bot.stateSnapshots[0],
+              latestState,
               {
                 totalBudgetUsd: parsed.totalBudgetUsd,
                 currentPrice: bot.currentPrice ? Number(bot.currentPrice) : null,
@@ -132,7 +134,7 @@ export async function PATCH(
               currentPrice: bot.currentPrice ? Number(bot.currentPrice) : null,
             });
 
-        if (bot.stateSnapshots[0]) {
+        if (latestState) {
           snapshotData.availableQuoteAmount = roundUsd(
             Number(snapshotData.availableQuoteAmount) + budgetDeltaUsd,
           );
