@@ -112,22 +112,15 @@ function isVisibleSystemLog(log: { category: string; level: string; message: str
 }
 
 function buildScopedBotRelation(mode?: BotMode) {
-  if (!mode) {
-    return undefined;
-  }
-
   return {
     is: {
-      mode: mode as never,
+      archivedAt: null,
+      ...(mode ? { mode: mode as never } : {}),
     },
   };
 }
 
 function buildScopedOptionalBotRelation(mode?: BotMode) {
-  if (!mode) {
-    return undefined;
-  }
-
   return {
     OR: [
       { bot: { is: null } },
@@ -136,10 +129,51 @@ function buildScopedOptionalBotRelation(mode?: BotMode) {
   };
 }
 
+function buildVisibleBotWhere(mode?: BotMode) {
+  return {
+    archivedAt: null,
+    ...(mode ? { mode: mode as never } : {}),
+  };
+}
+
+function buildVisibleBotExecutionWhere(mode?: BotMode) {
+  return {
+    bot: {
+      archivedAt: null,
+      ...(mode ? { mode: mode as never } : {}),
+    },
+  };
+}
+
+async function getArchivedClosedPnl(mode: BotMode) {
+  const bots = await prisma.bot.findMany({
+    where: {
+      mode: mode as never,
+      archivedAt: { not: null },
+    },
+    select: {
+      stateSnapshots: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          realizedPnlUsd: true,
+          unrealizedPnlUsd: true,
+        },
+      },
+    },
+  });
+
+  return bots.reduce((sum, bot) => {
+    const latest = bot.stateSnapshots[0];
+    return sum + numberFromDatabase(latest?.realizedPnlUsd) + numberFromDatabase(latest?.unrealizedPnlUsd);
+  }, 0);
+}
+
 export async function getDashboardData(mode?: BotMode) {
-  const [bots, rawAlerts, executions, rawLogs] = await Promise.all([
+  const scopedMode = mode ?? BotMode.Paper;
+  const [bots, rawAlerts, executions, rawLogs, archivedClosedPnl] = await Promise.all([
     prisma.bot.findMany({
-      where: mode ? { mode: mode as never } : undefined,
+      where: buildVisibleBotWhere(mode),
       include: {
         config: true,
         stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 }
@@ -153,7 +187,7 @@ export async function getDashboardData(mode?: BotMode) {
       take: 12,
     }),
     prisma.execution.findMany({
-      where: mode ? { bot: { mode: mode as never } } : undefined,
+      where: buildVisibleBotExecutionWhere(mode),
       include: { bot: true, order: true },
       orderBy: { createdAt: "desc" },
       take: 6
@@ -163,7 +197,8 @@ export async function getDashboardData(mode?: BotMode) {
       include: { bot: true },
       orderBy: { createdAt: "desc" },
       take: 12
-    })
+    }),
+    getArchivedClosedPnl(scopedMode),
   ]);
 
   const alerts = rawAlerts.filter((alert) => isVisibleIncidentAlert(alert)).slice(0, 8);
@@ -209,7 +244,8 @@ export async function getDashboardData(mode?: BotMode) {
   });
 
   const totalEquity = botCards.reduce((sum, bot) => sum + bot.equity, 0);
-  const totalPnl = botCards.reduce((sum, bot) => sum + bot.pnl, 0);
+  const activeBotPnl = botCards.reduce((sum, bot) => sum + bot.pnl, 0);
+  const totalPnl = activeBotPnl + archivedClosedPnl;
   const capitalDeployed = botCards.reduce((sum, bot) => sum + bot.budgetUsed, 0);
   const topPerformer = [...botCards].sort((left, right) => right.pnl - left.pnl)[0] ?? null;
   const statusCounts = {
@@ -251,14 +287,14 @@ export async function getDashboardData(mode?: BotMode) {
   ]
     .sort((left, right) => right.timestamp.getTime() - left.timestamp.getTime())
     .slice(0, 10);
-  const portfolioHistory = await getPortfolioHistory(mode ?? BotMode.Paper);
+  const portfolioHistory = await getPortfolioHistory(scopedMode);
   const currentPortfolioPoint = {
     time: new Date().toISOString(),
     botCount: botCards.length,
     activeBotCount: botCards.filter((bot) => bot.status === "running" || bot.status === "cooldown").length,
     totalBudgetUsd: botCards.reduce((sum, bot) => sum + bot.budgetUsd, 0),
     capitalDeployedUsd: capitalDeployed,
-    realizedPnlUsd: botCards.reduce((sum, bot) => sum + bot.realizedPnl, 0),
+    realizedPnlUsd: botCards.reduce((sum, bot) => sum + bot.realizedPnl, 0) + archivedClosedPnl,
     unrealizedPnlUsd: botCards.reduce((sum, bot) => sum + bot.unrealizedPnl, 0),
     totalPnlUsd: totalPnl,
     totalEquityUsd: totalEquity,
@@ -282,7 +318,7 @@ export async function getDashboardData(mode?: BotMode) {
 
 export async function getBotsOverview(mode?: BotMode) {
   return prisma.bot.findMany({
-    where: mode ? { mode: mode as never } : undefined,
+    where: buildVisibleBotWhere(mode),
     include: {
       config: true,
       stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
@@ -313,6 +349,7 @@ export async function getBotDetail(botId: string, mode?: BotMode) {
   const bot = await prisma.bot.findFirst({
     where: {
       id: botId,
+      archivedAt: null,
       ...(mode ? { mode: mode as never } : {})
     },
     include: {
@@ -371,7 +408,7 @@ export async function getActivityFeed(mode?: BotMode) {
       take: 48,
     }),
     prisma.execution.findMany({
-      where: mode ? { bot: { mode: mode as never } } : undefined,
+      where: buildVisibleBotExecutionWhere(mode),
       include: { bot: true, order: true },
       orderBy: { createdAt: "desc" },
       take: 24,

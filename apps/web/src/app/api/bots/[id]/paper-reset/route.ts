@@ -12,8 +12,8 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   }
 
   const { id } = await params;
-  const bot = await prisma.bot.findUnique({
-    where: { id },
+  const bot = await prisma.bot.findFirst({
+    where: { id, archivedAt: null },
     include: { config: true }
   });
 

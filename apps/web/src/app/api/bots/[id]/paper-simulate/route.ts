@@ -60,8 +60,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const { id } = await params;
     const payload = await request.json();
     const side = readSimulationSide((payload as { side?: unknown })?.side);
-    const bot = await prisma.bot.findUnique({
-      where: { id },
+    const bot = await prisma.bot.findFirst({
+      where: { id, archivedAt: null },
       include: {
         config: true,
         stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },

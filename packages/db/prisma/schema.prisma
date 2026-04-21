@@ -100,6 +100,7 @@ model Bot {
   executionProvider ExecutionProvider
   currentPrice      Decimal?           @db.Decimal(30, 10)
   lastHeartbeatAt   DateTime?
+  archivedAt        DateTime?          @map("archived_at")
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   config            BotConfig?
@@ -115,6 +116,7 @@ model Bot {
   priceSnapshots    PriceSnapshot[]
 
   @@index([clonedFromBotId])
+  @@index([mode, archivedAt])
   @@map("bots")
 }
 

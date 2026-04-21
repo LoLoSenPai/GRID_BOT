@@ -1012,7 +1012,7 @@ export function BotManagementConsole({
       return;
     }
 
-    if (!window.confirm(`Delete ${selectedBot.name}? This cannot be undone.`)) {
+    if (!window.confirm(`Archive ${selectedBot.name}? It will disappear from the desk, but its PnL history will be kept.`)) {
       return;
     }
 
@@ -1022,7 +1022,7 @@ export function BotManagementConsole({
       key: `delete-${selectedBot.id}`,
       url: `/api/bots/${selectedBot.id}`,
       method: "DELETE",
-      successMessage: `${selectedBot.name} deleted.`,
+      successMessage: `${selectedBot.name} archived.`,
       afterSuccess: () => {
         setSelectedBotId(nextBot?.id ?? null);
         setPanelKind(null);

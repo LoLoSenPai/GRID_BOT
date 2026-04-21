@@ -23,8 +23,8 @@ export async function PATCH(
 
   try {
     const { id } = await params;
-    const bot = await prisma.bot.findUnique({
-      where: { id },
+    const bot = await prisma.bot.findFirst({
+      where: { id, archivedAt: null },
       include: {
         config: true,
         stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
@@ -198,8 +198,8 @@ export async function DELETE(
   }
 
   const { id } = await params;
-  const bot = await prisma.bot.findUnique({
-    where: { id },
+  const bot = await prisma.bot.findFirst({
+    where: { id, archivedAt: null },
     select: { id: true, status: true, name: true },
   });
 
@@ -215,12 +215,28 @@ export async function DELETE(
   }
 
   try {
-    await prisma.bot.delete({ where: { id } });
-    return NextResponse.json({ ok: true, deletedBotName: bot.name });
+    await prisma.$transaction([
+      prisma.bot.update({
+        where: { id },
+        data: { archivedAt: new Date() },
+      }),
+      prisma.systemLog.create({
+        data: {
+          botId: id,
+          level: "info",
+          category: "bot_admin",
+          message: `Bot archived by ${session.username}.`,
+          metadata: {
+            actor: session.username,
+          },
+        },
+      }),
+    ]);
+    return NextResponse.json({ ok: true, deletedBotName: bot.name, archivedBotName: bot.name });
   } catch (error) {
     console.error(error);
     return NextResponse.json(
-      { error: "Failed to delete bot." },
+      { error: "Failed to archive bot." },
       { status: 500 },
     );
   }

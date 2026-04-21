@@ -28,8 +28,8 @@ export async function POST(
   }
 
   const { id } = await params;
-  const sourceBot = await prisma.bot.findUnique({
-    where: { id },
+  const sourceBot = await prisma.bot.findFirst({
+    where: { id, archivedAt: null },
     include: { config: true },
   });
 

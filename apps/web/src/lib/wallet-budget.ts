@@ -47,6 +47,7 @@ export async function getReservedQuoteUsd(
   const bots = await prisma.bot.findMany({
     where: {
       mode: BotMode.Live as never,
+      archivedAt: null,
       status: { notIn: ["stopped"] },
       ...(excludeBotId ? { id: { not: excludeBotId } } : {}),
     },
@@ -84,6 +85,7 @@ export async function getAllocatedBudgetUsd(
     where: {
       bot: {
         mode: BotMode.Live as never,
+        archivedAt: null,
         status: { notIn: ["stopped"] },
         ...(excludeBotId ? { id: { not: excludeBotId } } : {}),
       },
@@ -103,8 +105,8 @@ async function getCurrentBotNonQuoteEquityUsd(
     return 0;
   }
 
-  const bot = await prisma.bot.findUnique({
-    where: { id: botId },
+  const bot = await prisma.bot.findFirst({
+    where: { id: botId, archivedAt: null },
     select: {
       stateSnapshots: {
         orderBy: { createdAt: "desc" },

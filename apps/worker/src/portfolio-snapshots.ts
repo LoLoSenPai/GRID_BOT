@@ -67,14 +67,33 @@ async function backfillPortfolioSnapshotsForMode(mode: BotMode, now: Date) {
     rollup AS (
       SELECT
         series.bucket,
-        COUNT(latest."id")::int AS bot_count,
-        COUNT(latest."id") FILTER (WHERE latest."status" IN ('running'::"BotStatus", 'cooldown'::"BotStatus"))::int AS active_bot_count,
-        COALESCE(SUM(CASE WHEN latest."id" IS NOT NULL THEN config."maxDeployableUsd" ELSE 0 END), 0) AS total_budget_usd,
-        COALESCE(SUM(latest."deployedQuoteAmount"), 0) AS capital_deployed_usd,
-        COALESCE(SUM(latest."realizedPnlUsd"), 0) AS realized_pnl_usd,
-        COALESCE(SUM(latest."unrealizedPnlUsd"), 0) AS unrealized_pnl_usd,
+        COUNT(latest."id") FILTER (WHERE bot."archived_at" IS NULL OR bot."archived_at" > series.bucket)::int AS bot_count,
+        COUNT(latest."id") FILTER (
+          WHERE (bot."archived_at" IS NULL OR bot."archived_at" > series.bucket)
+            AND latest."status" IN ('running'::"BotStatus", 'cooldown'::"BotStatus")
+        )::int AS active_bot_count,
+        COALESCE(SUM(CASE
+          WHEN latest."id" IS NOT NULL AND (bot."archived_at" IS NULL OR bot."archived_at" > series.bucket) THEN config."maxDeployableUsd"
+          ELSE 0
+        END), 0) AS total_budget_usd,
+        COALESCE(SUM(CASE
+          WHEN bot."archived_at" IS NULL OR bot."archived_at" > series.bucket THEN latest."deployedQuoteAmount"
+          ELSE 0
+        END), 0) AS capital_deployed_usd,
+        COALESCE(SUM(CASE
+          WHEN latest."id" IS NULL THEN 0
+          WHEN bot."archived_at" IS NOT NULL AND bot."archived_at" <= series.bucket THEN latest."realizedPnlUsd" + latest."unrealizedPnlUsd"
+          ELSE latest."realizedPnlUsd"
+        END), 0) AS realized_pnl_usd,
+        COALESCE(SUM(CASE
+          WHEN bot."archived_at" IS NULL OR bot."archived_at" > series.bucket THEN latest."unrealizedPnlUsd"
+          ELSE 0
+        END), 0) AS unrealized_pnl_usd,
         COALESCE(SUM(latest."realizedPnlUsd" + latest."unrealizedPnlUsd"), 0) AS total_pnl_usd,
-        COALESCE(SUM(latest."totalEquityUsd"), 0) AS total_equity_usd
+        COALESCE(SUM(CASE
+          WHEN bot."archived_at" IS NULL OR bot."archived_at" > series.bucket THEN latest."totalEquityUsd"
+          ELSE 0
+        END), 0) AS total_equity_usd
       FROM series
       INNER JOIN "bots" bot ON bot."mode" = CAST(${mode} AS "BotMode")
         AND bot."createdAt" <= series.bucket
@@ -139,6 +158,7 @@ async function createPortfolioSnapshot(mode: BotMode, now: Date) {
     select: {
       id: true,
       status: true,
+      archivedAt: true,
       config: {
         select: {
           maxDeployableUsd: true,
@@ -168,15 +188,22 @@ async function createPortfolioSnapshot(mode: BotMode, now: Date) {
       const budget = toNumber(bot.config?.maxDeployableUsd);
       const realizedPnl = toNumber(latest?.realizedPnlUsd);
       const unrealizedPnl = toNumber(latest?.unrealizedPnlUsd);
+      const totalPnl = realizedPnl + unrealizedPnl;
+      const isArchived = Boolean(bot.archivedAt && bot.archivedAt <= now);
 
-      accumulator.botCount += 1;
-      accumulator.activeBotCount += ACTIVE_STATUSES.has(bot.status) ? 1 : 0;
-      accumulator.totalBudgetUsd += budget;
-      accumulator.capitalDeployedUsd += toNumber(latest?.deployedQuoteAmount);
-      accumulator.realizedPnlUsd += realizedPnl;
-      accumulator.unrealizedPnlUsd += unrealizedPnl;
-      accumulator.totalPnlUsd += realizedPnl + unrealizedPnl;
-      accumulator.totalEquityUsd += latest ? toNumber(latest.totalEquityUsd) : budget;
+      if (!isArchived) {
+        accumulator.botCount += 1;
+        accumulator.activeBotCount += ACTIVE_STATUSES.has(bot.status) ? 1 : 0;
+        accumulator.totalBudgetUsd += budget;
+        accumulator.capitalDeployedUsd += toNumber(latest?.deployedQuoteAmount);
+        accumulator.realizedPnlUsd += realizedPnl;
+        accumulator.unrealizedPnlUsd += unrealizedPnl;
+        accumulator.totalEquityUsd += latest ? toNumber(latest.totalEquityUsd) : budget;
+      } else {
+        accumulator.realizedPnlUsd += totalPnl;
+      }
+
+      accumulator.totalPnlUsd += totalPnl;
       return accumulator;
     },
     {

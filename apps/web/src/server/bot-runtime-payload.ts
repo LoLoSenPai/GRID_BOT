@@ -119,7 +119,7 @@ function buildPaperSessionFallback() {
 export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
   if (mode === BotMode.Live) {
     const bots = await prisma.bot.findMany({
-      where: { mode: BotMode.Live as never },
+      where: { mode: BotMode.Live as never, archivedAt: null },
       select: {
         id: true,
         status: true,
@@ -231,7 +231,7 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
   }
 
   const bots = await prisma.bot.findMany({
-    where: mode ? { mode: mode as never } : undefined,
+    where: { archivedAt: null, ...(mode ? { mode: mode as never } : {}) },
     select: {
       id: true,
       status: true,
@@ -367,8 +367,8 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
 }
 
 export async function getBotRuntimePayload(id: string) {
-  const bot = await prisma.bot.findUnique({
-    where: { id },
+  const bot = await prisma.bot.findFirst({
+    where: { id, archivedAt: null },
     select: {
       id: true,
       status: true,

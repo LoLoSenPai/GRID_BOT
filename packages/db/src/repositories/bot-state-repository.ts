@@ -8,6 +8,7 @@ export class PrismaBotStateRepository implements BotStateRepository {
   async listRunnableBots() {
     const bots = await prisma.bot.findMany({
       where: {
+        archivedAt: null,
         status: {
           in: [BotStatus.Running, BotStatus.Cooldown, BotStatus.Error, BotStatus.OutOfRange]
         }
@@ -40,8 +41,8 @@ export class PrismaBotStateRepository implements BotStateRepository {
   }
 
   async getBotAggregate(botId: string) {
-    const bot = await prisma.bot.findUnique({
-      where: { id: botId },
+    const bot = await prisma.bot.findFirst({
+      where: { id: botId, archivedAt: null },
       include: {
         config: true,
         stateSnapshots: {
