@@ -197,7 +197,9 @@ function createEngine({
   const executionAdapter = {
     getQuote: vi.fn(),
     estimateExecution: vi.fn(async () => adapterEstimate),
+    prepareExecution: vi.fn(async () => adapterEstimate),
     executeSwap: vi.fn(async () => adapterReport),
+    executePreparedSwap: vi.fn(async () => adapterReport),
     getExecutionReport: vi.fn()
   };
   const executionService = new ExecutionService(
@@ -783,9 +785,11 @@ describe("BotEngineService", () => {
 
     await engine.runBot(aggregate.bot.id);
 
-    expect(executionAdapter.estimateExecution).toHaveBeenCalledOnce();
+    expect(executionAdapter.prepareExecution).toHaveBeenCalledOnce();
+    expect(executionAdapter.estimateExecution).not.toHaveBeenCalled();
     expect(tradeRepository.createOrder).not.toHaveBeenCalled();
     expect(executionAdapter.executeSwap).not.toHaveBeenCalled();
+    expect(executionAdapter.executePreparedSwap).not.toHaveBeenCalled();
     expect(logRepository.writeLog).toHaveBeenCalledWith(
       expect.objectContaining({
         level: LogLevel.Warn,
@@ -803,6 +807,86 @@ describe("BotEngineService", () => {
         })
       })
     );
+  });
+
+  it("executes a live trade with the same prepared Jupiter order that passed the quote guard", async () => {
+    const aggregate = createAggregate({
+      bot: {
+        mode: BotMode.Live,
+        executionProvider: ExecutionProvider.Jupiter
+      },
+      config: {
+        totalBudgetUsd: 140,
+        maxDeployableUsd: 140,
+        reserveQuoteAmount: 0,
+        lowPrice: 81,
+        highPrice: 87,
+        levelCount: 12,
+        gridType: GridType.Arithmetic,
+        minOrderQuoteAmount: 10,
+        maxSlippageBps: 50,
+        priceConfirmationWindowMs: 10_000
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 85,
+        availableQuoteAmount: 140,
+        availableBaseAmount: 0,
+        deployedQuoteAmount: 0,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {},
+          recenterHistory: [],
+          recentExecutions: []
+        }
+      },
+      position: null,
+      openLots: []
+    });
+    const preparedEstimate: ExecutionEstimate = {
+      provider: ExecutionProvider.Jupiter,
+      inputMint: "USDC",
+      outputMint: "SOL",
+      inputAmount: 12.73,
+      expectedOutputAmount: 0.15,
+      estimatedFeeAmount: 0,
+      priceImpactPct: 0,
+      expectedPrice: 84.86,
+      requestId: "prepared-order"
+    };
+
+    const { engine, tradeRepository, executionAdapter } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 84.8,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol"
+      },
+      executionEstimate: preparedEstimate,
+      executionReport: {
+        provider: ExecutionProvider.Jupiter,
+        status: ExecutionStatus.Submitted,
+        executionId: "prepared-order",
+        txId: "tx-live",
+        inputAmount: 12.73,
+        outputAmount: 0.15,
+        effectivePrice: 84.86,
+        feeAmount: 0
+      },
+      liveTradingEnabled: true
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(executionAdapter.prepareExecution).toHaveBeenCalledOnce();
+    expect(executionAdapter.executePreparedSwap).toHaveBeenCalledWith(expect.any(Object), preparedEstimate);
+    expect(executionAdapter.executeSwap).not.toHaveBeenCalled();
+    expect(tradeRepository.createOrder).toHaveBeenCalledOnce();
   });
 
   it("executes an actionable crossed sell immediately even when confirmation is enabled", async () => {

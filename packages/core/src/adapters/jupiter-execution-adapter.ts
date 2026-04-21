@@ -83,6 +83,20 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
     };
   }
 
+  async prepareExecution(params: ExecuteSwapParams): Promise<ExecutionEstimate> {
+    const wallet = this.loadWallet();
+    const order = await this.fetchOrder({
+      inputMint: params.inputMint,
+      outputMint: params.outputMint,
+      amount: params.amount,
+      inputDecimals: params.inputDecimals,
+      slippageBps: params.slippageBps,
+      taker: params.walletPublicKey ?? wallet.publicKey.toBase58()
+    });
+
+    return this.buildEstimateFromOrder(params, order);
+  }
+
   async executeSwap(params: ExecuteSwapParams): Promise<ExecutionReport> {
     if (!this.env.JUPITER_API_KEY) {
       throw new Error("JUPITER_API_KEY is required for live execution.");
@@ -98,10 +112,33 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       taker: params.walletPublicKey ?? wallet.publicKey.toBase58()
     });
 
+    return this.executeOrder(params, order);
+  }
+
+  async executePreparedSwap(params: ExecuteSwapParams, preparedExecution: ExecutionEstimate): Promise<ExecutionReport> {
+    if (!this.env.JUPITER_API_KEY) {
+      throw new Error("JUPITER_API_KEY is required for live execution.");
+    }
+
+    const order = this.getPreparedOrder(preparedExecution);
+    if (!order) {
+      return this.executeSwap(params);
+    }
+
+    return this.executeOrder(params, order);
+  }
+
+  private async executeOrder(params: ExecuteSwapParams, order: JupiterOrderResponse): Promise<ExecutionReport> {
+    const apiKey = this.env.JUPITER_API_KEY;
+    if (!apiKey) {
+      throw new Error("JUPITER_API_KEY is required for live execution.");
+    }
+
     if (!order.transaction || !order.requestId) {
       throw new Error(order.errorMessage ?? "Jupiter did not return a transaction.");
     }
 
+    const wallet = this.loadWallet();
     const transaction = VersionedTransaction.deserialize(Buffer.from(order.transaction, "base64"));
     transaction.sign([wallet]);
     const signedTransaction = Buffer.from(transaction.serialize()).toString("base64");
@@ -109,7 +146,7 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": this.env.JUPITER_API_KEY
+        "x-api-key": apiKey
       },
       body: JSON.stringify({
         signedTransaction,
@@ -174,6 +211,37 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
     return this.fetchJson<JupiterOrderResponse>(`https://api.jup.ag/swap/v2/order?${query.toString()}`, {
       headers
     });
+  }
+
+  private buildEstimateFromOrder(params: ExecuteSwapParams, order: JupiterOrderResponse): ExecutionEstimate {
+    const expectedOutputAmount = Number(order.outAmount) / 10 ** params.outputDecimals;
+    return {
+      provider: ExecutionProvider.Jupiter,
+      inputMint: params.inputMint,
+      outputMint: params.outputMint,
+      inputAmount: params.amount,
+      expectedOutputAmount,
+      estimatedFeeAmount: 0,
+      priceImpactPct: Number(order.priceImpact ?? 0),
+      requestId: order.requestId,
+      route: order.router ?? null,
+      rawQuote: order,
+      expectedPrice: this.calculateEffectivePrice(params, expectedOutputAmount)
+    };
+  }
+
+  private getPreparedOrder(preparedExecution: ExecutionEstimate): JupiterOrderResponse | null {
+    const rawQuote = preparedExecution.rawQuote;
+    if (!rawQuote || typeof rawQuote !== "object") {
+      return null;
+    }
+
+    const order = rawQuote as Partial<JupiterOrderResponse>;
+    if (!order.transaction || !order.requestId) {
+      return null;
+    }
+
+    return order as JupiterOrderResponse;
   }
 
   private calculateEffectivePrice(params: ExecuteSwapParams, outputAmount: number): number {

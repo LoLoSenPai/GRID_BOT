@@ -21,6 +21,7 @@ import type {
   BotAggregate,
   BotRuntimeMetadata,
   ExecuteSwapParams,
+  ExecutionEstimate,
   GridCycle,
   MarketPrice,
   OrderIntent,
@@ -320,7 +321,7 @@ export class BotEngineService {
       completedAt: null
     });
 
-    const report = await this.executionService.executeSwap(aggregate.bot, executionParams);
+    const report = await this.executionService.executePreparedSwap(aggregate.bot, executionParams, quoteGuard.preparedExecution);
 
     await this.tradeRepository.finalizeExecution(execution.id, report, null);
     await this.tradeRepository.markOrderStatus(
@@ -434,6 +435,7 @@ export class BotEngineService {
     allowed: boolean;
     message: string;
     metadata?: Record<string, unknown>;
+    preparedExecution?: ExecutionEstimate;
   }> {
     if (aggregate.bot.mode === BotMode.Paper) {
       return { allowed: true, message: "Paper execution does not require a live quote guard." };
@@ -443,7 +445,7 @@ export class BotEngineService {
     const maxAdverseDriftBps = Math.max(0, aggregate.config.maxSlippageBps);
 
     try {
-      const estimate = await this.executionService.estimateExecution(aggregate.bot, executionParams);
+      const estimate = await this.executionService.prepareExecution(aggregate.bot, executionParams);
       const estimatedPrice = estimate.expectedPrice;
       if (!Number.isFinite(estimatedPrice) || estimatedPrice <= 0 || !Number.isFinite(targetPrice) || targetPrice <= 0) {
         return {
@@ -464,7 +466,11 @@ export class BotEngineService {
           : ((targetPrice - estimatedPrice) / targetPrice) * 10_000;
 
       if (adverseDriftBps <= maxAdverseDriftBps) {
-        return { allowed: true, message: "Quote is inside the execution guard." };
+        return {
+          allowed: true,
+          message: "Quote is inside the execution guard.",
+          preparedExecution: estimate
+        };
       }
 
       return {

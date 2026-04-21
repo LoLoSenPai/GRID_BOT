@@ -29,7 +29,21 @@ export class ExecutionService {
     return this.getAdapter(bot).estimateExecution(params);
   }
 
+  async prepareExecution(bot: Bot, params: ExecuteSwapParams): Promise<ExecutionEstimate> {
+    const adapter = this.getAdapter(bot);
+    return adapter.prepareExecution ? adapter.prepareExecution(params) : adapter.estimateExecution(params);
+  }
+
   async executeSwap(bot: Bot, params: ExecuteSwapParams) {
     return this.getAdapter(bot).executeSwap(params);
+  }
+
+  async executePreparedSwap(bot: Bot, params: ExecuteSwapParams, preparedExecution?: ExecutionEstimate) {
+    const adapter = this.getAdapter(bot);
+    if (preparedExecution && adapter.executePreparedSwap) {
+      return adapter.executePreparedSwap(params, preparedExecution);
+    }
+
+    return adapter.executeSwap(params);
   }
 }
