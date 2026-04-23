@@ -202,7 +202,8 @@ export function BotPriceChart({
   }, [liveMarkerAnchorBuckets, orderedCandles]);
   const latestHistorical = orderedCandles.at(-1);
   const latestDisplay = liveCandle ?? latestHistorical ?? null;
-  const staticBaselinePrice = latestHistorical?.close ?? currentPrice ?? null;
+  const levelLabelReferencePrice = currentPrice ?? latestDisplay?.close ?? null;
+  const staticBaselinePrice = levelLabelReferencePrice;
   const currentToneColor =
     latestDisplay && latestDisplay.close >= latestDisplay.open ? "#44d39c" : latestDisplay ? "#ff6b7a" : "#44d39c";
   const visibleOrderLines = useMemo<VisibleGridOrderLine[]>(() => {
@@ -251,25 +252,46 @@ export function BotPriceChart({
   );
   const nearestLevelIndex = useMemo(
     () =>
-      staticBaselinePrice === null
+      levelLabelReferencePrice === null
         ? -1
         : levels.reduce(
           (closest, level, index) =>
-            closest === -1 || Math.abs(level - staticBaselinePrice) < Math.abs((levels[closest] ?? level) - staticBaselinePrice) ? index : closest,
+            closest === -1 || Math.abs(level - levelLabelReferencePrice) < Math.abs((levels[closest] ?? level) - levelLabelReferencePrice) ? index : closest,
           -1
         ),
-    [levels, staticBaselinePrice]
+    [levelLabelReferencePrice, levels]
+  );
+  const nearestBuyLevelIndex = useMemo(
+    () => {
+      if (levelLabelReferencePrice === null || levels.length < 2) {
+        return -1;
+      }
+
+      const highestBuyLevelIndex = levels.length - 2;
+      for (let index = highestBuyLevelIndex; index >= 0; index -= 1) {
+        if ((levels[index] ?? Number.NEGATIVE_INFINITY) <= levelLabelReferencePrice) {
+          return index;
+        }
+      }
+
+      return 0;
+    },
+    [levelLabelReferencePrice, levels]
   );
   const labeledLevelIndexes = useMemo(
     () =>
-      levels.reduce<number[]>((accumulator, _level, index) => {
+      [...new Set(levels.reduce<number[]>((accumulator, _level, index) => {
         if (index === 0 || index === levels.length - 1 || index === nearestLevelIndex || Math.abs(index - nearestLevelIndex) <= 1) {
           accumulator.push(index);
         }
 
+        if (index === nearestBuyLevelIndex) {
+          accumulator.push(index);
+        }
+
         return accumulator;
-      }, []),
-    [levels, nearestLevelIndex]
+      }, []))],
+    [levels, nearestBuyLevelIndex, nearestLevelIndex]
   );
 
   const captureViewport = () => {
