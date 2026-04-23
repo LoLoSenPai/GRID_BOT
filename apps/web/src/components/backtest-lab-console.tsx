@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { FlaskConical, Play, RotateCcw } from "lucide-react";
-import { GridType, MinOrderMode, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
+import { FlaskConical, Play, Plus, RotateCcw } from "lucide-react";
+import { BotMode, GridType, MinOrderMode, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
+import { useRouter } from "next/navigation";
 
 import { BacktestEquityChart } from "@/components/backtest-equity-chart";
 import { BotPriceChart } from "@/components/bot-price-chart";
@@ -16,8 +17,22 @@ import {
   type LabPair,
   type LabResolution
 } from "@/lib/backtest-lab";
-import { BOT_PAIR_PRESETS, getSuggestedMinOrderQuoteAmount, normalizeBotDraftCapital, type BotFormDraft } from "@/lib/bot-management";
+import {
+  BOT_PAIR_PRESETS,
+  analyzeBotDraft,
+  diffBotDraft,
+  getSuggestedMinOrderQuoteAmount,
+  normalizeBotDraftCapital,
+  type BotDraftAnalysis,
+  type BotDraftDiffItem,
+  type BotFormDraft
+} from "@/lib/bot-management";
 import { calculateGridLevels } from "@/lib/bot-runtime";
+import {
+  LAB_BOT_DRAFT_STORAGE_KEY,
+  buildBotDraftFromLabTransfer,
+  createLabBotDraftTransfer
+} from "@/lib/lab-draft-transfer";
 import { formatGoalLabel, formatTradeMarkerLabel } from "@/lib/trade-display";
 import { cn, formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 
@@ -321,6 +336,38 @@ type LabConclusion = {
   details: string[];
 };
 
+type LabDraftPreview = {
+  analysis: BotDraftAnalysis;
+  changes: BotDraftDiffItem[];
+  forcedManualRecenter: boolean;
+  draft: BotFormDraft;
+};
+
+type ScenarioAudit = {
+  winner: ScenarioComparisonRow;
+  current: ScenarioComparisonRow | null;
+  netDelta: number;
+  drawdownDelta: number;
+  timeInRangeDelta: number;
+  closedCyclesDelta: number;
+  feesDelta: number;
+  slippageDelta: number;
+  reasons: string[];
+};
+
+type StressScenarioId = "base" | "higher_costs" | "slow_confirmation";
+
+type StressScenarioDefinition = {
+  id: StressScenarioId;
+  label: string;
+  description: string;
+  config: SerializedBacktestConfig;
+};
+
+type StressScenarioRow = StressScenarioDefinition & {
+  replay: SerializedBacktestRunResult;
+};
+
 type ReplayDefenseTimelineEntry = {
   id: string;
   timestamp: string;
@@ -379,6 +426,41 @@ function buildAdaptiveReplayConfig(baseConfig: SerializedBacktestConfig, rangePl
   };
 }
 
+function buildStressScenarioDefinitions(config: SerializedBacktestConfig): StressScenarioDefinition[] {
+  const baseFeeBps = config.executionFeeBps ?? 10;
+  const higherCostConfig: SerializedBacktestConfig = {
+    ...config,
+    maxSlippageBps: Math.max(config.maxSlippageBps * 2, 100),
+    executionFeeBps: Math.max(baseFeeBps * 2, 20)
+  };
+  const slowConfirmationConfig: SerializedBacktestConfig = {
+    ...config,
+    priceConfirmationWindowMs: Math.max(config.priceConfirmationWindowMs, 3_000),
+    levelLockMs: Math.max(config.levelLockMs, 3_000)
+  };
+
+  return [
+    {
+      id: "base",
+      label: "Base replay",
+      description: "Same assumptions as the selected replay.",
+      config
+    },
+    {
+      id: "higher_costs",
+      label: "Higher costs",
+      description: "Double slippage/fees, with a floor of 100 bps slippage and 20 bps fee.",
+      config: higherCostConfig
+    },
+    {
+      id: "slow_confirmation",
+      label: "Slow confirmation",
+      description: "At least 3s confirmation and rail lock to simulate late entries/exits.",
+      config: slowConfirmationConfig
+    }
+  ];
+}
+
 function getConfigSignature(config: SerializedBacktestConfig) {
   return [
     config.strategyMode,
@@ -401,6 +483,26 @@ function getValidationNet(metrics: SerializedBacktestMetrics) {
 
 function getDefenseEventCount(metrics: SerializedBacktestMetrics) {
   return metrics.recenterCount + metrics.rangeAdjustmentCount;
+}
+
+function getConfigRangeWidthPct(config: SerializedBacktestConfig) {
+  return config.lowPrice > 0 ? ((config.highPrice - config.lowPrice) / config.lowPrice) * 100 : 0;
+}
+
+function getConfigBudgetPerCycle(config: SerializedBacktestConfig) {
+  return config.levelCount > 1 ? config.budgetUsd / (config.levelCount - 1) : 0;
+}
+
+function formatSignedCurrency(value: number) {
+  return `${value >= 0 ? "+" : ""}${formatCurrency(value)}`;
+}
+
+function formatSignedPercent(value: number, digits = 1) {
+  return `${value >= 0 ? "+" : ""}${formatPercent(value, digits)}`;
+}
+
+function formatSignedNumber(value: number, digits = 0) {
+  return `${value >= 0 ? "+" : ""}${formatNumber(value, digits)}`;
 }
 
 function formatBps(value: number) {
@@ -757,6 +859,82 @@ function rankScenarioRows(rows: ScenarioComparisonRow[]) {
   });
 }
 
+function buildScenarioAudit(rows: ScenarioComparisonRow[]): ScenarioAudit | null {
+  if (!rows.length) {
+    return null;
+  }
+
+  const rankedRows = rankScenarioRows(rows);
+  const winner = rankedRows[0] ?? null;
+  if (!winner) {
+    return null;
+  }
+
+  const current = rows.find((row) => row.id === "current_setup") ?? null;
+  const winnerValidation = winner.replay.validationMetrics;
+  const currentValidation = current?.replay.validationMetrics ?? null;
+  const netDelta = currentValidation ? getValidationNet(winnerValidation) - getValidationNet(currentValidation) : 0;
+  const drawdownDelta = currentValidation ? winnerValidation.maxDrawdownPct - currentValidation.maxDrawdownPct : 0;
+  const timeInRangeDelta = currentValidation ? winnerValidation.timeInRangePct - currentValidation.timeInRangePct : 0;
+  const closedCyclesDelta = currentValidation ? winnerValidation.closedCycleCount - currentValidation.closedCycleCount : 0;
+  const feesDelta = currentValidation ? winnerValidation.totalFeesUsd - currentValidation.totalFeesUsd : 0;
+  const slippageDelta = currentValidation ? winnerValidation.averageSlippageBps - currentValidation.averageSlippageBps : 0;
+  const reasons = [
+    current
+      ? netDelta > 0.000001
+        ? `${formatScenarioLabel(winner.id)} made ${formatCurrency(netDelta)} more validation equity than current.`
+        : "The current setup is within the material threshold of the winner."
+      : "No current setup baseline is available, so the winner is ranked against other Lab candidates only.",
+    drawdownDelta < -0.000001
+      ? `Drawdown improved by ${formatPercent(Math.abs(drawdownDelta), 1)}.`
+      : drawdownDelta > 0.000001
+        ? `Drawdown worsened by ${formatPercent(drawdownDelta, 1)}, so this is not a free improvement.`
+        : "Drawdown is effectively unchanged.",
+    timeInRangeDelta > 0.000001
+      ? `It stayed in range ${formatPercent(timeInRangeDelta, 0)} more often.`
+      : timeInRangeDelta < -0.000001
+        ? `It spent ${formatPercent(Math.abs(timeInRangeDelta), 0)} less time in range.`
+        : "Time in range is effectively unchanged.",
+    getDefenseEventCount(winner.replay.overallMetrics) > 0
+      ? `${getDefenseEventCount(winner.replay.overallMetrics)} defense event(s) were simulated; treat this as paper/advisory until validated live.`
+      : "No recenter/adaptive defense event was needed by the winner."
+  ];
+
+  return {
+    winner,
+    current,
+    netDelta,
+    drawdownDelta,
+    timeInRangeDelta,
+    closedCyclesDelta,
+    feesDelta,
+    slippageDelta,
+    reasons
+  };
+}
+
+function getStressTone(row: StressScenarioRow, baseRow: StressScenarioRow | null): LabConclusionTone {
+  const metrics = row.replay.validationMetrics;
+  const net = getValidationNet(metrics);
+  if (net < 0 || metrics.timeInRangePct < 50 || metrics.maxDrawdownPct > 20) {
+    return "danger";
+  }
+
+  if (baseRow) {
+    const baseMetrics = baseRow.replay.validationMetrics;
+    const baseNet = getValidationNet(baseMetrics);
+    if (
+      net < baseNet * 0.5 ||
+      metrics.maxDrawdownPct > baseMetrics.maxDrawdownPct + 5 ||
+      metrics.timeInRangePct < baseMetrics.timeInRangePct - 15
+    ) {
+      return "caution";
+    }
+  }
+
+  return "positive";
+}
+
 function buildLabConclusion({
   scenarioComparison,
   recommendation,
@@ -1021,15 +1199,295 @@ function ScenarioMiniMetric({ label, value }: { label: string; value: string }) 
   );
 }
 
+function ScenarioAuditPanel({ audit }: { audit: ScenarioAudit | null }) {
+  if (!audit) {
+    return null;
+  }
+
+  const { winner, current } = audit;
+  const winnerWidth = getConfigRangeWidthPct(winner.config);
+  const currentWidth = current ? getConfigRangeWidthPct(current.config) : null;
+  const winnerBudgetPerCycle = getConfigBudgetPerCycle(winner.config);
+  const currentBudgetPerCycle = current ? getConfigBudgetPerCycle(current.config) : null;
+
+  return (
+    <section className="mb-3 border border-[var(--line)] bg-[rgba(5,12,22,0.46)] px-4 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">Why this won</div>
+          <div className="mt-1 text-base font-semibold text-white">
+            {formatScenarioLabel(winner.id)} vs {current ? "current setup" : "Lab candidates"}
+          </div>
+          <div className="mt-1 max-w-3xl text-sm leading-5 text-[var(--muted)]">
+            Winner selection is validation-first. These deltas explain whether the result is really better or just different.
+          </div>
+        </div>
+        <div className="rounded-md border border-[var(--accent-line)] bg-[var(--accent-soft)] px-3 py-2 text-right">
+          <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--muted)]">Winner net delta</div>
+          <div className={cn("mt-0.5 text-sm font-medium", audit.netDelta >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
+            {current ? formatSignedCurrency(audit.netDelta) : formatCurrency(getValidationNet(winner.replay.validationMetrics))}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+        <AuditDeltaCard
+          label="Validation net"
+          winner={formatCurrency(getValidationNet(winner.replay.validationMetrics))}
+          current={current ? formatCurrency(getValidationNet(current.replay.validationMetrics)) : "--"}
+          delta={current ? formatSignedCurrency(audit.netDelta) : "winner"}
+          tone={audit.netDelta >= 0 ? "positive" : "negative"}
+        />
+        <AuditDeltaCard
+          label="Max drawdown"
+          winner={formatPercent(winner.replay.validationMetrics.maxDrawdownPct, 1)}
+          current={current ? formatPercent(current.replay.validationMetrics.maxDrawdownPct, 1) : "--"}
+          delta={current ? formatSignedPercent(audit.drawdownDelta, 1) : "winner"}
+          tone={audit.drawdownDelta <= 0 ? "positive" : "negative"}
+        />
+        <AuditDeltaCard
+          label="Time in range"
+          winner={formatPercent(winner.replay.validationMetrics.timeInRangePct, 0)}
+          current={current ? formatPercent(current.replay.validationMetrics.timeInRangePct, 0) : "--"}
+          delta={current ? formatSignedPercent(audit.timeInRangeDelta, 0) : "winner"}
+          tone={audit.timeInRangeDelta >= 0 ? "positive" : "negative"}
+        />
+        <AuditDeltaCard
+          label="Closed cycles"
+          winner={formatNumber(winner.replay.validationMetrics.closedCycleCount, 0)}
+          current={current ? formatNumber(current.replay.validationMetrics.closedCycleCount, 0) : "--"}
+          delta={current ? formatSignedNumber(audit.closedCyclesDelta, 0) : "winner"}
+          tone={audit.closedCyclesDelta >= 0 ? "positive" : "negative"}
+        />
+      </div>
+
+      <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+        <AuditDeltaCard
+          label="Range"
+          winner={`${formatNumber(winner.config.lowPrice, winner.config.lowPrice >= 1000 ? 0 : 2)} -> ${formatNumber(winner.config.highPrice, winner.config.highPrice >= 1000 ? 0 : 2)}`}
+          current={
+            current
+              ? `${formatNumber(current.config.lowPrice, current.config.lowPrice >= 1000 ? 0 : 2)} -> ${formatNumber(current.config.highPrice, current.config.highPrice >= 1000 ? 0 : 2)}`
+              : "--"
+          }
+          delta={`${formatPercent(winnerWidth, 1)} width`}
+          tone="neutral"
+        />
+        <AuditDeltaCard
+          label="Rails / spacing"
+          winner={`${winner.config.levelCount} ${formatSpacingLabel(winner.config.gridType)}`}
+          current={current ? `${current.config.levelCount} ${formatSpacingLabel(current.config.gridType)}` : "--"}
+          delta={`${winner.config.levelCount - 1} cycles`}
+          tone="neutral"
+        />
+        <AuditDeltaCard
+          label="Budget / cycle"
+          winner={formatCurrency(winnerBudgetPerCycle)}
+          current={currentBudgetPerCycle === null ? "--" : formatCurrency(currentBudgetPerCycle)}
+          delta={currentBudgetPerCycle === null ? "winner" : formatSignedCurrency(winnerBudgetPerCycle - currentBudgetPerCycle)}
+          tone="neutral"
+        />
+        <AuditDeltaCard
+          label="Cost model"
+          winner={`${formatCurrency(winner.replay.validationMetrics.totalFeesUsd)} fees`}
+          current={current ? `${formatCurrency(current.replay.validationMetrics.totalFeesUsd)} fees` : "--"}
+          delta={current ? `${formatSignedCurrency(audit.feesDelta)} | ${formatSignedNumber(audit.slippageDelta, 1)} bps` : "winner"}
+          tone={audit.feesDelta <= 0 && audit.slippageDelta <= 0 ? "positive" : "neutral"}
+        />
+      </div>
+
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        {audit.reasons.map((reason) => (
+          <div key={reason} className="border border-[rgba(255,255,255,0.06)] bg-[rgba(0,0,0,0.14)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
+            {reason}
+          </div>
+        ))}
+      </div>
+      {currentWidth !== null ? (
+        <div className="mt-2 text-[10px] leading-4 text-[var(--muted)]">
+          Current range width {formatPercent(currentWidth, 1)}. Winner range width {formatPercent(winnerWidth, 1)}. Wider is not always safer; the validation metrics decide.
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function AuditDeltaCard({
+  label,
+  winner,
+  current,
+  delta,
+  tone
+}: {
+  label: string;
+  winner: string;
+  current: string;
+  delta: string;
+  tone: "positive" | "negative" | "neutral";
+}) {
+  const toneClass =
+    tone === "positive"
+      ? "text-[var(--green)]"
+      : tone === "negative"
+        ? "text-[var(--red)]"
+        : "text-[var(--accent)]";
+
+  return (
+    <div className="rounded-md border border-[var(--line)] bg-[rgba(0,0,0,0.16)] px-2.5 py-2">
+      <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">{label}</div>
+      <div className="mt-1 text-[13px] font-medium text-white">{winner}</div>
+      <div className="mt-0.5 text-[10px] text-[var(--muted)]">Current: {current}</div>
+      <div className={cn("mt-1 font-mono text-[10px] uppercase tracking-[0.12em]", toneClass)}>{delta}</div>
+    </div>
+  );
+}
+
+function StressCheckPanel({
+  rows,
+  canRun,
+  isPending,
+  onRun,
+  onSelect
+}: {
+  rows: StressScenarioRow[];
+  canRun: boolean;
+  isPending: boolean;
+  onRun: () => void;
+  onSelect: (row: StressScenarioRow) => void;
+}) {
+  const baseRow = rows.find((row) => row.id === "base") ?? null;
+
+  return (
+    <div className="space-y-3">
+      <button
+        type="button"
+        onClick={onRun}
+        disabled={!canRun || isPending}
+        className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] px-3 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-[var(--accent-line)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)] disabled:pointer-events-none disabled:opacity-50"
+      >
+        <FlaskConical className="h-3.5 w-3.5 shrink-0" />
+        {isPending ? "Running..." : "Run stress checks"}
+      </button>
+      <div className="text-[11px] leading-4 text-[var(--muted)]">
+        Replays the selected config under harsher assumptions. It does not search, mutate, or touch live bots.
+      </div>
+
+      {rows.length ? (
+        <div className="space-y-2">
+          {rows.map((row) => {
+            const tone = getStressTone(row, baseRow);
+            const metrics = row.replay.validationMetrics;
+            const baseNet = baseRow ? getValidationNet(baseRow.replay.validationMetrics) : null;
+            const net = getValidationNet(metrics);
+            const netDelta = baseNet === null || row.id === "base" ? null : net - baseNet;
+            return (
+              <button
+                key={row.id}
+                type="button"
+                onClick={() => onSelect(row)}
+                className={cn(
+                  "w-full rounded-md border px-2.5 py-2 text-left transition hover:border-white/12 hover:bg-white/[0.035]",
+                  getConclusionToneClass(tone)
+                )}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-white">{row.label}</div>
+                    <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">{row.description}</div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className={cn("text-sm font-medium", net >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
+                      {formatCurrency(net)}
+                    </div>
+                    {netDelta !== null ? (
+                      <div className={cn("font-mono text-[9px] uppercase tracking-[0.12em]", netDelta >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
+                        {formatSignedCurrency(netDelta)}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-1.5">
+                  <ScenarioMiniMetric label="DD" value={formatPercent(metrics.maxDrawdownPct, 1)} />
+                  <ScenarioMiniMetric label="Range" value={formatPercent(metrics.timeInRangePct, 0)} />
+                  <ScenarioMiniMetric label="Cycles" value={formatNumber(metrics.closedCycleCount, 0)} />
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
+          Run this after selecting the replay or winning scenario you are considering turning into a bot.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LabDraftPreviewCard({ preview }: { preview: LabDraftPreview }) {
+  const blocking = preview.analysis.blockingIssues.length;
+  const warningCount = preview.analysis.warnings.length;
+  const toneClass = blocking
+    ? "border-[color:rgba(255,107,122,0.22)] bg-[color:rgba(255,107,122,0.07)] text-[var(--red)]"
+    : warningCount
+      ? "border-[color:rgba(248,200,108,0.22)] bg-[color:rgba(248,200,108,0.07)] text-[var(--amber)]"
+      : "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]";
+  const status = blocking ? "Blocked" : warningCount ? "Caution" : "Deployable";
+  const topIssues = [...preview.analysis.blockingIssues, ...preview.analysis.warnings].slice(0, 2);
+
+  return (
+    <div className={cn("rounded-md border px-2.5 py-2", toneClass)}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-mono text-[9px] uppercase tracking-[0.14em]">Bot draft check</div>
+          <div className="mt-0.5 text-sm font-medium text-white">{status}</div>
+        </div>
+        <div className="text-right font-mono text-[10px] uppercase tracking-[0.12em]">
+          {preview.changes.length} change{preview.changes.length === 1 ? "" : "s"}
+        </div>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        <ScenarioMiniMetric label="Budget / cycle" value={formatCurrency(preview.analysis.summary.budgetPerCycleUsd)} />
+        <ScenarioMiniMetric label="Min order" value={formatCurrency(preview.draft.minOrderQuoteAmount)} />
+        <ScenarioMiniMetric label="Rails" value={formatNumber(preview.draft.levelCount, 0)} />
+        <ScenarioMiniMetric label="Width" value={formatPercent(preview.analysis.summary.rangeWidthPct, 1)} />
+      </div>
+      {preview.forcedManualRecenter ? (
+        <div className="mt-2 text-[10px] leading-4 text-[var(--muted)]">
+          Recenter/adaptive simulation will be converted to manual review before creating the bot.
+        </div>
+      ) : null}
+      {topIssues.length ? (
+        <div className="mt-2 space-y-1">
+          {topIssues.map((issue) => (
+            <div key={`${issue.field ?? "draft"}:${issue.message}`} className="text-[10px] leading-4 text-[var(--muted)]">
+              {issue.message}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-2 text-[10px] leading-4 text-[var(--muted)]">
+          Same validation rules as the bot creation form.
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function BacktestLabConsole({
   bots,
+  deskMode,
+  liveTradingEnabled,
   selectedBotId,
   onSelectBotId
 }: {
   bots: LabPrefillBot[];
+  deskMode: BotMode;
+  liveTradingEnabled: boolean;
   selectedBotId?: string | null;
   onSelectBotId?: (botId: string | null) => void;
 }) {
+  const router = useRouter();
   const [isPending, setIsPending] = useState(false);
   const [pair, setPair] = useState<LabPair>("SOL");
   const [budgetUsd, setBudgetUsd] = useState<number>(100);
@@ -1040,6 +1498,7 @@ export function BacktestLabConsole({
   const [activeReplay, setActiveReplay] = useState<SerializedBacktestRunResult | null>(null);
   const [activeConfigKey, setActiveConfigKey] = useState<string | null>(null);
   const [scenarioComparison, setScenarioComparison] = useState<ScenarioComparisonRow[]>([]);
+  const [stressRows, setStressRows] = useState<StressScenarioRow[]>([]);
   const [localSelectedBotId, setLocalSelectedBotId] = useState<string | null>(selectedBotId ?? bots[0]?.id ?? null);
   const effectiveSelectedBotId = onSelectBotId ? selectedBotId ?? null : localSelectedBotId;
   const selectBotId = onSelectBotId ?? setLocalSelectedBotId;
@@ -1069,6 +1528,7 @@ export function BacktestLabConsole({
     setActiveReplay(null);
     setActiveConfigKey(null);
     setScenarioComparison([]);
+    setStressRows([]);
   }, [pair, budgetUsd, lookbackDays, resolution, selectedBot?.id]);
 
   const displayedReplay = activeReplay ?? recommendation?.bestReplay ?? null;
@@ -1078,6 +1538,26 @@ export function BacktestLabConsole({
   const displayedStrategySelection = displayedReplay?.strategySelection ?? recommendation?.strategySelection ?? null;
   const displayedBaseConfig = displayedReplay?.config ?? recommendation?.bestConfig ?? null;
   const displayedAssumptions = displayedReplay?.assumptions ?? recommendation?.assumptions ?? null;
+  const draftPreview = useMemo<LabDraftPreview | null>(() => {
+    if (!displayedBaseConfig) {
+      return null;
+    }
+
+    const transfer = createLabBotDraftTransfer({
+      pair,
+      mode: selectedBot?.config.mode ?? deskMode,
+      label: `${pair}/USDC Lab preview`,
+      config: displayedBaseConfig
+    });
+    const result = buildBotDraftFromLabTransfer(transfer, deskMode);
+
+    return {
+      draft: result.draft,
+      forcedManualRecenter: result.forcedManualRecenter,
+      analysis: analyzeBotDraft(result.draft, liveTradingEnabled),
+      changes: selectedBot ? diffBotDraft(selectedBot.config, result.draft) : []
+    };
+  }, [deskMode, displayedBaseConfig, liveTradingEnabled, pair, selectedBot]);
   const adaptiveReplayConfig = useMemo(
     () => (displayedBaseConfig && displayedRangePlan ? buildAdaptiveReplayConfig(displayedBaseConfig, displayedRangePlan) : null),
     [displayedBaseConfig, displayedRangePlan]
@@ -1184,6 +1664,45 @@ export function BacktestLabConsole({
     });
   }
 
+  function openConfigAsBotDraft(config: SerializedBacktestConfig | null) {
+    if (!config) {
+      setFeedback({
+        tone: "error",
+        message: "Run or select a replay before opening a bot draft."
+      });
+      return;
+    }
+
+    const lowLabel = formatNumber(config.lowPrice, config.lowPrice >= 1000 ? 0 : 2);
+    const highLabel = formatNumber(config.highPrice, config.highPrice >= 1000 ? 0 : 2);
+    const mode = selectedBot?.config.mode ?? deskMode;
+    const transfer = createLabBotDraftTransfer({
+      pair,
+      mode,
+      label: `${pair}/USDC Lab ${lowLabel}-${highLabel}`,
+      config
+    });
+    const result = buildBotDraftFromLabTransfer(transfer, deskMode);
+    const analysis = analyzeBotDraft(result.draft, liveTradingEnabled);
+    if (analysis.blockingIssues.length) {
+      setFeedback({
+        tone: "error",
+        message: `This Lab config cannot be opened as a bot draft yet: ${analysis.blockingIssues[0]?.message ?? "invalid draft"}`
+      });
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(LAB_BOT_DRAFT_STORAGE_KEY, JSON.stringify(transfer));
+      router.push(`/bots?deskMode=${transfer.mode}&draft=lab`);
+    } catch {
+      setFeedback({
+        tone: "error",
+        message: "Unable to prepare the bot draft in this browser."
+      });
+    }
+  }
+
   async function runRecommendation() {
     setFeedback(null);
     setIsPending(true);
@@ -1193,6 +1712,7 @@ export function BacktestLabConsole({
       setActiveReplay(payload.bestReplay);
       setActiveConfigKey(getConfigSignature(payload.bestConfig));
       setScenarioComparison([]);
+      setStressRows([]);
     } catch (error) {
       setFeedback({
         tone: "error",
@@ -1210,10 +1730,47 @@ export function BacktestLabConsole({
       const payload = await requestReplay(config);
       setActiveReplay(payload);
       setActiveConfigKey(getConfigSignature(config));
+      setStressRows([]);
     } catch (error) {
       setFeedback({
         tone: "error",
         message: error instanceof Error ? error.message : "Unable to replay this config."
+      });
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  async function runStressChecks() {
+    if (!displayedBaseConfig || !displayedReplay) {
+      setFeedback({
+        tone: "error",
+        message: "Select or run a replay before running stress checks."
+      });
+      return;
+    }
+
+    setFeedback(null);
+    setIsPending(true);
+    try {
+      const definitions = buildStressScenarioDefinitions(displayedBaseConfig);
+      const nextRows: StressScenarioRow[] = [];
+
+      for (const definition of definitions) {
+        if (definition.id === "base" && getConfigSignature(displayedReplay.config) === getConfigSignature(displayedBaseConfig)) {
+          nextRows.push({ ...definition, replay: displayedReplay });
+          continue;
+        }
+
+        const replay = await requestReplay(definition.config);
+        nextRows.push({ ...definition, replay });
+      }
+
+      setStressRows(nextRows);
+    } catch (error) {
+      setFeedback({
+        tone: "error",
+        message: error instanceof Error ? error.message : "Unable to run stress checks."
       });
     } finally {
       setIsPending(false);
@@ -1235,6 +1792,7 @@ export function BacktestLabConsole({
       const payload = await requestScenarioComparison(selectedBotReplayConfig);
       setRecommendation(payload.recommendation);
       setScenarioComparison(payload.rows);
+      setStressRows([]);
       const winner = rankScenarioRows(payload.rows)[0] ?? payload.rows[0] ?? null;
       if (winner) {
         setActiveReplay(winner.replay);
@@ -1255,6 +1813,7 @@ export function BacktestLabConsole({
     () => buildLabConclusion({ scenarioComparison, recommendation, displayedReplay }),
     [displayedReplay, recommendation, scenarioComparison]
   );
+  const scenarioAudit = useMemo(() => buildScenarioAudit(scenarioComparison), [scenarioComparison]);
 
   return (
     <section className="space-y-0">
@@ -1272,6 +1831,7 @@ export function BacktestLabConsole({
       ) : null}
 
       <LabConclusionPanel conclusion={labConclusion} />
+      <ScenarioAuditPanel audit={scenarioAudit} />
       <ScenarioComparisonBoard
         rows={scenarioComparison}
         activeConfigKey={activeConfigKey}
@@ -1475,6 +2035,23 @@ export function BacktestLabConsole({
                     <div className="text-[11px] leading-4 text-[var(--muted)]">
                       Optional: search the parameter space without comparing against the selected bot.
                     </div>
+                    {displayedBaseConfig ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => openConfigAsBotDraft(displayedBaseConfig)}
+                          disabled={isPending || Boolean(draftPreview?.analysis.blockingIssues.length)}
+                          className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--accent-line)] bg-[linear-gradient(180deg,rgba(121,184,255,0.16),rgba(121,184,255,0.08))] px-3 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--accent)] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition hover:border-[rgba(121,184,255,0.45)] hover:bg-[rgba(121,184,255,0.14)] hover:text-white disabled:pointer-events-none disabled:opacity-50"
+                        >
+                          <Plus className="h-3.5 w-3.5 shrink-0" />
+                          Open as bot draft
+                        </button>
+                        <div className="text-[11px] leading-4 text-[var(--muted)]">
+                          Opens a new `/bots` draft only. Adaptive/recenter simulation stays advisory; review before creating.
+                        </div>
+                        {draftPreview ? <LabDraftPreviewCard preview={draftPreview} /> : null}
+                      </>
+                    ) : null}
                   </div>
                 </div>
               </LabSection>
@@ -1559,6 +2136,19 @@ export function BacktestLabConsole({
                 ) : (
                   <div className="text-sm text-[var(--muted)]">No replay yet. Run Compare scenarios to compare your selected bot against Lab alternatives.</div>
                 )}
+              </LabSection>
+
+              <LabSection title="Stress checks">
+                <StressCheckPanel
+                  rows={stressRows}
+                  canRun={Boolean(displayedBaseConfig && displayedReplay)}
+                  isPending={isPending}
+                  onRun={runStressChecks}
+                  onSelect={(row) => {
+                    setActiveReplay(row.replay);
+                    setActiveConfigKey(getConfigSignature(row.config));
+                  }}
+                />
               </LabSection>
 
               <LabSection title="Replay assumptions">

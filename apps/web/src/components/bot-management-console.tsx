@@ -32,6 +32,11 @@ import {
 } from "@/lib/bot-management";
 import { calculateBudgetRoiPct } from "@/lib/bot-metrics";
 import { calculateGridLevels, getNextGridTriggers, parsePendingSignal } from "@/lib/bot-runtime";
+import {
+  LAB_BOT_DRAFT_STORAGE_KEY,
+  buildBotDraftFromLabTransfer,
+  parseLabBotDraftTransfer
+} from "@/lib/lab-draft-transfer";
 import { formatGoalLabel, formatTradeDisplay } from "@/lib/trade-display";
 import { cn, formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/utils";
 
@@ -499,6 +504,41 @@ export function BotManagementConsole({
   useEffect(() => {
     setCreateDraft((current) => syncDraftMinOrder({ ...current, mode: deskMode }, createMinOrderMode));
   }, [createMinOrderMode, deskMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("draft") !== "lab") {
+      return;
+    }
+
+    const transfer = parseLabBotDraftTransfer(window.localStorage.getItem(LAB_BOT_DRAFT_STORAGE_KEY));
+    window.localStorage.removeItem(LAB_BOT_DRAFT_STORAGE_KEY);
+
+    if (!transfer) {
+      setFeedback({
+        tone: "error",
+        message: "The Lab draft could not be loaded. Run the Lab again and reopen it as a draft."
+      });
+      return;
+    }
+
+    const result = buildBotDraftFromLabTransfer(transfer, deskMode);
+    setCreateMinOrderMode(result.minOrderMode);
+    setCreateDraft(syncDraftMinOrder(result.draft, result.minOrderMode));
+    setPanelKind("create");
+    setPanelTab("setup");
+    setCreateOpenSection("core");
+    setFeedback({
+      tone: "info",
+      message: result.forcedManualRecenter
+        ? "Lab config loaded as a new bot draft. Recenter/adaptive simulation was kept advisory and converted to manual review."
+        : "Lab config loaded as a new bot draft. Review it before creating."
+    });
+  }, [deskMode]);
 
   useEffect(() => {
     botStatusRef.current = bots.reduce<Record<string, string>>((accumulator, bot) => {

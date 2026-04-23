@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { getEnv } from "@grid-bot/common";
 
 import { AppShell } from "@/components/app-shell";
 import { BacktestLabConsole } from "@/components/backtest-lab-console";
@@ -17,6 +18,7 @@ export default async function LabPage({
   const cookieStore = await cookies();
   const deskMode = parseDeskMode(params.deskMode ?? cookieStore.get(DESK_MODE_COOKIE)?.value);
   const labEnabled = process.env.BACKTEST_LAB_ENABLED === "true";
+  const liveTradingEnabled = getEnv().LIVE_TRADING_ENABLED;
   const bots = await getBotsOverview(deskMode);
   const viewModel = bots.map(serializeBotOverview);
   const initialSelectedBotId = params.botId && viewModel.some((bot) => bot.id === params.botId) ? params.botId : viewModel[0]?.id ?? null;
@@ -25,6 +27,8 @@ export default async function LabPage({
     <AppShell title="Lab" subtitle="Strategy lab" pathname="/lab" deskMode={deskMode}>
       {labEnabled ? (
         <BacktestLabConsole
+          deskMode={deskMode}
+          liveTradingEnabled={liveTradingEnabled}
           bots={viewModel.map((bot) => ({
             id: bot.id,
             name: bot.name,
