@@ -493,6 +493,64 @@ describe("GridStrategyService", () => {
     expect(order).toBeNull();
   });
 
+  it("does not infer a tracked lot onto its own buy rail after a favorable fill", () => {
+    const order = service.buildOrderIntent(
+      {
+        ...aggregate,
+        bot: {
+          ...aggregate.bot,
+          strategyMode: StrategyMode.AccumulateUsdc
+        },
+        config: {
+          ...aggregate.config,
+          lowPrice: 84,
+          highPrice: 85,
+          levelCount: 6,
+          minOrderQuoteAmount: 25,
+          reserveQuoteAmount: 0
+        },
+        latestState: {
+          ...aggregate.latestState!,
+          metadata: {
+            ...aggregate.latestState!.metadata,
+            gridCycles: {
+              "1": {
+                buyLevelIndex: 1,
+                sellLevelIndex: 2,
+                lotId: "lot-tracked-favorable-fill",
+                openedAt: "2026-04-27T15:18:00.000Z"
+              }
+            }
+          }
+        },
+        openLots: [
+          {
+            id: "lot-tracked-favorable-fill",
+            botId: "bot_1",
+            originalBaseAmount: 0.5595,
+            remainingBaseAmount: 0.5595,
+            entryPrice: 84.18,
+            costQuote: 47.1,
+            openedByExecutionId: "exec-buy-l2",
+            closedByExecutionId: null,
+            openedAt: new Date("2026-04-27T15:18:00.000Z"),
+            closedAt: null
+          }
+        ]
+      },
+      {
+        levelIndex: 1,
+        side: TradeSide.Sell,
+        levelPrice: 84.2,
+        observedPrice: 84.29,
+        idempotencyKey: "signal-same-rail-sell",
+        triggeredAt: new Date("2026-04-27T15:18:30.000Z")
+      }
+    );
+
+    expect(order).toBeNull();
+  });
+
   it("skips a buy when the same level is already occupied by an active cycle", () => {
     const order = service.buildOrderIntent(
       {

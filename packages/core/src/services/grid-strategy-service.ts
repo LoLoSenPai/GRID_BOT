@@ -128,8 +128,10 @@ export class GridStrategyService {
 
   private findInferredSellLot(bot: BotAggregate, signalLevelIndex: number): PositionLot | null {
     const levels = this.calculateLevels(bot.config.lowPrice, bot.config.highPrice, bot.config.levelCount, bot.config.gridType);
+    const trackedLotIds = new Set(Object.values(bot.latestState?.metadata.gridCycles ?? {}).map((cycle) => cycle.lotId));
     const candidates = bot.openLots
       .filter((lot) => this.isOpenLotSellable(lot))
+      .filter((lot) => !trackedLotIds.has(lot.id))
       .filter((lot) => this.inferSellLevelIndexForLot(levels, lot) === signalLevelIndex)
       .sort((left, right) => left.openedAt.getTime() - right.openedAt.getTime());
 
