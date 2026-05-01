@@ -274,7 +274,33 @@ export function BotManagementConsole({
     }, {})
   );
 
-  const runtimeBots = useMemo(() => bots.map((bot) => applyTelemetry(bot, liveTelemetry[bot.id])), [bots, liveTelemetry]);
+  const telemetryBots = useMemo(() => bots.map((bot) => applyTelemetry(bot, liveTelemetry[bot.id])), [bots, liveTelemetry]);
+  const sharedSpotByPair = useMemo(() => {
+    return telemetryBots.reduce<Record<string, { price: number; timestampMs: number }>>((accumulator, bot) => {
+      if (typeof bot.currentPrice !== "number" || !Number.isFinite(bot.currentPrice)) {
+        return accumulator;
+      }
+
+      const timestampMs = bot.lastHeartbeatAt ? Date.parse(bot.lastHeartbeatAt) : 0;
+      const current = accumulator[bot.pairLabel];
+      if (!current || timestampMs >= current.timestampMs) {
+        accumulator[bot.pairLabel] = {
+          price: bot.currentPrice,
+          timestampMs
+        };
+      }
+
+      return accumulator;
+    }, {});
+  }, [telemetryBots]);
+  const runtimeBots = useMemo(
+    () =>
+      telemetryBots.map((bot) => {
+        const sharedSpot = sharedSpotByPair[bot.pairLabel];
+        return sharedSpot ? { ...bot, currentPrice: sharedSpot.price } : bot;
+      }),
+    [sharedSpotByPair, telemetryBots]
+  );
   const hasBots = runtimeBots.length > 0;
 
   const selectedBot = useMemo(() => runtimeBots.find((bot) => bot.id === selectedBotId) ?? runtimeBots[0] ?? null, [runtimeBots, selectedBotId]);

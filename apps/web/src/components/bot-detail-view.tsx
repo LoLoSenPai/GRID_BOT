@@ -924,7 +924,7 @@ export function BotDetailView({
           </div>
 
           <BotPriceChart
-            key={`embedded-chart-${bot.id}`}
+            key={`embedded-chart-${bot.baseSymbol}-${resolution}`}
             resolution={resolution}
             candles={activeHistoryState.candles}
             levels={chartLevels}
@@ -1019,7 +1019,7 @@ export function BotDetailView({
               </div>
 
               <BotPriceChart
-                key={`full-chart-${bot.id}`}
+                key={`full-chart-${bot.baseSymbol}-${resolution}`}
                 resolution={resolution}
                 candles={activeHistoryState.candles}
                 levels={bot.levels}
