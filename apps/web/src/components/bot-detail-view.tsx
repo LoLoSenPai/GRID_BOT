@@ -1,11 +1,13 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowDownRight, ArrowUpRight, Gauge, Layers3, Radar, ShieldAlert, Wallet2 } from "lucide-react";
 
 import { BotControlButtons } from "@/components/bot-control-buttons";
 import { BotPriceChart } from "@/components/bot-price-chart";
 import { SectionHeading } from "@/components/section-heading";
+import { SpotPricePulse } from "@/components/spot-price-pulse";
 import { StatusBadge } from "@/components/status-badge";
 import { SurfaceCard } from "@/components/surface-card";
 import { TimeRangeTabs } from "@/components/time-range-tabs";
@@ -403,7 +405,7 @@ function EmbeddedInlineMetric({
   tone = "default"
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   tone?: "default" | "positive" | "negative";
 }) {
   const toneClass = tone === "positive" ? "text-[var(--green)]" : tone === "negative" ? "text-[var(--red)]" : "text-white";
@@ -880,7 +882,7 @@ export function BotDetailView({
             <span className="text-[15px] font-semibold tracking-[-0.03em] text-white">
               {bot.baseSymbol}/{bot.quoteSymbol}
             </span>
-            <EmbeddedInlineMetric label="Spot" value={currentPrice ? formatNumber(currentPrice, currentPrice >= 1000 ? 0 : 2) : "--"} />
+            <EmbeddedInlineMetric label="Spot" value={<SpotPricePulse value={currentPrice || null} />} />
             <EmbeddedInlineMetric
               label="PnL"
               value={formatCurrency(displayTotalPnlUsd)}

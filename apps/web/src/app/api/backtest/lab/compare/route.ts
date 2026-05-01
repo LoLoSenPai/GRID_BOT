@@ -3,6 +3,7 @@ import { BacktestLabService, type BacktestConfig } from "@grid-bot/core";
 import { RecenterMode } from "@grid-bot/core/enums";
 
 import { readSession } from "@/lib/auth";
+import { applyExecutionCostCalibration, fetchExecutionCostCalibration, type BacktestExecutionCostCalibration } from "@/lib/backtest-execution-cost";
 import { buildReplayConfig, parseBacktestCompareRequest } from "@/lib/backtest-lab";
 import { buildAdaptiveRangePlan, buildStrategySelection, fetchBacktestSeries } from "@/lib/backtest-lab-server";
 
@@ -12,6 +13,7 @@ function decorateReplay(input: {
   indicators: Awaited<ReturnType<typeof fetchBacktestSeries>>["indicators"];
   marketRegime: Awaited<ReturnType<typeof fetchBacktestSeries>>["marketRegime"];
   config: BacktestConfig;
+  executionCostCalibration: BacktestExecutionCostCalibration;
 }) {
   const replay = input.service.replay({
     series: input.series,
@@ -35,7 +37,11 @@ function decorateReplay(input: {
     indicators: input.indicators,
     marketRegime: input.marketRegime,
     rangePlan,
-    strategySelection
+    strategySelection,
+    meta: {
+      ...replay.meta,
+      executionCostCalibration: input.executionCostCalibration
+    }
   };
 }
 
@@ -60,11 +66,16 @@ export async function POST(request: Request) {
       lookbackDays: body.lookbackDays
     });
     const service = new BacktestLabService();
-    const currentConfig = buildReplayConfig(body.config);
+    const executionCostCalibration = await fetchExecutionCostCalibration({
+      pair: body.pair,
+      lookbackDays: body.lookbackDays
+    });
+    const currentConfig = applyExecutionCostCalibration(buildReplayConfig(body.config), executionCostCalibration);
     const recommendationBase = service.recommend({
       series,
       budgetUsd: body.budgetUsd,
-      marketRegime
+      marketRegime,
+      executionCost: executionCostCalibration
     });
     const bestRangePlan = buildAdaptiveRangePlan({
       series,
@@ -82,7 +93,11 @@ export async function POST(request: Request) {
       indicators,
       marketRegime,
       rangePlan: bestRangePlan,
-      strategySelection: bestStrategySelection
+      strategySelection: bestStrategySelection,
+      meta: {
+        ...recommendationBase.bestReplay.meta,
+        executionCostCalibration
+      }
     };
     const recommendation = {
       ...recommendationBase,
@@ -94,7 +109,8 @@ export async function POST(request: Request) {
       meta: {
         ...recommendationBase.meta,
         historyWindow,
-        lookbackDays: body.lookbackDays
+        lookbackDays: body.lookbackDays,
+        executionCostCalibration
       }
     };
     const currentReplay = decorateReplay({
@@ -102,35 +118,38 @@ export async function POST(request: Request) {
       series,
       indicators,
       marketRegime,
-      config: currentConfig
+      config: currentConfig,
+      executionCostCalibration
     });
-    const currentRecenterConfig = buildReplayConfig({
+    const currentRecenterConfig = applyExecutionCostCalibration(buildReplayConfig({
       ...body.config,
       recenterMode: RecenterMode.Auto
-    });
+    }), executionCostCalibration);
     const currentRecenterReplay = decorateReplay({
       service,
       series,
       indicators,
       marketRegime,
-      config: currentRecenterConfig
+      config: currentRecenterConfig,
+      executionCostCalibration
     });
-    const adaptiveConfig = buildReplayConfig({
+    const adaptiveConfig = applyExecutionCostCalibration(buildReplayConfig({
       ...recommendationBase.bestConfig,
       lowPrice: bestRangePlan.recommendedLowPrice,
       highPrice: bestRangePlan.recommendedHighPrice,
       levelCount: bestRangePlan.recommendedLevelCount,
       gridType: bestRangePlan.recommendedGridType,
       rangeControlMode: "adaptive"
-    });
+    }), executionCostCalibration);
     const adaptiveReplay = decorateReplay({
       service,
       series,
       indicators,
       marketRegime,
-      config: adaptiveConfig
+      config: adaptiveConfig,
+      executionCostCalibration
     });
-    const adaptiveRecenterConfig = buildReplayConfig({
+    const adaptiveRecenterConfig = applyExecutionCostCalibration(buildReplayConfig({
       ...recommendationBase.bestConfig,
       lowPrice: bestRangePlan.recommendedLowPrice,
       highPrice: bestRangePlan.recommendedHighPrice,
@@ -138,13 +157,14 @@ export async function POST(request: Request) {
       gridType: bestRangePlan.recommendedGridType,
       recenterMode: RecenterMode.Auto,
       rangeControlMode: "adaptive"
-    });
+    }), executionCostCalibration);
     const adaptiveRecenterReplay = decorateReplay({
       service,
       series,
       indicators,
       marketRegime,
-      config: adaptiveRecenterConfig
+      config: adaptiveRecenterConfig,
+      executionCostCalibration
     });
 
     return NextResponse.json({
@@ -188,7 +208,8 @@ export async function POST(request: Request) {
       ],
       meta: {
         historyWindow,
-        lookbackDays: body.lookbackDays
+        lookbackDays: body.lookbackDays,
+        executionCostCalibration
       }
     });
   } catch (error) {

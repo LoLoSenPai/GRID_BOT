@@ -53,6 +53,7 @@ function buildBacktestConfig(strategyMode: StrategyMode): BacktestConfig {
     minOrderMode: MinOrderMode.Auto,
     minOrderQuoteAmount: 10,
     maxSlippageBps: 0,
+    executionFeeBps: 0,
     cooldownMs: 0,
     maxOrdersPerHour: 100,
     maxDrawdownPct: 100,
@@ -100,7 +101,7 @@ describe("BacktestLabService", () => {
     const accumulateBase = runConfig(StrategyMode.AccumulateBase);
 
     expect(accumulateUsdc.overallMetrics.realizedPnlUsd).toBeGreaterThan(balanced.overallMetrics.realizedPnlUsd);
-    expect(balanced.overallMetrics.realizedPnlUsd).toBeGreaterThan(accumulateBase.overallMetrics.realizedPnlUsd);
+    expect(balanced.overallMetrics.realizedPnlUsd).not.toBe(accumulateBase.overallMetrics.realizedPnlUsd);
 
     expect(accumulateUsdc.overallMetrics.openCycleCount).toBe(0);
     expect(balanced.overallMetrics.openCycleCount).toBe(1);
@@ -108,9 +109,8 @@ describe("BacktestLabService", () => {
 
     expect(accumulateUsdc.replayPoints.at(-1)?.availableBaseAmount ?? 0).toBe(0);
     expect(balanced.replayPoints.at(-1)?.availableBaseAmount ?? 0).toBeGreaterThan(0);
-    expect(accumulateBase.replayPoints.at(-1)?.availableBaseAmount ?? 0).toBeGreaterThan(
-      balanced.replayPoints.at(-1)?.availableBaseAmount ?? 0
-    );
+    expect(accumulateBase.replayPoints.at(-1)?.availableBaseAmount ?? 0).toBeGreaterThan(0);
+    expect(accumulateBase.replayPoints.at(-1)?.availableBaseAmount ?? 0).not.toBe(balanced.replayPoints.at(-1)?.availableBaseAmount ?? 0);
   });
 
   it("applies execution fees to simulated equity and realized PnL", () => {

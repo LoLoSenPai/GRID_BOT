@@ -13,6 +13,7 @@ import { BotDetailView, type BotDetailRuntimeData, type BotDetailViewData } from
 import { BotTradingDrawer } from "@/components/bot-trading-drawer";
 
 import { StatusBadge } from "@/components/status-badge";
+import { SpotPricePulse } from "@/components/spot-price-pulse";
 import {
   applyPaperTurbo,
   applyBehaviorPreset,
@@ -1379,7 +1380,7 @@ export function BotManagementConsole({
                           {roiPct >= 0 ? "+" : ""}{formatNumber(roiPct, 2)}%
                         </td>
                         <td className="px-4 py-3 text-right font-mono text-white">
-                          {bot.currentPrice ? formatNumber(bot.currentPrice, bot.currentPrice >= 1000 ? 0 : 2) : "--"}
+                          <SpotPricePulse value={bot.currentPrice} />
                         </td>
                         <td className="px-4 py-3 text-right">
                           <div className="inline-flex items-center gap-2">

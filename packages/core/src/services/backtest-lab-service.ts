@@ -4,6 +4,7 @@ import { BotMode, BotStatus, ExecutionProvider, GridType, MinOrderMode, OrderSta
 import type {
   BacktestAssumptions,
   BacktestConfig,
+  BacktestExecutionCostSource,
   BacktestLeaderboardEntry,
   BacktestMarketSeries,
   BacktestMetrics,
@@ -77,10 +78,17 @@ export interface BacktestReplayRequest {
   marketRegime?: MarketRegimeAssessment | null;
 }
 
+export interface BacktestExecutionCostOverride {
+  maxSlippageBps: number;
+  executionFeeBps: number;
+  source?: BacktestExecutionCostSource;
+}
+
 export interface BacktestRecommendationRequest {
   series: BacktestMarketSeries;
   budgetUsd: number;
   marketRegime?: MarketRegimeAssessment | null;
+  executionCost?: BacktestExecutionCostOverride;
 }
 
 interface BacktestRuntimeState {
@@ -142,7 +150,11 @@ export function splitBacktestSeries(series: BacktestMarketSeries): PreparedSerie
   };
 }
 
-export function generateBacktestCandidates(series: BacktestMarketSeries, budgetUsd: number): BacktestConfig[] {
+export function generateBacktestCandidates(
+  series: BacktestMarketSeries,
+  budgetUsd: number,
+  executionCost?: BacktestExecutionCostOverride
+): BacktestConfig[] {
   const prepared = splitBacktestSeries(series);
   const trainCloses = prepared.trainCandles.map((candle) => candle.close).filter((value) => Number.isFinite(value) && value > 0);
 
@@ -190,7 +202,8 @@ export function generateBacktestCandidates(series: BacktestMarketSeries, budgetU
                 levelCount,
                 gridType,
                 strategyMode,
-                minOrderQuoteAmount
+                minOrderQuoteAmount,
+                executionCost
               })
             );
           }
@@ -355,7 +368,7 @@ export class BacktestLabService {
 
   recommend(request: BacktestRecommendationRequest): BacktestRecommendation {
     const prepared = splitBacktestSeries(request.series);
-    const candidates = generateBacktestCandidates(prepared.series, request.budgetUsd);
+    const candidates = generateBacktestCandidates(prepared.series, request.budgetUsd, request.executionCost);
 
     if (candidates.length === 0) {
       throw new Error("No viable backtest candidates were generated for the selected window.");
@@ -577,6 +590,7 @@ export class BacktestLabService {
       minOrderQuoteAmount: Math.max(0, round(config.minOrderQuoteAmount, 2)),
       maxSlippageBps: Math.max(0, config.maxSlippageBps),
       executionFeeBps: Math.max(0, config.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS),
+      executionCostSource: config.executionCostSource ?? "fixed_pessimistic",
       cooldownMs: Math.max(0, config.cooldownMs ?? strategyDefaults.cooldownMs),
       maxOrdersPerHour: Math.max(1, config.maxOrdersPerHour ?? strategyDefaults.maxOrdersPerHour),
       maxDrawdownPct: Math.max(0, config.maxDrawdownPct ?? 18),
@@ -1208,6 +1222,7 @@ export class BacktestLabService {
       candleTraversal: "bullish_open_low_high_close_bearish_open_high_low_close",
       fillPolicy: "immediate_on_confirmed_level_cross",
       executionCostModel: "pessimistic_slippage_plus_fee",
+      executionCostSource: config.executionCostSource ?? "fixed_pessimistic",
       maxSlippageBps: config.maxSlippageBps,
       executionFeeBps: config.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS,
       trainValidationSplit: 0.7,
@@ -1219,6 +1234,9 @@ export class BacktestLabService {
       notes: [
         "Candle replay approximates intrabar order; it is not tick-level execution data.",
         "Ranking uses validation metrics before train metrics to reduce overfitting.",
+        config.executionCostSource === "calibrated_live_fills"
+          ? "Execution cost is calibrated from recent successful live fills for this pair."
+          : "Execution cost uses the fixed pessimistic Lab default.",
         config.rangeControlMode === "adaptive"
           ? "Adaptive range is simulated in Lab only and only shifts rails while no open cycles are present."
           : "Range is static unless a Lab-only adaptive scenario is selected.",
@@ -1318,8 +1336,10 @@ function buildCandidateConfig(input: {
   gridType: GridType;
   strategyMode: StrategyMode;
   minOrderQuoteAmount: number;
+  executionCost?: BacktestExecutionCostOverride;
 }): BacktestConfig {
   const strategyDefaults = STRATEGY_RUNTIME_DEFAULTS[input.strategyMode];
+  const executionCost = input.executionCost;
   return {
     budgetUsd: round(input.budgetUsd, 2),
     lowPrice: round(input.lowPrice, 8),
@@ -1330,8 +1350,9 @@ function buildCandidateConfig(input: {
     rangeControlMode: "static",
     minOrderMode: MinOrderMode.Auto,
     minOrderQuoteAmount: round(input.minOrderQuoteAmount, 2),
-    maxSlippageBps: 50,
-    executionFeeBps: DEFAULT_EXECUTION_FEE_BPS,
+    maxSlippageBps: Math.max(0, round(executionCost?.maxSlippageBps ?? 50, 2)),
+    executionFeeBps: Math.max(0, round(executionCost?.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS, 2)),
+    executionCostSource: executionCost?.source ?? "fixed_pessimistic",
     cooldownMs: strategyDefaults.cooldownMs,
     maxOrdersPerHour: strategyDefaults.maxOrdersPerHour,
     maxDrawdownPct: 18,

@@ -374,6 +374,7 @@ export interface BacktestConfig {
   minOrderQuoteAmount: number;
   maxSlippageBps: number;
   executionFeeBps?: number;
+  executionCostSource?: BacktestExecutionCostSource;
   cooldownMs: number;
   maxOrdersPerHour: number;
   maxDrawdownPct: number;
@@ -383,6 +384,8 @@ export interface BacktestConfig {
   recenterMode: RecenterMode;
   outOfRangePause: boolean;
 }
+
+export type BacktestExecutionCostSource = "fixed_pessimistic" | "calibrated_live_fills";
 
 export interface ExecutionCostModelInput {
   side: TradeSide;
@@ -516,6 +519,7 @@ export interface BacktestAssumptions {
   candleTraversal: "bullish_open_low_high_close_bearish_open_high_low_close";
   fillPolicy: "immediate_on_confirmed_level_cross";
   executionCostModel: "pessimistic_slippage_plus_fee";
+  executionCostSource: BacktestExecutionCostSource;
   maxSlippageBps: number;
   executionFeeBps: number;
   trainValidationSplit: number;

@@ -221,6 +221,7 @@ type SerializedBacktestAssumptions = {
   candleTraversal: "bullish_open_low_high_close_bearish_open_high_low_close";
   fillPolicy: "immediate_on_confirmed_level_cross";
   executionCostModel: "pessimistic_slippage_plus_fee";
+  executionCostSource: "fixed_pessimistic" | "calibrated_live_fills";
   maxSlippageBps: number;
   executionFeeBps: number;
   trainValidationSplit: number;
@@ -230,6 +231,23 @@ type SerializedBacktestAssumptions = {
   outOfRangeModel: "pause_new_entries_allow_recovery_sells";
   excludedCosts: string[];
   notes: string[];
+};
+
+type SerializedExecutionCostCalibration = {
+  source: "fixed_pessimistic" | "calibrated_live_fills";
+  sampleSize: number;
+  buySampleSize: number;
+  sellSampleSize: number;
+  feeSampleSize: number;
+  maxSlippageBps: number;
+  executionFeeBps: number;
+  averageAdverseSlippageBps: number;
+  p50AdverseSlippageBps: number;
+  p75AdverseSlippageBps: number;
+  p90AdverseSlippageBps: number;
+  maxAdverseSlippageBps: number;
+  averageFeeBps: number;
+  lookbackDays: number;
 };
 
 type SerializedBacktestRunResult = {
@@ -257,6 +275,7 @@ type SerializedBacktestRunResult = {
       to: string;
       source: string;
     };
+    executionCostCalibration?: SerializedExecutionCostCalibration;
   };
   series: {
     symbol: string;
@@ -307,6 +326,7 @@ type SerializedBacktestRecommendation = {
       to: string;
       source: string;
     };
+    executionCostCalibration?: SerializedExecutionCostCalibration;
   };
 };
 
@@ -1538,6 +1558,7 @@ export function BacktestLabConsole({
   const displayedStrategySelection = displayedReplay?.strategySelection ?? recommendation?.strategySelection ?? null;
   const displayedBaseConfig = displayedReplay?.config ?? recommendation?.bestConfig ?? null;
   const displayedAssumptions = displayedReplay?.assumptions ?? recommendation?.assumptions ?? null;
+  const displayedCostCalibration = displayedReplay?.meta.executionCostCalibration ?? recommendation?.meta.executionCostCalibration ?? null;
   const draftPreview = useMemo<LabDraftPreview | null>(() => {
     if (!displayedBaseConfig) {
       return null;
@@ -2159,7 +2180,11 @@ export function BacktestLabConsole({
                       <LabMetric
                         label="Cost model"
                         value={`${formatBps(displayedAssumptions.maxSlippageBps)} slip + ${formatBps(displayedAssumptions.executionFeeBps)} fee`}
-                        hint="Pessimistic deterministic fills"
+                        hint={
+                          displayedAssumptions.executionCostSource === "calibrated_live_fills" && displayedCostCalibration
+                            ? `${displayedCostCalibration.sampleSize} live fills, p75 ${formatBps(displayedCostCalibration.p75AdverseSlippageBps)}`
+                            : "Fixed pessimistic default"
+                        }
                       />
                       <LabMetric
                         label="Split"
@@ -2180,6 +2205,12 @@ export function BacktestLabConsole({
                     <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
                       Excludes {displayedAssumptions.excludedCosts.join(", ")}. This is candle-level replay, not tick-level execution.
                     </div>
+                    {displayedCostCalibration ? (
+                      <div className="rounded-md border border-[var(--line)] bg-[rgba(121,184,255,0.04)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
+                        Live calibration: {displayedCostCalibration.buySampleSize} buys / {displayedCostCalibration.sellSampleSize} sells, p90 adverse{" "}
+                        {formatBps(displayedCostCalibration.p90AdverseSlippageBps)}, max observed {formatBps(displayedCostCalibration.maxAdverseSlippageBps)}.
+                      </div>
+                    ) : null}
                     <div className="space-y-1.5">
                       {displayedAssumptions.notes.map((note) => (
                         <div key={note} className="text-[11px] leading-4 text-[var(--muted)]">
