@@ -9,6 +9,11 @@ type ReservedQuoteSource = {
   realizedPnlUsd?: number | null;
 };
 
+type ReservedBaseSource = {
+  baseSymbol: string;
+  availableBaseAmount?: number | null;
+};
+
 export function calculateReservedQuoteUsd(
   sources: ReservedQuoteSource[],
 ): number {
@@ -39,6 +44,21 @@ export function calculateAvailableBudgetUsd({
     0,
     walletUsdc - reservedQuoteUsd + currentBotNonQuoteEquityUsd,
   );
+}
+
+export function calculateReservedBaseBySymbol(
+  sources: ReservedBaseSource[],
+): Record<string, number> {
+  return sources.reduce<Record<string, number>>((reservedBySymbol, source) => {
+    const symbol = source.baseSymbol.toUpperCase();
+    const amount = Math.max(0, source.availableBaseAmount ?? 0);
+    if (amount <= 0) {
+      return reservedBySymbol;
+    }
+
+    reservedBySymbol[symbol] = (reservedBySymbol[symbol] ?? 0) + amount;
+    return reservedBySymbol;
+  }, {});
 }
 
 export async function getReservedQuoteUsd(
@@ -72,6 +92,37 @@ export async function getReservedQuoteUsd(
         availableQuoteAmount:
           latestState?.availableQuoteAmount.toNumber() ?? null,
         realizedPnlUsd: latestState?.realizedPnlUsd.toNumber() ?? null,
+      };
+    }),
+  );
+}
+
+export async function getReservedBaseBySymbol(
+  excludeBotId?: string,
+): Promise<Record<string, number>> {
+  const bots = await prisma.bot.findMany({
+    where: {
+      mode: BotMode.Live as never,
+      archivedAt: null,
+      status: { notIn: ["stopped"] },
+      ...(excludeBotId ? { id: { not: excludeBotId } } : {}),
+    },
+    select: {
+      id: true,
+      baseSymbol: true,
+    },
+  });
+  const latestStateByBotId = await findLatestBotStateSnapshots(
+    bots.map((bot) => bot.id),
+  );
+
+  return calculateReservedBaseBySymbol(
+    bots.map((bot) => {
+      const latestState = latestStateByBotId.get(bot.id);
+      return {
+        baseSymbol: bot.baseSymbol,
+        availableBaseAmount:
+          latestState?.availableBaseAmount.toNumber() ?? null,
       };
     }),
   );

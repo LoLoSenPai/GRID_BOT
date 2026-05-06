@@ -979,17 +979,8 @@ describe("BotEngineService", () => {
 
     await engine.runBot(aggregate.bot.id);
 
-    expect(tradeRepository.finalizeExecution).toHaveBeenCalledWith(
-      "exec-row-1",
-      expect.objectContaining({
-        status: ExecutionStatus.Failed,
-        outputAmount: 0,
-      }),
-      expect.objectContaining({
-        message: expect.stringContaining("429"),
-      }),
-    );
-    expect(tradeRepository.markOrderStatus).toHaveBeenCalledWith("order-1", "failed", expect.stringContaining("429"));
+    expect(tradeRepository.finalizeExecution).not.toHaveBeenCalled();
+    expect(tradeRepository.markOrderStatus).not.toHaveBeenCalledWith("order-1", "failed", expect.any(String));
     expect(botRepository.updateBotStatus).not.toHaveBeenCalledWith(aggregate.bot.id, BotStatus.Error);
     expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({

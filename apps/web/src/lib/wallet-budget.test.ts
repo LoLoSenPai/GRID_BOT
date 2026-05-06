@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   calculateAvailableBudgetUsd,
+  calculateReservedBaseBySymbol,
   calculateReservedQuoteUsd,
 } from "./wallet-budget";
 
@@ -73,5 +74,19 @@ describe("wallet budget allocation", () => {
         currentBotNonQuoteEquityUsd: 80,
       }),
     ).toBe(200);
+  });
+
+  it("summarizes bot-owned base separately from wallet free balances", () => {
+    expect(
+      calculateReservedBaseBySymbol([
+        { baseSymbol: "SOL", availableBaseAmount: 0.3457 },
+        { baseSymbol: "sol", availableBaseAmount: 0.12 },
+        { baseSymbol: "BTC", availableBaseAmount: 0.0001 },
+        { baseSymbol: "SOL", availableBaseAmount: 0 },
+      ]),
+    ).toEqual({
+      SOL: 0.4657,
+      BTC: 0.0001,
+    });
   });
 });

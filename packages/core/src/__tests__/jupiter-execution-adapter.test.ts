@@ -164,4 +164,54 @@ describe("JupiterExecutionAdapter", () => {
       requestId: "prepared-order"
     }));
   });
+
+  it("does not subtract a fixed native SOL reserve from sell amount", async () => {
+    loadExecutionWalletMock.mockReturnValue({
+      keypair: {
+        publicKey: {
+          toBase58: () => "wallet-public-key"
+        }
+      }
+    });
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          inputMint: "So11111111111111111111111111111111111111112",
+          outputMint: "USDC",
+          inAmount: "345700000",
+          outAmount: "30000000",
+          transaction: "prepared-transaction",
+          requestId: "prepared-sell",
+          signatureFeeLamports: 5000,
+          prioritizationFeeLamports: 20000,
+          rentFeeLamports: 0
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }
+      )
+    ) as typeof fetch;
+
+    const adapter = new JupiterExecutionAdapter();
+    const estimate = await adapter.prepareExecution({
+      botId: "bot-1",
+      inputMint: "So11111111111111111111111111111111111111112",
+      outputMint: "USDC",
+      amount: 0.3457,
+      tradeSide: TradeSide.Sell,
+      inputDecimals: 9,
+      outputDecimals: 6,
+      slippageBps: 50,
+      clientOrderId: "client-1",
+      referencePrice: 87
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("amount=345700000"),
+      expect.any(Object)
+    );
+    expect(estimate.inputAmount).toBe(0.3457);
+    expect(estimate.expectedOutputAmount).toBe(30);
+  });
 });

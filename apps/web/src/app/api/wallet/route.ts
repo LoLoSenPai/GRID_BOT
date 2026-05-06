@@ -6,6 +6,7 @@ import { readSession } from "@/lib/auth";
 import {
   calculateAvailableBudgetUsd,
   getAllocatedBudgetUsd,
+  getReservedBaseBySymbol,
   getReservedQuoteUsd,
 } from "@/lib/wallet-budget";
 
@@ -25,16 +26,21 @@ export async function GET() {
 
   try {
     const wallet = WalletService.fromEnv();
-    const [balances, reservedQuote, allocatedBudget] = await Promise.all([
+    const [balances, reservedQuote, allocatedBudget, reservedBaseBySymbol] = await Promise.all([
       wallet.getBalances(),
       getReservedQuoteUsd(),
       getAllocatedBudgetUsd(),
+      getReservedBaseBySymbol(),
     ]);
+    const reservedSol = reservedBaseBySymbol.SOL ?? 0;
+    const freeSol = Math.max(0, balances.sol - reservedSol);
 
     return NextResponse.json(
       {
         pubkey: balances.pubkey,
         sol: balances.sol,
+        solReservedByBots: reservedSol,
+        solAvailable: freeSol,
         usdc: balances.usdc,
         wbtc: balances.wbtc,
         allocatedUsd: allocatedBudget,

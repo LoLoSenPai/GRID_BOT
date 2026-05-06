@@ -8,6 +8,8 @@ import { cn, formatNumber } from "@/lib/utils";
 type WalletData = {
     pubkey: string;
     sol: number;
+    solReservedByBots?: number;
+    solAvailable?: number;
     usdc: number;
     wbtc: number;
     allocatedUsd: number;
@@ -94,6 +96,9 @@ export function WalletBalancePanel({ deskMode }: { deskMode: BotMode }) {
     }
 
     const truncatedPubkey = `${data.pubkey.slice(0, 4)}...${data.pubkey.slice(-4)}`;
+    const hasSolBreakdown =
+        data.solReservedByBots != null || data.solAvailable != null;
+    const solAvailable = data.solAvailable ?? data.sol;
 
     return (
         <div className="border border-[var(--line)] bg-[var(--panel-soft)] px-3 py-3">
@@ -114,7 +119,18 @@ export function WalletBalancePanel({ deskMode }: { deskMode: BotMode }) {
             </div>
 
             <div className="mt-2.5 space-y-1">
-                <BalanceRow label="SOL" value={formatNumber(data.sol, 4)} />
+                <BalanceRow label={hasSolBreakdown ? "SOL total" : "SOL"} value={formatNumber(data.sol, 4)} />
+                {hasSolBreakdown ? (
+                    <>
+                        <BalanceRow label="SOL in bots" value={formatNumber(data.solReservedByBots ?? 0, 4)} muted />
+                        <BalanceRow
+                            label="SOL free"
+                            value={formatNumber(solAvailable, 4)}
+                            accent={solAvailable >= 0.02}
+                            danger={solAvailable < 0.02}
+                        />
+                    </>
+                ) : null}
                 <BalanceRow label="USDC" value={formatNumber(data.usdc, 2)} accent />
                 <BalanceRow label="WBTC" value={formatNumber(data.wbtc, 6)} />
             </div>
@@ -139,12 +155,14 @@ function BalanceRow({
     label,
     value,
     accent,
-    muted
+    muted,
+    danger
 }: {
     label: string;
     value: string;
     accent?: boolean;
     muted?: boolean;
+    danger?: boolean;
 }) {
     return (
         <div className="flex items-center justify-between">
@@ -152,7 +170,7 @@ function BalanceRow({
             <span
                 className={cn(
                     "font-mono text-[11px]",
-                    accent ? "text-white" : muted ? "text-[var(--muted)]" : "text-white/80"
+                    danger ? "text-[var(--red)]" : accent ? "text-white" : muted ? "text-[var(--muted)]" : "text-white/80"
                 )}
             >
                 {value}

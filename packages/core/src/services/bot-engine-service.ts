@@ -38,12 +38,14 @@ import { round } from "../utils/math";
 
 const HEARTBEAT_UPDATE_INTERVAL_MS = 2_000;
 const QUOTE_GUARD_LOG_INTERVAL_MS = 60_000;
+const EXECUTION_RETRY_LOG_INTERVAL_MS = 60_000;
 
 export class BotEngineService {
   private readonly passivePriceSnapshotWriteAt = new Map<string, number>();
   private readonly lastObservedPriceByBotId = new Map<string, number>();
   private readonly lastHeartbeatWriteAt = new Map<string, number>();
   private readonly quoteGuardLogWriteAt = new Map<string, number>();
+  private readonly executionRetryLogWriteAt = new Map<string, number>();
   private readonly gridDecisionService = new GridDecisionService();
 
   constructor(
@@ -460,27 +462,12 @@ export class BotEngineService {
       }
 
       const message = error instanceof Error ? error.message : "Retryable execution error";
-      await this.tradeRepository.finalizeExecution(
-        executionId,
-        {
-          provider: aggregate.bot.mode === "paper" ? ExecutionProvider.Paper : aggregate.bot.executionProvider,
-          status: ExecutionStatus.Failed,
-          executionId: executionParams.clientOrderId,
-          txId: null,
-          inputAmount: executionParams.amount,
-          outputAmount: 0,
-          effectivePrice: 0,
-          feeAmount: 0,
-          rawReport: { error: message }
-        },
-        { message }
-      );
-      await this.tradeRepository.markOrderStatus(orderId, OrderStatus.Failed, message);
-      await this.logRepository.writeLog({
+      void executionId;
+      void orderId;
+      await this.maybeWriteExecutionRetryLog({
         botId: aggregate.bot.id,
-        level: LogLevel.Warn,
-        category: "execution",
-        message: `Execution retry deferred: ${message}`,
+        now,
+        message,
         metadata: {
           side: signal.side,
           levelIndex: signal.levelIndex,
@@ -516,6 +503,27 @@ export class BotEngineService {
       message.includes("econnreset") ||
       message.includes("insufficient funds")
     );
+  }
+
+  private async maybeWriteExecutionRetryLog(input: {
+    botId: string;
+    now: Date;
+    message: string;
+    metadata?: Record<string, unknown>;
+  }) {
+    const lastWriteAt = this.executionRetryLogWriteAt.get(input.botId);
+    if (lastWriteAt && input.now.getTime() - lastWriteAt < EXECUTION_RETRY_LOG_INTERVAL_MS) {
+      return;
+    }
+
+    await this.logRepository.writeLog({
+      botId: input.botId,
+      level: LogLevel.Warn,
+      category: "execution",
+      message: `Execution retry deferred: ${input.message}`,
+      metadata: input.metadata
+    });
+    this.executionRetryLogWriteAt.set(input.botId, input.now.getTime());
   }
 
   private async validateExecutionQuote(
