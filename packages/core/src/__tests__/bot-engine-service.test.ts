@@ -150,12 +150,14 @@ function createEngine({
   marketPrice,
   executionReport,
   executionEstimate,
+  executionError,
   liveTradingEnabled = false
 }: {
   aggregate: BotAggregate;
   marketPrice: MarketPrice;
   executionReport?: ExecutionReport;
   executionEstimate?: ExecutionEstimate;
+  executionError?: Error;
   liveTradingEnabled?: boolean;
 }) {
   const botRepository = createBotRepository(aggregate);
@@ -199,7 +201,12 @@ function createEngine({
     estimateExecution: vi.fn(async () => adapterEstimate),
     prepareExecution: vi.fn(async () => adapterEstimate),
     executeSwap: vi.fn(async () => adapterReport),
-    executePreparedSwap: vi.fn(async () => adapterReport),
+    executePreparedSwap: vi.fn(async () => {
+      if (executionError) {
+        throw executionError;
+      }
+      return adapterReport;
+    }),
     getExecutionReport: vi.fn()
   };
   const executionService = new ExecutionService(
@@ -887,6 +894,122 @@ describe("BotEngineService", () => {
     expect(executionAdapter.executePreparedSwap).toHaveBeenCalledWith(expect.any(Object), preparedEstimate);
     expect(executionAdapter.executeSwap).not.toHaveBeenCalled();
     expect(tradeRepository.createOrder).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a live sell retryable when Jupiter execution is temporarily rate limited", async () => {
+    const openedAt = new Date("2026-05-06T08:00:00.000Z");
+    const aggregate = createAggregate({
+      bot: {
+        mode: BotMode.Live,
+        executionProvider: ExecutionProvider.Jupiter,
+      },
+      config: {
+        totalBudgetUsd: 150,
+        maxDeployableUsd: 150,
+        reserveQuoteAmount: 0,
+        lowPrice: 86,
+        highPrice: 87,
+        levelCount: 6,
+        gridType: GridType.Arithmetic,
+        minOrderQuoteAmount: 10,
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 86.8,
+        availableQuoteAmount: 120,
+        availableBaseAmount: 0.3457,
+        deployedQuoteAmount: 30,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {
+            "4": {
+              buyLevelIndex: 4,
+              sellLevelIndex: 5,
+              lotId: "lot-1",
+              openedAt: openedAt.toISOString(),
+            },
+          },
+          recenterHistory: [],
+          recentExecutions: [],
+        },
+      },
+      openLots: [
+        {
+          id: "lot-1",
+          botId: "bot-1",
+          originalBaseAmount: 0.3457,
+          remainingBaseAmount: 0.3457,
+          entryPrice: 86.8,
+          costQuote: 30,
+          openedByExecutionId: "exec-buy-1",
+          closedByExecutionId: null,
+          openedAt,
+          closedAt: null,
+        },
+      ],
+    });
+    const preparedEstimate: ExecutionEstimate = {
+      provider: ExecutionProvider.Jupiter,
+      inputMint: "SOL",
+      outputMint: "USDC",
+      inputAmount: 0.3457,
+      expectedOutputAmount: 30.1,
+      estimatedFeeAmount: 0,
+      priceImpactPct: 0,
+      expectedPrice: 87.05,
+      requestId: "prepared-sell",
+    };
+
+    const { engine, botRepository, tradeRepository, logRepository, alert } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 88.2,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol",
+      },
+      executionEstimate: preparedEstimate,
+      executionError: new Error('Jupiter request failed with status 429: {"message":"Too many requests"}'),
+      liveTradingEnabled: true,
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.finalizeExecution).toHaveBeenCalledWith(
+      "exec-row-1",
+      expect.objectContaining({
+        status: ExecutionStatus.Failed,
+        outputAmount: 0,
+      }),
+      expect.objectContaining({
+        message: expect.stringContaining("429"),
+      }),
+    );
+    expect(tradeRepository.markOrderStatus).toHaveBeenCalledWith("order-1", "failed", expect.stringContaining("429"));
+    expect(botRepository.updateBotStatus).not.toHaveBeenCalledWith(aggregate.bot.id, BotStatus.Error);
+    expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: BotStatus.Running,
+        metadata: expect.objectContaining({
+          pendingSignal: expect.objectContaining({
+            side: TradeSide.Sell,
+            levelIndex: 5,
+          }),
+        }),
+      }),
+    );
+    expect(logRepository.writeLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: LogLevel.Warn,
+        category: "execution",
+        message: expect.stringContaining("Execution retry deferred"),
+      }),
+    );
+    expect(alert.createAlert).not.toHaveBeenCalled();
   });
 
   it("executes an actionable crossed sell immediately even when confirmation is enabled", async () => {

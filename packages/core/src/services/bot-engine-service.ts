@@ -60,17 +60,18 @@ export class BotEngineService {
 
   async runCycle(): Promise<void> {
     const bots = await this.botRepository.listRunnableBots();
-    await Promise.all(bots.map((aggregate) => this.runBot(aggregate.bot.id)));
+    for (const aggregate of bots) {
+      await this.runBot(aggregate.bot.id);
+    }
   }
 
   async runBotsForSymbol(symbol: string): Promise<void> {
     const normalizedSymbol = symbol.toUpperCase();
     const bots = await this.botRepository.listRunnableBots();
-    await Promise.all(
-      bots
-        .filter((aggregate) => aggregate.bot.baseSymbol.toUpperCase() === normalizedSymbol)
-        .map((aggregate) => this.runBot(aggregate.bot.id))
-    );
+    const matchingBots = bots.filter((aggregate) => aggregate.bot.baseSymbol.toUpperCase() === normalizedSymbol);
+    for (const aggregate of matchingBots) {
+      await this.runBot(aggregate.bot.id);
+    }
   }
 
   async runBot(botId: string, options?: { skipLock?: boolean }): Promise<void> {
@@ -321,7 +322,21 @@ export class BotEngineService {
       completedAt: null
     });
 
-    const report = await this.executionService.executePreparedSwap(aggregate.bot, executionParams, quoteGuard.preparedExecution);
+    const report = await this.executePreparedSwapWithRetryState(
+      aggregate,
+      signal,
+      marketPrice,
+      now,
+      levels,
+      crossedSignals,
+      execution.id,
+      order.id,
+      executionParams,
+      quoteGuard.preparedExecution
+    );
+    if (!report) {
+      return true;
+    }
 
     await this.tradeRepository.finalizeExecution(execution.id, report, null);
     await this.tradeRepository.markOrderStatus(
@@ -423,6 +438,84 @@ export class BotEngineService {
       clientOrderId: orderIntent.orderKey,
       referencePrice: orderIntent.targetPrice
     };
+  }
+
+  private async executePreparedSwapWithRetryState(
+    aggregate: BotAggregate,
+    signal: TriggerSignal,
+    marketPrice: MarketPrice,
+    now: Date,
+    levels: Array<{ index: number; price: number }>,
+    crossedSignals: TriggerSignal[],
+    executionId: string,
+    orderId: string,
+    executionParams: ExecuteSwapParams,
+    preparedExecution?: ExecutionEstimate
+  ) {
+    try {
+      return await this.executionService.executePreparedSwap(aggregate.bot, executionParams, preparedExecution);
+    } catch (error) {
+      if (!this.isRetryableExecutionError(error)) {
+        throw error;
+      }
+
+      const message = error instanceof Error ? error.message : "Retryable execution error";
+      await this.tradeRepository.finalizeExecution(
+        executionId,
+        {
+          provider: aggregate.bot.mode === "paper" ? ExecutionProvider.Paper : aggregate.bot.executionProvider,
+          status: ExecutionStatus.Failed,
+          executionId: executionParams.clientOrderId,
+          txId: null,
+          inputAmount: executionParams.amount,
+          outputAmount: 0,
+          effectivePrice: 0,
+          feeAmount: 0,
+          rawReport: { error: message }
+        },
+        { message }
+      );
+      await this.tradeRepository.markOrderStatus(orderId, OrderStatus.Failed, message);
+      await this.logRepository.writeLog({
+        botId: aggregate.bot.id,
+        level: LogLevel.Warn,
+        category: "execution",
+        message: `Execution retry deferred: ${message}`,
+        metadata: {
+          side: signal.side,
+          levelIndex: signal.levelIndex,
+          targetPrice: signal.levelPrice,
+          observedPrice: signal.observedPrice,
+          checkedAt: now.toISOString()
+        }
+      });
+      await this.persistPassiveState(
+        aggregate,
+        marketPrice.price,
+        now,
+        {
+          pendingSignal: this.toPendingSignal(aggregate, signal, marketPrice.price)
+        },
+        aggregate.bot.status === BotStatus.Error ? BotStatus.Running : aggregate.bot.status,
+        undefined,
+        levels,
+        crossedSignals
+      );
+      return null;
+    }
+  }
+
+  private isRetryableExecutionError(error: unknown) {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    return (
+      message.includes("429") ||
+      message.includes("too many requests") ||
+      message.includes("rate limit") ||
+      message.includes("timeout") ||
+      message.includes("fetch failed") ||
+      message.includes("econnreset") ||
+      message.includes("insufficient funds")
+    );
   }
 
   private async validateExecutionQuote(
