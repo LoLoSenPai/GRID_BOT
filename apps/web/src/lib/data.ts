@@ -153,11 +153,21 @@ async function getArchivedClosedPnl(mode: BotMode) {
     },
     select: {
       id: true,
+      position: {
+        select: {
+          realizedPnlUsd: true,
+          unrealizedPnlUsd: true,
+        },
+      },
     },
   });
   const latestStateByBotId = await findLatestBotStateSnapshots(bots.map((bot) => bot.id));
 
   return bots.reduce((sum, bot) => {
+    if (bot.position) {
+      return sum + numberFromDatabase(bot.position.realizedPnlUsd) + numberFromDatabase(bot.position.unrealizedPnlUsd);
+    }
+
     const latest = latestStateByBotId.get(bot.id);
     return sum + numberFromDatabase(latest?.realizedPnlUsd) + numberFromDatabase(latest?.unrealizedPnlUsd);
   }, 0);

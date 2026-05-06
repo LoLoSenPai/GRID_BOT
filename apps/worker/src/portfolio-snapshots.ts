@@ -82,14 +82,18 @@ async function backfillPortfolioSnapshotsForMode(mode: BotMode, now: Date) {
         END), 0) AS capital_deployed_usd,
         COALESCE(SUM(CASE
           WHEN latest."id" IS NULL THEN 0
-          WHEN bot."archived_at" IS NOT NULL AND bot."archived_at" <= series.bucket THEN latest."realizedPnlUsd" + latest."unrealizedPnlUsd"
+          WHEN bot."archived_at" IS NOT NULL AND bot."archived_at" <= series.bucket THEN COALESCE(position."realizedPnlUsd" + position."unrealizedPnlUsd", latest."realizedPnlUsd" + latest."unrealizedPnlUsd")
           ELSE latest."realizedPnlUsd"
         END), 0) AS realized_pnl_usd,
         COALESCE(SUM(CASE
           WHEN bot."archived_at" IS NULL OR bot."archived_at" > series.bucket THEN latest."unrealizedPnlUsd"
           ELSE 0
         END), 0) AS unrealized_pnl_usd,
-        COALESCE(SUM(latest."realizedPnlUsd" + latest."unrealizedPnlUsd"), 0) AS total_pnl_usd,
+        COALESCE(SUM(CASE
+          WHEN latest."id" IS NULL THEN 0
+          WHEN bot."archived_at" IS NOT NULL AND bot."archived_at" <= series.bucket THEN COALESCE(position."realizedPnlUsd" + position."unrealizedPnlUsd", latest."realizedPnlUsd" + latest."unrealizedPnlUsd")
+          ELSE latest."realizedPnlUsd" + latest."unrealizedPnlUsd"
+        END), 0) AS total_pnl_usd,
         COALESCE(SUM(CASE
           WHEN bot."archived_at" IS NULL OR bot."archived_at" > series.bucket THEN latest."totalEquityUsd"
           ELSE 0
@@ -98,6 +102,7 @@ async function backfillPortfolioSnapshotsForMode(mode: BotMode, now: Date) {
       INNER JOIN "bots" bot ON bot."mode" = CAST(${mode} AS "BotMode")
         AND bot."createdAt" <= series.bucket
       LEFT JOIN "bot_configs" config ON config."botId" = bot."id"
+      LEFT JOIN "positions" position ON position."botId" = bot."id"
       LEFT JOIN LATERAL (
         SELECT
           state."id",
@@ -159,6 +164,12 @@ async function createPortfolioSnapshot(mode: BotMode, now: Date) {
       id: true,
       status: true,
       archivedAt: true,
+      position: {
+        select: {
+          realizedPnlUsd: true,
+          unrealizedPnlUsd: true,
+        },
+      },
       config: {
         select: {
           maxDeployableUsd: true,
@@ -180,10 +191,13 @@ async function createPortfolioSnapshot(mode: BotMode, now: Date) {
     (accumulator, bot) => {
       const latest = latestStateByBotId.get(bot.id);
       const budget = toNumber(bot.config?.maxDeployableUsd);
-      const realizedPnl = toNumber(latest?.realizedPnlUsd);
-      const unrealizedPnl = toNumber(latest?.unrealizedPnlUsd);
-      const totalPnl = realizedPnl + unrealizedPnl;
       const isArchived = Boolean(bot.archivedAt && bot.archivedAt <= now);
+      const archivedPositionPnl = bot.position
+        ? toNumber(bot.position.realizedPnlUsd) + toNumber(bot.position.unrealizedPnlUsd)
+        : null;
+      const realizedPnl = isArchived && archivedPositionPnl != null ? archivedPositionPnl : toNumber(latest?.realizedPnlUsd);
+      const unrealizedPnl = isArchived && archivedPositionPnl != null ? 0 : toNumber(latest?.unrealizedPnlUsd);
+      const totalPnl = realizedPnl + unrealizedPnl;
 
       if (!isArchived) {
         accumulator.botCount += 1;
