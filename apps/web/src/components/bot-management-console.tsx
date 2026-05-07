@@ -1,7 +1,7 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { ArrowUpRight, FlaskConical, MoreHorizontal, Pause, PencilLine, Play, Plus, Square, Trash2 } from "lucide-react";
 import { BotMode, EntryMode, type StrategyMode } from "@grid-bot/core/enums";
 import { useRouter } from "next/navigation";
@@ -209,14 +209,6 @@ type FeedbackState =
 
 type PanelKind = "create" | "edit" | null;
 type PanelTab = "setup" | "paper" | "actions";
-type ActionMenuPosition = {
-  top: number;
-  left: number;
-};
-
-const ACTION_MENU_WIDTH = 236;
-const ACTION_MENU_HEIGHT = 296;
-const ACTION_MENU_MARGIN = 10;
 
 export function BotManagementConsole({
   bots,
@@ -252,7 +244,6 @@ export function BotManagementConsole({
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [drawerBotId, setDrawerBotId] = useState<string | null>(null);
   const [actionMenuBotId, setActionMenuBotId] = useState<string | null>(null);
-  const [actionMenuPosition, setActionMenuPosition] = useState<ActionMenuPosition | null>(null);
   const [archivePromptBotId, setArchivePromptBotId] = useState<string | null>(null);
   const [deskToasts, setDeskToasts] = useState<DeskToast[]>([]);
   const [botBoardCache, setBotBoardCache] = useState<Partial<Record<string, BotDetailViewData>>>(() => botBoards);
@@ -320,10 +311,6 @@ export function BotManagementConsole({
   const archivePromptBot = useMemo(
     () => runtimeBots.find((bot) => bot.id === archivePromptBotId) ?? null,
     [archivePromptBotId, runtimeBots]
-  );
-  const actionMenuBot = useMemo(
-    () => runtimeBots.find((bot) => bot.id === actionMenuBotId) ?? null,
-    [actionMenuBotId, runtimeBots]
   );
   const selectedBoard = selectedBot ? botBoardCache[selectedBot.id] ?? null : null;
   const drawerBot = useMemo(() => {
@@ -787,17 +774,10 @@ export function BotManagementConsole({
 
     function closeActionMenu() {
       setActionMenuBotId(null);
-      setActionMenuPosition(null);
     }
 
     window.addEventListener("click", closeActionMenu);
-    window.addEventListener("resize", closeActionMenu);
-    window.addEventListener("scroll", closeActionMenu, true);
-    return () => {
-      window.removeEventListener("click", closeActionMenu);
-      window.removeEventListener("resize", closeActionMenu);
-      window.removeEventListener("scroll", closeActionMenu, true);
-    };
+    return () => window.removeEventListener("click", closeActionMenu);
   }, [actionMenuBotId]);
 
   const paperBots = runtimeBots.filter((bot) => bot.mode === BotMode.Paper).length;
@@ -1151,15 +1131,13 @@ export function BotManagementConsole({
     void archiveBot(bot);
   }
 
-  function toggleActionMenu(bot: ManagedBot, button: HTMLButtonElement) {
+  function toggleActionMenu(bot: ManagedBot) {
     if (actionMenuBotId === bot.id) {
       setActionMenuBotId(null);
-      setActionMenuPosition(null);
       return;
     }
 
     setActionMenuBotId(bot.id);
-    setActionMenuPosition(getActionMenuPosition(button.getBoundingClientRect()));
   }
 
   async function archiveBot(bot: ManagedBot) {
@@ -1445,83 +1423,119 @@ export function BotManagementConsole({
                 <tbody>
                   {runtimeBots.map((bot) => {
                     const isSelected = selectedBotId === bot.id;
+                    const menuOpen = actionMenuBotId === bot.id;
                     const pnlValue = bot.metrics.pnl;
                     const roiPct = calculateBudgetRoiPct(pnlValue, bot.config.totalBudgetUsd);
                     return (
-                      <tr
-                        key={bot.id}
-                        onClick={() => { openEditPanel(bot.id); }}
-                        className={cn(
-                          "cursor-pointer border-b border-[var(--line)] transition",
-                          isSelected
-                            ? "bg-[var(--accent-soft)]"
-                            : "hover:bg-white/[0.02]"
-                        )}
-                      >
-                        <td className="px-4 py-3">
-                          <div className="font-medium text-white">{bot.name}</div>
-                          <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
-                            <span>{BOT_BEHAVIOR_PRESETS[inferBehaviorPresetId(bot.config)].label}</span>
-                            <span>{formatGoalLabel(bot.strategyMode)}</span>
-                            {bot.entryMode === EntryMode.SellOnly ? (
-                              <span className="rounded border border-[color:rgba(248,200,108,0.2)] px-1.5 py-0.5 text-[var(--amber)]">
-                                Sell only
-                              </span>
-                            ) : null}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-white">
-                          <div>{bot.pairLabel}</div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={cn(
-                            "rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.1em]",
-                            bot.mode === BotMode.Paper
-                              ? "border-[color:rgba(248,200,108,0.18)] text-[var(--amber)]"
-                              : "border-[color:rgba(68,211,156,0.18)] text-[var(--green)]"
-                          )}>
-                            {bot.mode}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-right font-mono text-[var(--muted)]">{formatCurrency(bot.config.totalBudgetUsd)}</td>
-                        <td className="px-4 py-3 text-right font-mono text-white">{formatCurrency(bot.metrics.equity)}</td>
-                        <td className={cn("px-4 py-3 text-right font-mono", pnlValue >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
-                          {pnlValue >= 0 ? "+" : ""}{formatCurrency(pnlValue)}
-                        </td>
-                        <td className={cn("px-4 py-3 text-right font-mono text-[11px]", roiPct >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
-                          {roiPct >= 0 ? "+" : ""}{formatNumber(roiPct, 2)}%
-                        </td>
-                        <td className="px-4 py-3 text-right font-mono text-white">
-                          <SpotPricePulse value={bot.currentPrice} />
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <div className="inline-flex items-center gap-2">
-                            <span className="font-mono text-[10px] text-[var(--muted)]">
-                              {formatNumber(bot.config.lowPrice, bot.config.lowPrice >= 1000 ? 0 : 2)}-{formatNumber(bot.config.highPrice, bot.config.highPrice >= 1000 ? 0 : 2)}
-                            </span>
-                            <div className="h-1.5 w-16 overflow-hidden rounded-full bg-white/[0.06]">
-                              <div className="h-full rounded-full bg-[linear-gradient(90deg,var(--green),var(--amber))]" style={{ width: `${Math.max(0, Math.min(100, bot.metrics.rangeProgress))}%` }} />
+                      <Fragment key={bot.id}>
+                        <tr
+                          onClick={() => { openEditPanel(bot.id); }}
+                          className={cn(
+                            "cursor-pointer border-b border-[var(--line)] transition",
+                            isSelected
+                              ? "bg-[var(--accent-soft)]"
+                              : "hover:bg-white/[0.02]"
+                          )}
+                        >
+                          <td className="px-4 py-3">
+                            <div className="font-medium text-white">{bot.name}</div>
+                            <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
+                              <span>{BOT_BEHAVIOR_PRESETS[inferBehaviorPresetId(bot.config)].label}</span>
+                              <span>{formatGoalLabel(bot.strategyMode)}</span>
+                              {bot.entryMode === EntryMode.SellOnly ? (
+                                <span className="rounded border border-[color:rgba(248,200,108,0.2)] px-1.5 py-0.5 text-[var(--amber)]">
+                                  Sell only
+                                </span>
+                              ) : null}
                             </div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <StatusBadge status={bot.status} />
-                        </td>
-                        <td className="relative px-4 py-3 text-right">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleActionMenu(bot, e.currentTarget);
-                            }}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/12 hover:bg-white/[0.05] hover:text-white"
-                            aria-label={`${bot.name} actions`}
-                            title={`${bot.name} actions`}
-                          >
-                            <MoreHorizontal className="h-4 w-4" />
-                          </button>
-                        </td>
-                      </tr>
+                          </td>
+                          <td className="px-4 py-3 text-white">
+                            <div>{bot.pairLabel}</div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={cn(
+                              "rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.1em]",
+                              bot.mode === BotMode.Paper
+                                ? "border-[color:rgba(248,200,108,0.18)] text-[var(--amber)]"
+                                : "border-[color:rgba(68,211,156,0.18)] text-[var(--green)]"
+                            )}>
+                              {bot.mode}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-[var(--muted)]">{formatCurrency(bot.config.totalBudgetUsd)}</td>
+                          <td className="px-4 py-3 text-right font-mono text-white">{formatCurrency(bot.metrics.equity)}</td>
+                          <td className={cn("px-4 py-3 text-right font-mono", pnlValue >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
+                            {pnlValue >= 0 ? "+" : ""}{formatCurrency(pnlValue)}
+                          </td>
+                          <td className={cn("px-4 py-3 text-right font-mono text-[11px]", roiPct >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
+                            {roiPct >= 0 ? "+" : ""}{formatNumber(roiPct, 2)}%
+                          </td>
+                          <td className="px-4 py-3 text-right font-mono text-white">
+                            <SpotPricePulse value={bot.currentPrice} />
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="inline-flex items-center gap-2">
+                              <span className="font-mono text-[10px] text-[var(--muted)]">
+                                {formatNumber(bot.config.lowPrice, bot.config.lowPrice >= 1000 ? 0 : 2)}-{formatNumber(bot.config.highPrice, bot.config.highPrice >= 1000 ? 0 : 2)}
+                              </span>
+                              <div className="h-1.5 w-16 overflow-hidden rounded-full bg-white/[0.06]">
+                                <div className="h-full rounded-full bg-[linear-gradient(90deg,var(--green),var(--amber))]" style={{ width: `${Math.max(0, Math.min(100, bot.metrics.rangeProgress))}%` }} />
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <StatusBadge status={bot.status} />
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleActionMenu(bot);
+                              }}
+                              className={cn(
+                                "inline-flex h-8 w-8 items-center justify-center rounded-md border bg-[rgba(255,255,255,0.015)] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/12 hover:bg-white/[0.05] hover:text-white",
+                                menuOpen ? "border-[var(--accent-line)] text-[var(--accent)]" : "border-[var(--line)]"
+                              )}
+                              aria-label={`${bot.name} actions`}
+                              title={`${bot.name} actions`}
+                            >
+                              <MoreHorizontal className="h-4 w-4" />
+                            </button>
+                          </td>
+                        </tr>
+                        {menuOpen ? (
+                          <tr className="border-b border-[var(--line)] bg-[var(--panel-soft)]/70">
+                            <td colSpan={11} className="px-4 py-3" onClick={(event) => event.stopPropagation()}>
+                              <BotRowActionMenu
+                                bot={bot}
+                                busyKey={busyKey}
+                                onDetails={() => {
+                                  setActionMenuBotId(null);
+                                  setSelectedBotId(bot.id);
+                                  setDrawerBotId(bot.id);
+                                }}
+                                onConfigure={() => {
+                                  setActionMenuBotId(null);
+                                  openEditPanel(bot.id);
+                                }}
+                                onStatusAction={(action) => {
+                                  setActionMenuBotId(null);
+                                  void handleStatusAction(bot.id, action);
+                                }}
+                                onEntryModeAction={(entryMode) => {
+                                  setActionMenuBotId(null);
+                                  void handleEntryModeAction(bot.id, entryMode);
+                                }}
+                                onArchive={() => {
+                                  setActionMenuBotId(null);
+                                  requestArchiveBot(bot);
+                                }}
+                              />
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
                     );
                   })}
                 </tbody>
@@ -1617,39 +1631,6 @@ export function BotManagementConsole({
           }}
         />
       ) : null}
-      {actionMenuBot && actionMenuPosition ? (
-        <BotRowActionMenu
-          bot={actionMenuBot}
-          busyKey={busyKey}
-          position={actionMenuPosition}
-          onDetails={() => {
-            setActionMenuBotId(null);
-            setActionMenuPosition(null);
-            setSelectedBotId(actionMenuBot.id);
-            setDrawerBotId(actionMenuBot.id);
-          }}
-          onConfigure={() => {
-            setActionMenuBotId(null);
-            setActionMenuPosition(null);
-            openEditPanel(actionMenuBot.id);
-          }}
-          onStatusAction={(action) => {
-            setActionMenuBotId(null);
-            setActionMenuPosition(null);
-            void handleStatusAction(actionMenuBot.id, action);
-          }}
-          onEntryModeAction={(entryMode) => {
-            setActionMenuBotId(null);
-            setActionMenuPosition(null);
-            void handleEntryModeAction(actionMenuBot.id, entryMode);
-          }}
-          onArchive={() => {
-            setActionMenuBotId(null);
-            setActionMenuPosition(null);
-            requestArchiveBot(actionMenuBot);
-          }}
-        />
-      ) : null}
       <BotTradingDrawer bot={drawerBot} open={Boolean(drawerBot)} onClose={() => setDrawerBotId(null)} />
     </section>
   );
@@ -1663,28 +1644,9 @@ function getBotPnl(bot: ManagedBot) {
   return bot.runtime.realizedPnlUsd + bot.runtime.unrealizedPnlUsd;
 }
 
-function getActionMenuPosition(rect: DOMRect): ActionMenuPosition {
-  const viewportWidth = window.innerWidth;
-  const viewportHeight = window.innerHeight;
-  const preferredLeft = rect.right - ACTION_MENU_WIDTH;
-  const left = Math.min(
-    Math.max(ACTION_MENU_MARGIN, preferredLeft),
-    Math.max(ACTION_MENU_MARGIN, viewportWidth - ACTION_MENU_WIDTH - ACTION_MENU_MARGIN)
-  );
-  const belowTop = rect.bottom + 8;
-  const aboveTop = rect.top - ACTION_MENU_HEIGHT - 8;
-  const top =
-    belowTop + ACTION_MENU_HEIGHT <= viewportHeight - ACTION_MENU_MARGIN
-      ? belowTop
-      : Math.max(ACTION_MENU_MARGIN, aboveTop);
-
-  return { top, left };
-}
-
 function BotRowActionMenu({
   bot,
   busyKey,
-  position,
   onDetails,
   onConfigure,
   onStatusAction,
@@ -1693,7 +1655,6 @@ function BotRowActionMenu({
 }: {
   bot: ManagedBot;
   busyKey: string | null;
-  position: ActionMenuPosition;
   onDetails: () => void;
   onConfigure: () => void;
   onStatusAction: (action: "pause" | "resume" | "stop") => void;
@@ -1708,37 +1669,26 @@ function BotRowActionMenu({
   return (
     <div
       onClick={(event) => event.stopPropagation()}
-      className="fixed z-50 overflow-hidden rounded-md border border-[var(--line)] bg-[var(--panel)] text-left shadow-[0_18px_50px_rgba(0,0,0,0.45)]"
-      style={{ top: position.top, left: position.left, width: ACTION_MENU_WIDTH }}
+      className="rounded-md border border-[var(--line)] bg-[var(--panel)] text-left shadow-[0_18px_50px_rgba(0,0,0,0.25)]"
     >
-      <div className="border-b border-[var(--line)] px-3 py-2">
-        <div className="truncate text-sm font-medium text-white">{bot.name}</div>
-        <div className="mt-0.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--muted)]">
-          <span>{bot.status.replaceAll("_", " ")}</span>
-          {isSellOnly ? <span className="text-[var(--amber)]">Sell only</span> : null}
-        </div>
-      </div>
-      <div className="grid grid-cols-2 border-b border-[var(--line)]">
+      <div className="grid grid-cols-2 gap-px bg-[var(--line)] sm:grid-cols-6">
         <MenuActionButton label="Details" caption="Tx / lots" onClick={onDetails} compact />
         <MenuActionButton label="Configure" caption="Edit bot" onClick={onConfigure} compact />
-      </div>
-      <div className="border-t border-[var(--line)]" />
-      <MenuActionButton
-        label={isRunning ? "Pause bot" : "Resume bot"}
-        caption={isRunning ? "Stop ticks" : "Start ticks"}
-        onClick={() => onStatusAction(isRunning ? "pause" : "resume")}
-        disabled={statusBusy}
-        compact
-      />
-      <MenuActionButton
-        label={isSellOnly ? "Resume buys" : "Sell only"}
-        caption={isSellOnly ? "Allow entries" : "No new buys"}
-        onClick={() => onEntryModeAction(isSellOnly ? EntryMode.Normal : EntryMode.SellOnly)}
-        disabled={modeBusy}
-        tone={isSellOnly ? "positive" : "amber"}
-        compact
-      />
-      <div className="grid grid-cols-2 border-t border-[var(--line)]">
+        <MenuActionButton
+          label={isRunning ? "Pause" : "Resume"}
+          caption={isRunning ? "Stop ticks" : "Start ticks"}
+          onClick={() => onStatusAction(isRunning ? "pause" : "resume")}
+          disabled={statusBusy}
+          compact
+        />
+        <MenuActionButton
+          label={isSellOnly ? "Resume buys" : "Sell only"}
+          caption={isSellOnly ? "Allow entries" : "No new buys"}
+          onClick={() => onEntryModeAction(isSellOnly ? EntryMode.Normal : EntryMode.SellOnly)}
+          disabled={modeBusy}
+          tone={isSellOnly ? "positive" : "amber"}
+          compact
+        />
         <MenuActionButton label="Stop" caption="Freeze" onClick={() => onStatusAction("stop")} disabled={statusBusy} tone="negative" compact />
         <MenuActionButton
           label="Archive"
@@ -1783,7 +1733,7 @@ function MenuActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "block w-full text-left transition hover:bg-white/[0.04] disabled:pointer-events-none disabled:opacity-45",
+        "block w-full bg-[var(--panel)] text-left transition hover:bg-[var(--panel-soft)] disabled:pointer-events-none disabled:opacity-45",
         compact ? "px-3 py-2" : "px-3 py-2.5"
       )}
     >
