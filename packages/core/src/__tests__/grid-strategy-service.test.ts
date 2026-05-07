@@ -583,6 +583,66 @@ describe("GridStrategyService", () => {
     expect(order).toBeNull();
   });
 
+  it("remaps open lots to the first profitable sell rail after a grid edit", () => {
+    const levels = service.calculateLevels(87.6, 90, 11, GridType.Arithmetic);
+    const cycles = service.remapOpenLotsToGridCycles(levels, [
+      {
+        id: "lot-88",
+        botId: "bot_1",
+        originalBaseAmount: 1,
+        remainingBaseAmount: 1,
+        entryPrice: 88,
+        costQuote: 88,
+        openedByExecutionId: "exec-88",
+        closedByExecutionId: null,
+        openedAt: new Date("2026-05-08T10:00:00.000Z"),
+        closedAt: null
+      }
+    ]);
+
+    expect(cycles).toEqual({
+      "1": {
+        buyLevelIndex: 1,
+        sellLevelIndex: 2,
+        lotId: "lot-88",
+        openedAt: "2026-05-08T10:00:00.000Z"
+      }
+    });
+    expect(levels[2]?.price).toBe(88.08);
+  });
+
+  it("blocks buys on occupied remapped levels even when the metadata key is not the rail index", () => {
+    const order = service.buildOrderIntent(
+      {
+        ...aggregate,
+        latestState: {
+          ...aggregate.latestState!,
+          metadata: {
+            ...aggregate.latestState!.metadata,
+            gridCycles: {
+              "lot:duplicate": {
+                buyLevelIndex: 2,
+                sellLevelIndex: 3,
+                lotId: "lot-duplicate",
+                openedAt: "2026-05-08T10:00:00.000Z"
+              }
+            }
+          }
+        }
+      },
+      {
+        levelIndex: 2,
+        side: TradeSide.Buy,
+        levelPrice: 120,
+        observedPrice: 119,
+        idempotencyKey: "signal-remapped-occupied",
+        triggeredAt: new Date()
+      }
+    );
+
+    expect(order).toBeNull();
+  });
+
   it("blocks new buys in sell only mode but keeps profitable sells available", () => {
     const sellOnlyAggregate: BotAggregate = {
       ...aggregate,

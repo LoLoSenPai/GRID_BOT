@@ -983,7 +983,8 @@ export class BotEngineService {
 
     const matchedLotIds = new Set(orderIntent.matchedLotIds ?? []);
     for (const [key, cycle] of Object.entries(nextCycles)) {
-      if (cycle.sellLevelIndex === signal.levelIndex || matchedLotIds.has(cycle.lotId)) {
+      const matchesSoldLot = matchedLotIds.size > 0 ? matchedLotIds.has(cycle.lotId) : cycle.sellLevelIndex === signal.levelIndex;
+      if (matchesSoldLot) {
         delete nextCycles[key];
       }
     }

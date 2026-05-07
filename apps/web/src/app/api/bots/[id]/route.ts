@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { getEnv } from "@grid-bot/common";
-import { BotMode, type BotStatus } from "@grid-bot/core/enums";
+import {
+  BotMode,
+  GridStrategyService,
+  type BotRuntimeMetadata,
+  type BotStatus,
+  type PositionLot,
+} from "@grid-bot/core";
 import { findLatestBotStateSnapshot, prisma } from "@grid-bot/db";
 
 import { readSession } from "@/lib/auth";
@@ -56,6 +62,20 @@ export async function PATCH(
 
     const previousBudgetUsd = bot.config.totalBudgetUsd.toNumber();
     const budgetDeltaUsd = roundUsd(parsed.totalBudgetUsd - previousBudgetUsd);
+    const gridChanged = hasGridChanged(
+      {
+        lowPrice: bot.config.lowPrice.toNumber(),
+        highPrice: bot.config.highPrice.toNumber(),
+        levelCount: bot.config.levelCount,
+        gridType: String(bot.config.gridType),
+      },
+      {
+        lowPrice: parsed.lowPrice,
+        highPrice: parsed.highPrice,
+        levelCount: parsed.levelCount,
+        gridType: parsed.gridType,
+      },
+    );
 
     if (bot.mode === BotMode.Live && budgetDeltaUsd < 0) {
       return NextResponse.json(
@@ -78,7 +98,23 @@ export async function PATCH(
     }
 
     const latestState =
-      budgetDeltaUsd > 0 ? await findLatestBotStateSnapshot(bot.id) : null;
+      budgetDeltaUsd > 0 || gridChanged
+        ? await findLatestBotStateSnapshot(bot.id)
+        : null;
+
+    if (gridChanged && !latestState) {
+      return NextResponse.json(
+        {
+          error:
+            "Missing runtime state for grid migration. Let the bot create a state snapshot before editing the grid.",
+        },
+        { status: 409 },
+      );
+    }
+
+    const migratedGridCycles = gridChanged
+      ? await buildMigratedGridCycles(id, parsed)
+      : null;
 
     await prisma.$transaction(async (tx) => {
       await tx.bot.update({
@@ -116,7 +152,7 @@ export async function PATCH(
         },
       });
 
-      if (budgetDeltaUsd > 0) {
+      if (budgetDeltaUsd > 0 || gridChanged) {
         const snapshotData = latestState
           ? cloneStateSnapshot(
               id,
@@ -134,13 +170,21 @@ export async function PATCH(
               currentPrice: bot.currentPrice ? Number(bot.currentPrice) : null,
             });
 
-        if (latestState) {
+        if (latestState && budgetDeltaUsd > 0) {
           snapshotData.availableQuoteAmount = roundUsd(
             Number(snapshotData.availableQuoteAmount) + budgetDeltaUsd,
           );
           snapshotData.totalEquityUsd = roundUsd(
             Number(snapshotData.totalEquityUsd) + budgetDeltaUsd,
           );
+          snapshotData.lastProcessedAt = new Date();
+        }
+
+        if (gridChanged && migratedGridCycles) {
+          snapshotData.metadata = buildMigratedRuntimeMetadata(
+            snapshotData.metadata,
+            migratedGridCycles,
+          ) as never;
           snapshotData.lastProcessedAt = new Date();
         }
 
@@ -160,6 +204,10 @@ export async function PATCH(
             previousBudgetUsd,
             nextBudgetUsd: parsed.totalBudgetUsd,
             budgetDeltaUsd,
+            gridChanged,
+            migratedOpenCycles: migratedGridCycles
+              ? Object.keys(migratedGridCycles).length
+              : undefined,
           },
         },
       });
@@ -188,6 +236,162 @@ function roundUsd(value: number) {
   }
 
   return Math.round(value * 100) / 100;
+}
+
+function hasGridChanged(
+  previous: {
+    lowPrice: number;
+    highPrice: number;
+    levelCount: number;
+    gridType: string;
+  },
+  next: {
+    lowPrice: number;
+    highPrice: number;
+    levelCount: number;
+    gridType: string;
+  },
+) {
+  return (
+    !sameNumber(previous.lowPrice, next.lowPrice) ||
+    !sameNumber(previous.highPrice, next.highPrice) ||
+    previous.levelCount !== next.levelCount ||
+    previous.gridType !== next.gridType
+  );
+}
+
+function sameNumber(left: number, right: number) {
+  return Math.abs(left - right) < 0.00000001;
+}
+
+async function buildMigratedGridCycles(
+  botId: string,
+  config: {
+    lowPrice: number;
+    highPrice: number;
+    levelCount: number;
+    gridType: Parameters<GridStrategyService["calculateLevels"]>[3];
+  },
+) {
+  const strategyService = new GridStrategyService();
+  const levels = strategyService.calculateLevels(
+    config.lowPrice,
+    config.highPrice,
+    config.levelCount,
+    config.gridType,
+  );
+  const openLots = await prisma.positionLot.findMany({
+    where: { botId, closedAt: null },
+    orderBy: { openedAt: "asc" },
+  });
+
+  return strategyService.remapOpenLotsToGridCycles(
+    levels,
+    openLots.map(mapPositionLot),
+  );
+}
+
+function mapPositionLot(lot: {
+  id: string;
+  botId: string;
+  originalBaseAmount: unknown;
+  remainingBaseAmount: unknown;
+  entryPrice: unknown;
+  costQuote: unknown;
+  openedByExecutionId: string;
+  closedByExecutionId: string | null;
+  openedAt: Date;
+  closedAt: Date | null;
+}): PositionLot {
+  return {
+    id: lot.id,
+    botId: lot.botId,
+    originalBaseAmount: decimalLikeToNumber(lot.originalBaseAmount),
+    remainingBaseAmount: decimalLikeToNumber(lot.remainingBaseAmount),
+    entryPrice: decimalLikeToNumber(lot.entryPrice),
+    costQuote: decimalLikeToNumber(lot.costQuote),
+    openedByExecutionId: lot.openedByExecutionId,
+    closedByExecutionId: lot.closedByExecutionId,
+    openedAt: lot.openedAt,
+    closedAt: lot.closedAt,
+  };
+}
+
+function buildMigratedRuntimeMetadata(
+  metadata: unknown,
+  gridCycles: NonNullable<BotRuntimeMetadata["gridCycles"]>,
+): BotRuntimeMetadata {
+  const current = normalizeRuntimeMetadata(metadata);
+
+  return {
+    ...current,
+    levelLocks: {},
+    pendingSignal: null,
+    gridCycles,
+  };
+}
+
+function normalizeRuntimeMetadata(metadata: unknown): BotRuntimeMetadata {
+  const record =
+    metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? (metadata as Partial<BotRuntimeMetadata>)
+      : {};
+
+  return {
+    levelLocks: isStringRecord(record.levelLocks) ? record.levelLocks : {},
+    pendingSignal: record.pendingSignal ?? null,
+    gridCycles: isObjectRecord(record.gridCycles) ? record.gridCycles : {},
+    recenterHistory: Array.isArray(record.recenterHistory)
+      ? record.recenterHistory.filter((value): value is string => typeof value === "string")
+      : [],
+    recentExecutions: Array.isArray(record.recentExecutions)
+      ? record.recentExecutions.filter((value): value is string => typeof value === "string")
+      : [],
+  };
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.values(value as Record<string, unknown>).every(
+      (entry) => typeof entry === "string",
+    )
+  );
+}
+
+function isObjectRecord<T extends object = object>(
+  value: unknown,
+): value is Record<string, T> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function decimalLikeToNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? numericValue : 0;
+  }
+
+  if (value && typeof value === "object") {
+    if ("toNumber" in value && typeof value.toNumber === "function") {
+      const numericValue = value.toNumber();
+      return typeof numericValue === "number" && Number.isFinite(numericValue)
+        ? numericValue
+        : 0;
+    }
+
+    if ("toString" in value && typeof value.toString === "function") {
+      const numericValue = Number(value.toString());
+      return Number.isFinite(numericValue) ? numericValue : 0;
+    }
+  }
+
+  return 0;
 }
 
 export async function DELETE(

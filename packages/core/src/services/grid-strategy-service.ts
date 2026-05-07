@@ -1,7 +1,9 @@
 import { EntryMode, OrderStatus, StrategyMode, TradeSide, type GridType } from "../domain/enums";
-import type { BotAggregate, GridLevel, OrderIntent, PositionLot, TriggerSignal } from "../domain/types";
+import type { BotAggregate, GridCycle, GridLevel, OrderIntent, PositionLot, TriggerSignal } from "../domain/types";
 import { round } from "../utils/math";
 import { priceMoveTouchesLevel } from "../utils/price-trigger";
+
+const PRICE_EPSILON = 0.00000001;
 
 export class GridStrategyService {
   calculateLevels(lowPrice: number, highPrice: number, levelCount: number, gridType: GridType): GridLevel[] {
@@ -45,6 +47,26 @@ export class GridStrategyService {
       }));
   }
 
+  remapOpenLotsToGridCycles(levels: GridLevel[], openLots: PositionLot[]): Record<string, GridCycle> {
+    const cycles: Record<string, GridCycle> = {};
+    const activeLots = openLots
+      .filter((lot) => this.isOpenLotSellable(lot))
+      .sort((left, right) => left.openedAt.getTime() - right.openedAt.getTime());
+
+    for (const lot of activeLots) {
+      const cycle = this.inferGridCycleForLot(levels, lot);
+      if (!cycle) {
+        continue;
+      }
+
+      const levelKey = String(cycle.buyLevelIndex);
+      const cycleKey = cycles[levelKey] ? `lot:${lot.id}` : levelKey;
+      cycles[cycleKey] = cycle;
+    }
+
+    return cycles;
+  }
+
   buildOrderIntent(bot: BotAggregate, signal: TriggerSignal): OrderIntent | null {
     const snapshot = bot.latestState;
     const gridCycles = snapshot?.metadata.gridCycles ?? {};
@@ -62,7 +84,7 @@ export class GridStrategyService {
         return null;
       }
 
-      if (gridCycles[String(signal.levelIndex)]) {
+      if (this.isBuyLevelOccupied(gridCycles, signal.levelIndex)) {
         return null;
       }
 
@@ -136,33 +158,28 @@ export class GridStrategyService {
     const candidates = bot.openLots
       .filter((lot) => this.isOpenLotSellable(lot))
       .filter((lot) => !trackedLotIds.has(lot.id))
-      .filter((lot) => this.inferSellLevelIndexForLot(levels, lot) === signalLevelIndex)
+      .filter((lot) => this.inferGridCycleForLot(levels, lot)?.sellLevelIndex === signalLevelIndex)
       .sort((left, right) => left.openedAt.getTime() - right.openedAt.getTime());
 
     return candidates[0] ?? null;
   }
 
-  private inferSellLevelIndexForLot(levels: GridLevel[], lot: PositionLot): number | null {
-    const fallbackBaseAmount = lot.originalBaseAmount > 0 ? lot.originalBaseAmount : lot.remainingBaseAmount;
-    const entryPrice = lot.entryPrice > 0 ? lot.entryPrice : fallbackBaseAmount > 0 ? lot.costQuote / fallbackBaseAmount : 0;
-    if (entryPrice <= 0) {
+  private inferGridCycleForLot(levels: GridLevel[], lot: PositionLot): GridCycle | null {
+    const costBasis = this.getLotCostBasis(lot);
+    if (costBasis <= 0 || levels.length < 2) {
       return null;
     }
 
-    let buyLevelIndex = -1;
+    const firstProfitableRail = levels.find((level) => level.price > costBasis + PRICE_EPSILON)?.index ?? null;
+    const sellLevelIndex = firstProfitableRail === null ? null : Math.max(1, firstProfitableRail);
+    const buyLevelIndex = sellLevelIndex === null ? Math.max(0, levels.length - 2) : Math.max(0, sellLevelIndex - 1);
 
-    for (const level of levels) {
-      if (level.price <= entryPrice + 0.00000001) {
-        buyLevelIndex = level.index;
-      }
-    }
-
-    if (buyLevelIndex < 0) {
-      buyLevelIndex = 0;
-    }
-
-    const sellLevelIndex = buyLevelIndex + 1;
-    return sellLevelIndex < levels.length ? sellLevelIndex : null;
+    return {
+      buyLevelIndex,
+      sellLevelIndex,
+      lotId: lot.id,
+      openedAt: lot.openedAt.toISOString()
+    };
   }
 
   private buildSellPlanFromLot(
@@ -199,6 +216,19 @@ export class GridStrategyService {
 
   private isOpenLotSellable(lot: PositionLot): boolean {
     return lot.remainingBaseAmount > 0 && lot.costQuote > 0 && !lot.closedAt;
+  }
+
+  private getLotCostBasis(lot: PositionLot): number {
+    if (lot.remainingBaseAmount > 0 && lot.costQuote > 0) {
+      return lot.costQuote / lot.remainingBaseAmount;
+    }
+
+    const fallbackBaseAmount = lot.originalBaseAmount > 0 ? lot.originalBaseAmount : lot.remainingBaseAmount;
+    return lot.entryPrice > 0 ? lot.entryPrice : fallbackBaseAmount > 0 ? lot.costQuote / fallbackBaseAmount : 0;
+  }
+
+  private isBuyLevelOccupied(gridCycles: Record<string, GridCycle>, levelIndex: number): boolean {
+    return Boolean(gridCycles[String(levelIndex)]) || Object.values(gridCycles).some((cycle) => cycle.buyLevelIndex === levelIndex);
   }
 
   private getTargetQuoteAmount(strategy: StrategyMode, remainingCostQuote: number, currentNotional: number): number {
