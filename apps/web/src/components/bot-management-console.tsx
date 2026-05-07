@@ -1,7 +1,8 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { Fragment, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { createPortal } from "react-dom";
 import { ArrowUpRight, FlaskConical, MoreHorizontal, Pause, PencilLine, Play, Plus, Square, Trash2 } from "lucide-react";
 import { BotMode, EntryMode, type StrategyMode } from "@grid-bot/core/enums";
 import { useRouter } from "next/navigation";
@@ -209,6 +210,14 @@ type FeedbackState =
 
 type PanelKind = "create" | "edit" | null;
 type PanelTab = "setup" | "paper" | "actions";
+type ActionMenuPosition = {
+  left: number;
+  top: number;
+};
+
+const ACTION_MENU_WIDTH = 260;
+const ACTION_MENU_ESTIMATED_HEIGHT = 292;
+const ACTION_MENU_MARGIN = 10;
 
 export function BotManagementConsole({
   bots,
@@ -259,6 +268,7 @@ export function BotManagementConsole({
       return accumulator;
     }, {})
   );
+  const actionButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const botMetaRef = useRef<Record<string, { name: string; baseSymbol: string }>>(
     bots.reduce<Record<string, { name: string; baseSymbol: string }>>((accumulator, bot) => {
       accumulator[bot.id] = {
@@ -796,6 +806,10 @@ export function BotManagementConsole({
   const createSubmitDisabled = isPending || busyKey === "create" || !createDraftAnalysis.canSubmit;
   const editSubmitDisabled =
     !selectedBot || !editDraft || !editDraftAnalysis?.canSubmit || !editDraftChanges.length || isPending || busyKey === `update-${selectedBot?.id}`;
+  const actionMenuBot = useMemo(
+    () => runtimeBots.find((bot) => bot.id === actionMenuBotId) ?? null,
+    [actionMenuBotId, runtimeBots],
+  );
 
   async function runMutation(input: {
     key: string;
@@ -1427,16 +1441,16 @@ export function BotManagementConsole({
                     const pnlValue = bot.metrics.pnl;
                     const roiPct = calculateBudgetRoiPct(pnlValue, bot.config.totalBudgetUsd);
                     return (
-                      <Fragment key={bot.id}>
-                        <tr
-                          onClick={() => { openEditPanel(bot.id); }}
-                          className={cn(
-                            "cursor-pointer border-b border-[var(--line)] transition",
-                            isSelected
-                              ? "bg-[var(--accent-soft)]"
-                              : "hover:bg-white/[0.02]"
-                          )}
-                        >
+                      <tr
+                        key={bot.id}
+                        onClick={() => { openEditPanel(bot.id); }}
+                        className={cn(
+                          "cursor-pointer border-b border-[var(--line)] transition",
+                          isSelected
+                            ? "bg-[var(--accent-soft)]"
+                            : "hover:bg-white/[0.02]"
+                        )}
+                      >
                           <td className="px-4 py-3">
                             <div className="font-medium text-white">{bot.name}</div>
                             <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
@@ -1488,6 +1502,9 @@ export function BotManagementConsole({
                           </td>
                           <td className="px-4 py-3 text-right">
                             <button
+                              ref={(element) => {
+                                actionButtonRefs.current[bot.id] = element;
+                              }}
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1503,39 +1520,7 @@ export function BotManagementConsole({
                               <MoreHorizontal className="h-4 w-4" />
                             </button>
                           </td>
-                        </tr>
-                        {menuOpen ? (
-                          <tr className="border-b border-[var(--line)] bg-[var(--panel-soft)]/70">
-                            <td colSpan={11} className="px-4 py-3" onClick={(event) => event.stopPropagation()}>
-                              <BotRowActionMenu
-                                bot={bot}
-                                busyKey={busyKey}
-                                onDetails={() => {
-                                  setActionMenuBotId(null);
-                                  setSelectedBotId(bot.id);
-                                  setDrawerBotId(bot.id);
-                                }}
-                                onConfigure={() => {
-                                  setActionMenuBotId(null);
-                                  openEditPanel(bot.id);
-                                }}
-                                onStatusAction={(action) => {
-                                  setActionMenuBotId(null);
-                                  void handleStatusAction(bot.id, action);
-                                }}
-                                onEntryModeAction={(entryMode) => {
-                                  setActionMenuBotId(null);
-                                  void handleEntryModeAction(bot.id, entryMode);
-                                }}
-                                onArchive={() => {
-                                  setActionMenuBotId(null);
-                                  requestArchiveBot(bot);
-                                }}
-                              />
-                            </td>
-                          </tr>
-                        ) : null}
-                      </Fragment>
+                      </tr>
                     );
                   })}
                 </tbody>
@@ -1617,6 +1602,34 @@ export function BotManagementConsole({
           </aside>
         </div>
       )}
+      {actionMenuBot ? (
+        <BotRowActionMenu
+          bot={actionMenuBot}
+          anchorEl={actionButtonRefs.current[actionMenuBot.id] ?? null}
+          busyKey={busyKey}
+          onDetails={() => {
+            setActionMenuBotId(null);
+            setSelectedBotId(actionMenuBot.id);
+            setDrawerBotId(actionMenuBot.id);
+          }}
+          onConfigure={() => {
+            setActionMenuBotId(null);
+            openEditPanel(actionMenuBot.id);
+          }}
+          onStatusAction={(action) => {
+            setActionMenuBotId(null);
+            void handleStatusAction(actionMenuBot.id, action);
+          }}
+          onEntryModeAction={(entryMode) => {
+            setActionMenuBotId(null);
+            void handleEntryModeAction(actionMenuBot.id, entryMode);
+          }}
+          onArchive={() => {
+            setActionMenuBotId(null);
+            requestArchiveBot(actionMenuBot);
+          }}
+        />
+      ) : null}
       {archivePromptBot ? (
         <ArchiveBotDialog
           bot={archivePromptBot}
@@ -1646,6 +1659,7 @@ function getBotPnl(bot: ManagedBot) {
 
 function BotRowActionMenu({
   bot,
+  anchorEl,
   busyKey,
   onDetails,
   onConfigure,
@@ -1654,6 +1668,7 @@ function BotRowActionMenu({
   onArchive
 }: {
   bot: ManagedBot;
+  anchorEl: HTMLButtonElement | null;
   busyKey: string | null;
   onDetails: () => void;
   onConfigure: () => void;
@@ -1665,21 +1680,65 @@ function BotRowActionMenu({
   const isSellOnly = bot.entryMode === EntryMode.SellOnly;
   const modeBusy = busyKey === `entry-mode-${bot.id}`;
   const statusBusy = Boolean(busyKey && [`pause-${bot.id}`, `resume-${bot.id}`, `stop-${bot.id}`].includes(busyKey));
+  const [position, setPosition] = useState<ActionMenuPosition | null>(null);
 
-  return (
+  useEffect(() => {
+    if (!anchorEl) {
+      setPosition(null);
+      return;
+    }
+    const anchor = anchorEl;
+
+    function updatePosition() {
+      const rect = anchor.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const maxLeft = Math.max(ACTION_MENU_MARGIN, viewportWidth - ACTION_MENU_WIDTH - ACTION_MENU_MARGIN);
+      const left = Math.min(
+        Math.max(ACTION_MENU_MARGIN, rect.right - ACTION_MENU_WIDTH),
+        maxLeft,
+      );
+      const preferredTop = rect.bottom + ACTION_MENU_MARGIN;
+      const top =
+        preferredTop + ACTION_MENU_ESTIMATED_HEIGHT > viewportHeight
+          ? Math.max(ACTION_MENU_MARGIN, rect.top - ACTION_MENU_ESTIMATED_HEIGHT - ACTION_MENU_MARGIN)
+          : preferredTop;
+
+      setPosition({ left, top });
+    }
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [anchorEl]);
+
+  if (!position) {
+    return null;
+  }
+
+  return createPortal(
     <div
       onClick={(event) => event.stopPropagation()}
-      className="rounded-md border border-[var(--line)] bg-[var(--panel)] text-left shadow-[0_18px_50px_rgba(0,0,0,0.25)]"
+      className="fixed z-[80] overflow-hidden rounded-xl border border-[var(--line)] bg-[color:rgba(7,15,27,0.98)] text-left shadow-[0_22px_70px_rgba(0,0,0,0.45)] backdrop-blur"
+      style={{ left: position.left, top: position.top, width: ACTION_MENU_WIDTH }}
     >
-      <div className="grid grid-cols-2 gap-px bg-[var(--line)] sm:grid-cols-6">
-        <MenuActionButton label="Details" caption="Tx / lots" onClick={onDetails} compact />
-        <MenuActionButton label="Configure" caption="Edit bot" onClick={onConfigure} compact />
+      <div className="border-b border-[var(--line)] px-3 py-2.5">
+        <div className="truncate text-sm font-semibold text-white">{bot.name}</div>
+        <div className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">{bot.pairLabel}</div>
+      </div>
+      <div className="p-1.5">
+        <MenuActionButton label="Details" caption="Executions, lots, tx links" onClick={onDetails} />
+        <MenuActionButton label="Configure" caption="Edit range and budget" onClick={onConfigure} />
         <MenuActionButton
           label={isRunning ? "Pause" : "Resume"}
           caption={isRunning ? "Stop ticks" : "Start ticks"}
           onClick={() => onStatusAction(isRunning ? "pause" : "resume")}
           disabled={statusBusy}
-          compact
         />
         <MenuActionButton
           label={isSellOnly ? "Resume buys" : "Sell only"}
@@ -1687,19 +1746,19 @@ function BotRowActionMenu({
           onClick={() => onEntryModeAction(isSellOnly ? EntryMode.Normal : EntryMode.SellOnly)}
           disabled={modeBusy}
           tone={isSellOnly ? "positive" : "amber"}
-          compact
         />
-        <MenuActionButton label="Stop" caption="Freeze" onClick={() => onStatusAction("stop")} disabled={statusBusy} tone="negative" compact />
+        <div className="my-1 h-px bg-[var(--line)]" />
+        <MenuActionButton label="Stop" caption="Freeze bot" onClick={() => onStatusAction("stop")} disabled={statusBusy} tone="negative" />
         <MenuActionButton
           label="Archive"
           caption={bot.status === "stopped" ? "Keep PnL" : "Stop first"}
           onClick={onArchive}
           disabled={Boolean(busyKey && busyKey !== `delete-${bot.id}`)}
           tone="negative"
-          compact
         />
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1708,15 +1767,13 @@ function MenuActionButton({
   caption,
   onClick,
   disabled,
-  tone = "neutral",
-  compact = false
+  tone = "neutral"
 }: {
   label: string;
   caption: string;
   onClick: () => void;
   disabled?: boolean;
   tone?: "neutral" | "positive" | "negative" | "amber";
-  compact?: boolean;
 }) {
   const labelClass =
     tone === "positive"
@@ -1733,8 +1790,7 @@ function MenuActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "block w-full bg-[var(--panel)] text-left transition hover:bg-[var(--panel-soft)] disabled:pointer-events-none disabled:opacity-45",
-        compact ? "px-3 py-2" : "px-3 py-2.5"
+        "block w-full rounded-lg px-3 py-2.5 text-left transition hover:bg-white/[0.045] disabled:pointer-events-none disabled:opacity-45"
       )}
     >
       <span className={cn("block text-sm font-medium", labelClass)}>{label}</span>
