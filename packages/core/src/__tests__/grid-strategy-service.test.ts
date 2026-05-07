@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { GridStrategyService } from "../services/grid-strategy-service";
-import { BotMode, BotStatus, ExecutionProvider, GridType, OrderStatus, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
+import { BotMode, BotStatus, EntryMode, ExecutionProvider, GridType, OrderStatus, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
 import type { BotAggregate } from "../domain/types";
 
 const service = new GridStrategyService();
@@ -581,6 +581,73 @@ describe("GridStrategyService", () => {
     );
 
     expect(order).toBeNull();
+  });
+
+  it("blocks new buys in sell only mode but keeps profitable sells available", () => {
+    const sellOnlyAggregate: BotAggregate = {
+      ...aggregate,
+      config: {
+        ...aggregate.config,
+        entryMode: EntryMode.SellOnly
+      },
+      bot: {
+        ...aggregate.bot,
+        strategyMode: StrategyMode.AccumulateUsdc
+      },
+      latestState: {
+        ...aggregate.latestState!,
+        metadata: {
+          ...aggregate.latestState!.metadata,
+          gridCycles: {
+            "2": {
+              buyLevelIndex: 2,
+              sellLevelIndex: 3,
+              lotId: "lot-sell-only",
+              openedAt: "2026-05-07T10:00:00.000Z"
+            }
+          }
+        }
+      },
+      openLots: [
+        {
+          id: "lot-sell-only",
+          botId: "bot_1",
+          originalBaseAmount: 1,
+          remainingBaseAmount: 1,
+          entryPrice: 120,
+          costQuote: 120,
+          openedByExecutionId: "exec-sell-only",
+          closedByExecutionId: null,
+          openedAt: new Date("2026-05-07T10:00:00.000Z"),
+          closedAt: null
+        }
+      ]
+    };
+
+    const buyOrder = service.buildOrderIntent(sellOnlyAggregate, {
+      levelIndex: 1,
+      side: TradeSide.Buy,
+      levelPrice: 110,
+      observedPrice: 109,
+      idempotencyKey: "sell-only-buy",
+      triggeredAt: new Date("2026-05-07T10:05:00.000Z")
+    });
+    const sellOrder = service.buildOrderIntent(sellOnlyAggregate, {
+      levelIndex: 3,
+      side: TradeSide.Sell,
+      levelPrice: 130,
+      observedPrice: 131,
+      idempotencyKey: "sell-only-sell",
+      triggeredAt: new Date("2026-05-07T10:06:00.000Z")
+    });
+
+    expect(buyOrder).toBeNull();
+    expect(sellOrder).toEqual(
+      expect.objectContaining({
+        side: TradeSide.Sell,
+        matchedLotIds: ["lot-sell-only"]
+      })
+    );
   });
 
   it("sizes buy intents by trade cycle count instead of raw rail count", () => {

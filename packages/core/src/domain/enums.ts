@@ -28,6 +28,11 @@ export enum RecenterMode {
   Auto = "auto_recenter"
 }
 
+export enum EntryMode {
+  Normal = "normal",
+  SellOnly = "sell_only"
+}
+
 export enum MinOrderMode {
   Auto = "auto",
   Manual = "manual"

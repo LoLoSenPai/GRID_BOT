@@ -36,6 +36,11 @@ enum RecenterMode {
   auto_recenter
 }
 
+enum EntryMode {
+  normal
+  sell_only
+}
+
 enum ExecutionProvider {
   jupiter
   paper
@@ -139,6 +144,7 @@ model BotConfig {
   levelLockMs              Int
   priceConfirmationWindowMs Int
   recenterMode             RecenterMode
+  entryMode                EntryMode    @default(normal) @map("entry_mode")
   autoRecenterMinIntervalMs Int
   autoRecenterMaxPerDay    Int
   outOfRangePause          Boolean      @default(true)

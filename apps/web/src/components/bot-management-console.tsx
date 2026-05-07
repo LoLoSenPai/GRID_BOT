@@ -2,8 +2,8 @@
 
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { ArrowUpRight, FlaskConical, Pause, PencilLine, Play, Plus, Square, Trash2 } from "lucide-react";
-import { BotMode, type StrategyMode } from "@grid-bot/core/enums";
+import { ArrowUpRight, FlaskConical, MoreHorizontal, Pause, PencilLine, Play, Plus, Square, Trash2 } from "lucide-react";
+import { BotMode, EntryMode, type StrategyMode } from "@grid-bot/core/enums";
 import { useRouter } from "next/navigation";
 
 
@@ -50,6 +50,7 @@ type ManagedBot = {
   presetId: BotPairPresetId | null;
   strategyMode: StrategyMode;
   mode: BotMode;
+  entryMode: EntryMode;
   status: string;
   executionProvider: string;
   currentPrice: number | null;
@@ -110,6 +111,7 @@ type ManagedBot = {
 type BotRuntimeTelemetry = {
   id: string;
   status: string;
+  entryMode: EntryMode;
   totalBudgetUsd?: number;
   currentPrice: number | null;
   lastHeartbeatAt: string | null;
@@ -241,6 +243,8 @@ export function BotManagementConsole({
   const [feedback, setFeedback] = useState<FeedbackState>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [drawerBotId, setDrawerBotId] = useState<string | null>(null);
+  const [actionMenuBotId, setActionMenuBotId] = useState<string | null>(null);
+  const [archivePromptBotId, setArchivePromptBotId] = useState<string | null>(null);
   const [deskToasts, setDeskToasts] = useState<DeskToast[]>([]);
   const [botBoardCache, setBotBoardCache] = useState<Partial<Record<string, BotDetailViewData>>>(() => botBoards);
   const [loadingBoardId, setLoadingBoardId] = useState<string | null>(null);
@@ -304,6 +308,10 @@ export function BotManagementConsole({
   const hasBots = runtimeBots.length > 0;
 
   const selectedBot = useMemo(() => runtimeBots.find((bot) => bot.id === selectedBotId) ?? runtimeBots[0] ?? null, [runtimeBots, selectedBotId]);
+  const archivePromptBot = useMemo(
+    () => runtimeBots.find((bot) => bot.id === archivePromptBotId) ?? null,
+    [archivePromptBotId, runtimeBots]
+  );
   const selectedBoard = selectedBot ? botBoardCache[selectedBot.id] ?? null : null;
   const drawerBot = useMemo(() => {
     if (!drawerBotId) {
@@ -740,12 +748,14 @@ export function BotManagementConsole({
   }, [deskToasts]);
 
   useEffect(() => {
-    if (!panelKind && !drawerBotId) {
+    if (!panelKind && !drawerBotId && !actionMenuBotId && !archivePromptBotId) {
       return;
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
+        setActionMenuBotId(null);
+        setArchivePromptBotId(null);
         setDrawerBotId(null);
         if (panelKind) {
           setPanelKind(null);
@@ -755,7 +765,20 @@ export function BotManagementConsole({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [drawerBotId, panelKind]);
+  }, [actionMenuBotId, archivePromptBotId, drawerBotId, panelKind]);
+
+  useEffect(() => {
+    if (!actionMenuBotId) {
+      return;
+    }
+
+    function handleWindowClick() {
+      setActionMenuBotId(null);
+    }
+
+    window.addEventListener("click", handleWindowClick);
+    return () => window.removeEventListener("click", handleWindowClick);
+  }, [actionMenuBotId]);
 
   const paperBots = runtimeBots.filter((bot) => bot.mode === BotMode.Paper).length;
   const createDraftAnalysis = useMemo(() => analyzeBotDraft(createDraft, liveTradingEnabled), [createDraft, liveTradingEnabled]);
@@ -1028,6 +1051,22 @@ export function BotManagementConsole({
     });
   }
 
+  async function handleEntryModeAction(botId: string, nextEntryMode: EntryMode) {
+    const bot = runtimeBots.find((item) => item.id === botId);
+    if (!bot) {
+      return;
+    }
+
+    const sellOnly = nextEntryMode === EntryMode.SellOnly;
+    await runMutation({
+      key: `entry-mode-${bot.id}`,
+      url: `/api/bots/${bot.id}/${sellOnly ? "sell-only" : "resume-buys"}`,
+      successMessage: sellOnly
+        ? `${bot.name} switched to Sell only. New buys are blocked; sells stay active.`
+        : `${bot.name} can buy again.`
+    });
+  }
+
   async function handlePaperReset() {
     if (!selectedBot) {
       return;
@@ -1074,26 +1113,36 @@ export function BotManagementConsole({
     });
   }
 
-  async function handleDeleteBot() {
-    if (!selectedBot) {
+  function requestArchiveBot(bot: ManagedBot) {
+    if (bot.status !== "stopped") {
+      setFeedback({ tone: "error", message: "Stop the bot before archiving it." });
       return;
     }
 
-    if (!window.confirm(`Archive ${selectedBot.name}? It will disappear from the desk, but its PnL history will be kept.`)) {
+    if (hasOpenExposure(bot)) {
+      setArchivePromptBotId(bot.id);
       return;
     }
 
-    const nextBot = runtimeBots.find((bot) => bot.id !== selectedBot.id) ?? null;
+    if (!window.confirm(`Archive ${bot.name}? It will disappear from the desk, but its PnL history will be kept.`)) {
+      return;
+    }
 
+    void archiveBot(bot);
+  }
+
+  async function archiveBot(bot: ManagedBot) {
+    const nextBot = runtimeBots.find((item) => item.id !== bot.id) ?? null;
     await runMutation({
-      key: `delete-${selectedBot.id}`,
-      url: `/api/bots/${selectedBot.id}`,
+      key: `delete-${bot.id}`,
+      url: `/api/bots/${bot.id}`,
       method: "DELETE",
-      successMessage: `${selectedBot.name} archived.`,
+      successMessage: `${bot.name} archived.`,
       afterSuccess: () => {
         setSelectedBotId(nextBot?.id ?? null);
         setPanelKind(null);
-        setDrawerBotId((current) => (current === selectedBot.id ? null : current));
+        setArchivePromptBotId(null);
+        setDrawerBotId((current) => (current === bot.id ? null : current));
       }
     });
   }
@@ -1203,6 +1252,7 @@ export function BotManagementConsole({
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium text-white">{selectedBot.pairLabel}</span>
                     <StatusBadge status={selectedBot.status} />
+                    {selectedBot.entryMode === EntryMode.SellOnly ? <StatusChip label="sell only" tone="amber" /> : null}
                     <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
                       {BOT_BEHAVIOR_PRESETS[inferBehaviorPresetId(selectedBot.config)].label}
                     </span>
@@ -1309,7 +1359,7 @@ export function BotManagementConsole({
                         <CompactDeskButton
                           label="Delete"
                           icon={Trash2}
-                          onClick={handleDeleteBot}
+                          onClick={() => requestArchiveBot(selectedBot)}
                           disabled={selectedBot.status !== "stopped" || isPending || busyKey === `delete-${selectedBot.id}`}
                           tone="negative"
                           iconOnly
@@ -1382,6 +1432,11 @@ export function BotManagementConsole({
                           <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
                             <span>{BOT_BEHAVIOR_PRESETS[inferBehaviorPresetId(bot.config)].label}</span>
                             <span>{formatGoalLabel(bot.strategyMode)}</span>
+                            {bot.entryMode === EntryMode.SellOnly ? (
+                              <span className="rounded border border-[color:rgba(248,200,108,0.2)] px-1.5 py-0.5 text-[var(--amber)]">
+                                Sell only
+                              </span>
+                            ) : null}
                           </div>
                         </td>
                         <td className="px-4 py-3 text-white">
@@ -1421,18 +1476,46 @@ export function BotManagementConsole({
                         <td className="px-4 py-3 text-center">
                           <StatusBadge status={bot.status} />
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="relative px-4 py-3 text-right">
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setSelectedBotId(bot.id);
-                              setDrawerBotId(bot.id);
+                              setActionMenuBotId((current) => (current === bot.id ? null : bot.id));
                             }}
-                            className="inline-flex h-7 items-center rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] px-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/12 hover:bg-white/[0.05] hover:text-white"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/12 hover:bg-white/[0.05] hover:text-white"
+                            aria-label={`${bot.name} actions`}
+                            title={`${bot.name} actions`}
                           >
-                            Details
+                            <MoreHorizontal className="h-4 w-4" />
                           </button>
+                          {actionMenuBotId === bot.id ? (
+                            <BotRowActionMenu
+                              bot={bot}
+                              busyKey={busyKey}
+                              onDetails={() => {
+                                setActionMenuBotId(null);
+                                setSelectedBotId(bot.id);
+                                setDrawerBotId(bot.id);
+                              }}
+                              onConfigure={() => {
+                                setActionMenuBotId(null);
+                                openEditPanel(bot.id);
+                              }}
+                              onStatusAction={(action) => {
+                                setActionMenuBotId(null);
+                                void handleStatusAction(bot.id, action);
+                              }}
+                              onEntryModeAction={(entryMode) => {
+                                setActionMenuBotId(null);
+                                void handleEntryModeAction(bot.id, entryMode);
+                              }}
+                              onArchive={() => {
+                                setActionMenuBotId(null);
+                                requestArchiveBot(bot);
+                              }}
+                            />
+                          ) : null}
                         </td>
                       </tr>
                     );
@@ -1516,8 +1599,195 @@ export function BotManagementConsole({
           </aside>
         </div>
       )}
+      {archivePromptBot ? (
+        <ArchiveBotDialog
+          bot={archivePromptBot}
+          busy={busyKey === `delete-${archivePromptBot.id}` || busyKey === `entry-mode-${archivePromptBot.id}`}
+          onClose={() => setArchivePromptBotId(null)}
+          onSellOnly={() => {
+            void handleEntryModeAction(archivePromptBot.id, EntryMode.SellOnly);
+            setArchivePromptBotId(null);
+          }}
+          onArchive={() => {
+            void archiveBot(archivePromptBot);
+          }}
+        />
+      ) : null}
       <BotTradingDrawer bot={drawerBot} open={Boolean(drawerBot)} onClose={() => setDrawerBotId(null)} />
     </section>
+  );
+}
+
+function hasOpenExposure(bot: ManagedBot) {
+  return bot.runtime.deployedQuoteAmount > 0.01 || bot.runtime.availableBaseAmount > 0.000001;
+}
+
+function getBotPnl(bot: ManagedBot) {
+  return bot.runtime.realizedPnlUsd + bot.runtime.unrealizedPnlUsd;
+}
+
+function BotRowActionMenu({
+  bot,
+  busyKey,
+  onDetails,
+  onConfigure,
+  onStatusAction,
+  onEntryModeAction,
+  onArchive
+}: {
+  bot: ManagedBot;
+  busyKey: string | null;
+  onDetails: () => void;
+  onConfigure: () => void;
+  onStatusAction: (action: "pause" | "resume" | "stop") => void;
+  onEntryModeAction: (entryMode: EntryMode) => void;
+  onArchive: () => void;
+}) {
+  const isRunning = bot.status === "running" || bot.status === "cooldown";
+  const isSellOnly = bot.entryMode === EntryMode.SellOnly;
+  const modeBusy = busyKey === `entry-mode-${bot.id}`;
+  const statusBusy = Boolean(busyKey && [`pause-${bot.id}`, `resume-${bot.id}`, `stop-${bot.id}`].includes(busyKey));
+
+  return (
+    <div
+      onClick={(event) => event.stopPropagation()}
+      className="absolute right-4 top-12 z-30 w-56 overflow-hidden rounded-md border border-[var(--line)] bg-[var(--panel)] text-left shadow-[0_18px_50px_rgba(0,0,0,0.45)]"
+    >
+      <MenuActionButton label="Trading details" caption="Executions, lots, tx links" onClick={onDetails} />
+      <MenuActionButton label="Configure" caption="Edit range and budget" onClick={onConfigure} />
+      <div className="border-t border-[var(--line)]" />
+      <MenuActionButton
+        label={isRunning ? "Pause bot" : "Resume bot"}
+        caption={isRunning ? "Stop new engine ticks" : "Start engine ticks"}
+        onClick={() => onStatusAction(isRunning ? "pause" : "resume")}
+        disabled={statusBusy}
+      />
+      <MenuActionButton
+        label={isSellOnly ? "Resume buys" : "Sell only"}
+        caption={isSellOnly ? "Allow new buys again" : "Block new buys, keep sells active"}
+        onClick={() => onEntryModeAction(isSellOnly ? EntryMode.Normal : EntryMode.SellOnly)}
+        disabled={modeBusy}
+        tone={isSellOnly ? "positive" : "amber"}
+      />
+      <MenuActionButton label="Stop bot" caption="Freeze the bot before archive" onClick={() => onStatusAction("stop")} disabled={statusBusy} tone="negative" />
+      <div className="border-t border-[var(--line)]" />
+      <MenuActionButton
+        label="Archive"
+        caption={bot.status === "stopped" ? "Keep long-term PnL history" : "Stop the bot first"}
+        onClick={onArchive}
+        disabled={Boolean(busyKey && busyKey !== `delete-${bot.id}`)}
+        tone="negative"
+      />
+    </div>
+  );
+}
+
+function MenuActionButton({
+  label,
+  caption,
+  onClick,
+  disabled,
+  tone = "neutral"
+}: {
+  label: string;
+  caption: string;
+  onClick: () => void;
+  disabled?: boolean;
+  tone?: "neutral" | "positive" | "negative" | "amber";
+}) {
+  const labelClass =
+    tone === "positive"
+      ? "text-[var(--green)]"
+      : tone === "negative"
+        ? "text-[var(--red)]"
+        : tone === "amber"
+          ? "text-[var(--amber)]"
+          : "text-white";
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="block w-full px-3 py-2.5 text-left transition hover:bg-white/[0.04] disabled:pointer-events-none disabled:opacity-45"
+    >
+      <span className={cn("block text-sm font-medium", labelClass)}>{label}</span>
+      <span className="mt-0.5 block text-xs text-[var(--muted)]">{caption}</span>
+    </button>
+  );
+}
+
+function ArchiveBotDialog({
+  bot,
+  busy,
+  onClose,
+  onSellOnly,
+  onArchive
+}: {
+  bot: ManagedBot;
+  busy: boolean;
+  onClose: () => void;
+  onSellOnly: () => void;
+  onArchive: () => void;
+}) {
+  const pnl = getBotPnl(bot);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={onClose}>
+      <div
+        className="w-full max-w-lg rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5 shadow-[0_24px_80px_rgba(0,0,0,0.55)]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--amber)]">Open exposure</div>
+        <h2 className="mt-2 text-xl font-semibold text-white">Archive {bot.name}?</h2>
+        <p className="mt-2 text-sm text-[var(--muted)]">
+          This does not sell anything. The bot still has base inventory or deployed capital, so archiving only removes it from the desk while keeping its PnL history.
+        </p>
+
+        <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
+          <MetricCard label="Deployed" value={formatCurrency(bot.runtime.deployedQuoteAmount)} />
+          <MetricCard label={`${bot.pairLabel.split("/")[0] ?? "Base"} in bot`} value={formatNumber(bot.runtime.availableBaseAmount, 6)} />
+          <MetricCard label="Realized PnL" value={formatCurrency(bot.runtime.realizedPnlUsd)} tone={bot.runtime.realizedPnlUsd >= 0 ? "positive" : "negative"} />
+          <MetricCard label="Net PnL" value={formatCurrency(pnl)} tone={pnl >= 0 ? "positive" : "negative"} />
+        </div>
+
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 items-center rounded-md border border-[var(--line)] px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)] transition hover:bg-white/[0.04] hover:text-white"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onSellOnly}
+            disabled={busy || bot.entryMode === EntryMode.SellOnly}
+            className="inline-flex h-9 items-center rounded-md border border-[color:rgba(248,200,108,0.22)] bg-[rgba(248,200,108,0.06)] px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--amber)] transition hover:bg-[rgba(248,200,108,0.1)] disabled:pointer-events-none disabled:opacity-45"
+          >
+            Sell only
+          </button>
+          <button
+            type="button"
+            onClick={onArchive}
+            disabled={busy}
+            className="inline-flex h-9 items-center rounded-md border border-[color:rgba(255,107,122,0.22)] bg-[rgba(255,107,122,0.06)] px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--red)] transition hover:bg-[rgba(255,107,122,0.1)] disabled:pointer-events-none disabled:opacity-45"
+          >
+            Archive anyway
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "neutral" | "positive" | "negative" }) {
+  const valueClass = tone === "positive" ? "text-[var(--green)]" : tone === "negative" ? "text-[var(--red)]" : "text-white";
+  return (
+    <div className="rounded-md border border-[var(--line)] bg-[var(--panel-soft)] px-3 py-2">
+      <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">{label}</div>
+      <div className={cn("mt-1 font-mono text-sm", valueClass)}>{value}</div>
+    </div>
   );
 }
 
@@ -1621,6 +1891,7 @@ function applyTelemetry(bot: ManagedBot, telemetry?: BotRuntimeTelemetry): Manag
   return {
     ...bot,
     status: telemetry.status,
+    entryMode: telemetry.entryMode ?? bot.entryMode,
     currentPrice,
     lastHeartbeatAt: telemetry.lastHeartbeatAt ?? bot.lastHeartbeatAt,
     latestExecution: telemetry.latestExecution

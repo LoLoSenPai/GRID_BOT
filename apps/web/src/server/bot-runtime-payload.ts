@@ -1,4 +1,4 @@
-import { BotMode } from "@grid-bot/core/enums";
+import { BotMode, EntryMode } from "@grid-bot/core/enums";
 import { findLatestBotStateSnapshot, findLatestBotStateSnapshots, prisma } from "@grid-bot/db";
 
 type RuntimeMode = BotMode | undefined;
@@ -148,6 +148,11 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
         status: true,
         currentPrice: true,
         lastHeartbeatAt: true,
+        config: {
+          select: {
+            entryMode: true,
+          },
+        },
         orders: {
           orderBy: { createdAt: "desc" },
           take: 1,
@@ -210,6 +215,7 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
             : latestState?.currentPrice
               ? Number(latestState.currentPrice)
               : null,
+          entryMode: bot.config?.entryMode ?? EntryMode.Normal,
           lastHeartbeatAt: bot.lastHeartbeatAt?.toISOString() ?? null,
           runtime: buildRuntimeState(latestState),
           latestOrder,
@@ -227,6 +233,11 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
       status: true,
       currentPrice: true,
       lastHeartbeatAt: true,
+      config: {
+        select: {
+          entryMode: true,
+        },
+      },
       orders: {
         orderBy: { createdAt: "desc" },
         take: 1,
@@ -295,6 +306,7 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
           : latestState?.currentPrice
             ? Number(latestState.currentPrice)
             : null,
+        entryMode: bot.config?.entryMode ?? EntryMode.Normal,
         lastHeartbeatAt: bot.lastHeartbeatAt?.toISOString() ?? null,
         runtime: buildRuntimeState(latestState),
         latestOrder,
@@ -329,6 +341,11 @@ export async function getBotRuntimePayload(id: string) {
       status: true,
       currentPrice: true,
       lastHeartbeatAt: true,
+      config: {
+        select: {
+          entryMode: true,
+        },
+      },
       executions: {
         orderBy: { createdAt: "desc" },
         take: 1,
@@ -374,6 +391,7 @@ export async function getBotRuntimePayload(id: string) {
       : latestState?.currentPrice
         ? Number(latestState.currentPrice)
         : null,
+    entryMode: bot.config?.entryMode ?? EntryMode.Normal,
     lastHeartbeatAt: bot.lastHeartbeatAt?.toISOString() ?? null,
     runtime: buildRuntimeState(latestState),
     lastProcessedAt: latestState?.lastProcessedAt?.toISOString() ?? null,

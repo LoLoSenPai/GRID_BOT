@@ -1,4 +1,4 @@
-import { OrderStatus, StrategyMode, TradeSide, type GridType } from "../domain/enums";
+import { EntryMode, OrderStatus, StrategyMode, TradeSide, type GridType } from "../domain/enums";
 import type { BotAggregate, GridLevel, OrderIntent, PositionLot, TriggerSignal } from "../domain/types";
 import { round } from "../utils/math";
 import { priceMoveTouchesLevel } from "../utils/price-trigger";
@@ -58,6 +58,10 @@ export class GridStrategyService {
     }
 
     if (signal.side === TradeSide.Buy) {
+      if (bot.config.entryMode === EntryMode.SellOnly) {
+        return null;
+      }
+
       if (gridCycles[String(signal.levelIndex)]) {
         return null;
       }

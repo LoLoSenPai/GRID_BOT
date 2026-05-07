@@ -2,6 +2,7 @@ import type {
   AlertType,
   BotMode,
   BotStatus,
+  EntryMode,
   ExecutionProvider,
   ExecutionStatus,
   GridType,
@@ -32,6 +33,7 @@ export interface BotConfig {
   levelLockMs: number;
   priceConfirmationWindowMs: number;
   recenterMode: RecenterMode;
+  entryMode?: EntryMode;
   autoRecenterMinIntervalMs: number;
   autoRecenterMaxPerDay: number;
   outOfRangePause: boolean;

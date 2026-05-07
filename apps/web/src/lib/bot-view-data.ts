@@ -1,4 +1,4 @@
-import { BotMode } from "@grid-bot/core/enums";
+import { BotMode, EntryMode } from "@grid-bot/core/enums";
 
 import type { BotDetailViewData } from "@/components/bot-detail-view";
 import { BOT_BEHAVIOR_PRESETS, BOT_PAIR_PRESETS, inferBehaviorPresetId, inferPresetId, type BotFormDraft, type BotPairPresetId } from "@/lib/bot-management";
@@ -192,6 +192,7 @@ export function serializeBotOverview(bot: OverviewBot) {
     presetId: inferPresetId(bot.baseSymbol),
     strategyMode: bot.strategyMode as BotFormDraft["strategyMode"],
     mode: bot.mode as BotFormDraft["mode"],
+    entryMode: (config?.entryMode ?? EntryMode.Normal) as EntryMode,
     status: bot.status,
     executionProvider: bot.executionProvider,
     currentPrice: price,

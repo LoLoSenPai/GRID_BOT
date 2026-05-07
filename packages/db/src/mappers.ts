@@ -67,6 +67,7 @@ export function mapConfig(config: BotConfig): DomainBotConfig {
     levelLockMs: config.levelLockMs,
     priceConfirmationWindowMs: config.priceConfirmationWindowMs,
     recenterMode: config.recenterMode as DomainBotConfig["recenterMode"],
+    entryMode: config.entryMode as DomainBotConfig["entryMode"],
     autoRecenterMinIntervalMs: config.autoRecenterMinIntervalMs,
     autoRecenterMaxPerDay: config.autoRecenterMaxPerDay,
     outOfRangePause: config.outOfRangePause
