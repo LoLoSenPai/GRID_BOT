@@ -620,6 +620,8 @@ export interface ExecutionReport {
   outputAmount: number;
   effectivePrice: number;
   feeAmount: number;
+  nativeFeeAmount?: number;
+  nativeFeeSymbol?: string;
   rawReport?: unknown;
 }
 

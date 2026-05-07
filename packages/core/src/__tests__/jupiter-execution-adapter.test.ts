@@ -17,6 +17,16 @@ vi.mock("../services/wallet-service", () => ({
   loadExecutionWallet: loadExecutionWalletMock
 }));
 
+vi.mock("@solana/web3.js", () => ({
+  VersionedTransaction: {
+    deserialize: vi.fn(() => ({
+      sign: vi.fn(),
+      serialize: vi.fn(() => Buffer.from("signed-transaction"))
+    }))
+  },
+  Keypair: class Keypair {}
+}));
+
 import { JupiterExecutionAdapter } from "../adapters/jupiter-execution-adapter";
 import { TradeSide } from "../domain/enums";
 
@@ -213,5 +223,80 @@ describe("JupiterExecutionAdapter", () => {
     );
     expect(estimate.inputAmount).toBe(0.3457);
     expect(estimate.expectedOutputAmount).toBe(30);
+  });
+
+  it("reports native Solana network fees separately from quote fees", async () => {
+    loadExecutionWalletMock.mockReturnValue({
+      keypair: {
+        publicKey: {
+          toBase58: () => "wallet-public-key"
+        }
+      }
+    });
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            inputMint: "USDC",
+            outputMint: "SOL",
+            inAmount: "30000000",
+            outAmount: "345000000",
+            transaction: "prepared-transaction",
+            requestId: "prepared-buy",
+            signatureFeeLamports: 5000,
+            prioritizationFeeLamports: 20000,
+            rentFeeLamports: 0
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            signature: "tx-signature"
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" }
+          }
+        )
+      ) as typeof fetch;
+
+    const adapter = new JupiterExecutionAdapter();
+    const estimate = await adapter.prepareExecution({
+      botId: "bot-1",
+      inputMint: "USDC",
+      outputMint: "SOL",
+      amount: 30,
+      tradeSide: TradeSide.Buy,
+      inputDecimals: 6,
+      outputDecimals: 9,
+      slippageBps: 50,
+      clientOrderId: "client-1",
+      referencePrice: 87
+    });
+    const report = await adapter.executePreparedSwap(
+      {
+        botId: "bot-1",
+        inputMint: "USDC",
+        outputMint: "SOL",
+        amount: 30,
+        tradeSide: TradeSide.Buy,
+        inputDecimals: 6,
+        outputDecimals: 9,
+        slippageBps: 50,
+        clientOrderId: "client-1",
+        referencePrice: 87
+      },
+      estimate
+    );
+
+    expect(report.feeAmount).toBe(0);
+    expect(report.nativeFeeAmount).toBe(0.000025);
+    expect(report.nativeFeeSymbol).toBe("SOL");
   });
 });

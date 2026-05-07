@@ -340,7 +340,8 @@ export class BotEngineService {
       return true;
     }
 
-    await this.tradeRepository.finalizeExecution(execution.id, report, null);
+    const accountingReport = await this.withQuoteFeeAmount(aggregate, report, marketPrice.price);
+    await this.tradeRepository.finalizeExecution(execution.id, accountingReport, null);
     await this.tradeRepository.markOrderStatus(
       order.id,
       report.status === ExecutionStatus.Failed
@@ -363,8 +364,8 @@ export class BotEngineService {
       return true;
     }
 
-    const lotUpdate = this.applyExecutionToLots(aggregate.openLots, aggregate.bot.id, signal.side, report, orderIntent, orderIntent.targetPrice);
-    const nextState = this.computePortfolioState(aggregate, signal.side, report, marketPrice.price, lotUpdate.lots, lotUpdate.realizedPnlDelta);
+    const lotUpdate = this.applyExecutionToLots(aggregate.openLots, aggregate.bot.id, signal.side, accountingReport, orderIntent, orderIntent.targetPrice);
+    const nextState = this.computePortfolioState(aggregate, signal.side, accountingReport, marketPrice.price, lotUpdate.lots, lotUpdate.realizedPnlDelta);
     const nextGridCycles = this.applyExecutionToGridCycles(aggregate, signal, lotUpdate.openedLotId, orderIntent);
     await this.tradeRepository.replaceLots(botId, lotUpdate.lots);
     await this.tradeRepository.upsertPosition({
@@ -374,7 +375,7 @@ export class BotEngineService {
       averageEntryPrice: nextState.averageEntryPrice ?? 0,
       realizedPnlUsd: nextState.realizedPnlUsd,
       unrealizedPnlUsd: nextState.unrealizedPnlUsd,
-      totalFeesQuote: round((aggregate.position?.totalFeesQuote ?? 0) + report.feeAmount, 8)
+      totalFeesQuote: round((aggregate.position?.totalFeesQuote ?? 0) + accountingReport.feeAmount, 8)
     });
     await this.tradeRepository.createInventorySnapshot({
       botId,
@@ -918,6 +919,43 @@ export class BotEngineService {
       realizedPnlDelta,
       openedLotId: null
     };
+  }
+
+  private async withQuoteFeeAmount<T extends { feeAmount: number; nativeFeeAmount?: number; nativeFeeSymbol?: string }>(
+    aggregate: BotAggregate,
+    report: T,
+    quotePrice: number
+  ): Promise<T> {
+    if (report.feeAmount > 0 || report.nativeFeeSymbol !== "SOL" || !report.nativeFeeAmount || report.nativeFeeAmount <= 0) {
+      return report;
+    }
+
+    const feeQuotePrice = await this.getNativeFeeQuotePrice(aggregate, quotePrice);
+    if (!feeQuotePrice || feeQuotePrice <= 0) {
+      return report;
+    }
+
+    return {
+      ...report,
+      feeAmount: round(report.nativeFeeAmount * feeQuotePrice, 8)
+    };
+  }
+
+  private async getNativeFeeQuotePrice(aggregate: BotAggregate, currentBotPrice: number) {
+    if (aggregate.bot.baseSymbol.toUpperCase() === "SOL") {
+      return currentBotPrice;
+    }
+
+    try {
+      const solPrice = await this.marketPriceService.getLatestPrice({
+        ...aggregate.bot,
+        baseSymbol: "SOL",
+        quoteSymbol: aggregate.bot.quoteSymbol
+      });
+      return solPrice.price;
+    } catch {
+      return null;
+    }
   }
 
   private applyExecutionToGridCycles(

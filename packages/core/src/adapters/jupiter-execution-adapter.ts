@@ -31,6 +31,8 @@ interface JupiterExecuteResponse {
   error?: string;
 }
 
+const LAMPORTS_PER_SOL = 1_000_000_000;
+
 export class JupiterExecutionAdapter implements ExecutionAdapter {
   private readonly env = getEnv();
 
@@ -163,6 +165,8 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       outputAmount: Number(order.outAmount) / 10 ** params.outputDecimals,
       effectivePrice: this.calculateEffectivePrice(params, Number(order.outAmount) / 10 ** params.outputDecimals),
       feeAmount: 0,
+      nativeFeeAmount: this.getNativeFeeSol(order),
+      nativeFeeSymbol: "SOL",
       rawReport: {
         order,
         executeResponse
@@ -250,6 +254,15 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
     }
 
     return params.tradeSide === "sell" ? outputAmount / params.amount : params.amount / outputAmount;
+  }
+
+  private getNativeFeeSol(order: JupiterOrderResponse): number {
+    const lamports =
+      (Number(order.signatureFeeLamports) || 0) +
+      (Number(order.prioritizationFeeLamports) || 0) +
+      (Number(order.rentFeeLamports) || 0);
+
+    return lamports > 0 ? lamports / LAMPORTS_PER_SOL : 0;
   }
 
   private async fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
