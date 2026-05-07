@@ -209,6 +209,14 @@ type FeedbackState =
 
 type PanelKind = "create" | "edit" | null;
 type PanelTab = "setup" | "paper" | "actions";
+type ActionMenuPosition = {
+  top: number;
+  left: number;
+};
+
+const ACTION_MENU_WIDTH = 236;
+const ACTION_MENU_HEIGHT = 296;
+const ACTION_MENU_MARGIN = 10;
 
 export function BotManagementConsole({
   bots,
@@ -244,6 +252,7 @@ export function BotManagementConsole({
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [drawerBotId, setDrawerBotId] = useState<string | null>(null);
   const [actionMenuBotId, setActionMenuBotId] = useState<string | null>(null);
+  const [actionMenuPosition, setActionMenuPosition] = useState<ActionMenuPosition | null>(null);
   const [archivePromptBotId, setArchivePromptBotId] = useState<string | null>(null);
   const [deskToasts, setDeskToasts] = useState<DeskToast[]>([]);
   const [botBoardCache, setBotBoardCache] = useState<Partial<Record<string, BotDetailViewData>>>(() => botBoards);
@@ -311,6 +320,10 @@ export function BotManagementConsole({
   const archivePromptBot = useMemo(
     () => runtimeBots.find((bot) => bot.id === archivePromptBotId) ?? null,
     [archivePromptBotId, runtimeBots]
+  );
+  const actionMenuBot = useMemo(
+    () => runtimeBots.find((bot) => bot.id === actionMenuBotId) ?? null,
+    [actionMenuBotId, runtimeBots]
   );
   const selectedBoard = selectedBot ? botBoardCache[selectedBot.id] ?? null : null;
   const drawerBot = useMemo(() => {
@@ -772,12 +785,19 @@ export function BotManagementConsole({
       return;
     }
 
-    function handleWindowClick() {
+    function closeActionMenu() {
       setActionMenuBotId(null);
+      setActionMenuPosition(null);
     }
 
-    window.addEventListener("click", handleWindowClick);
-    return () => window.removeEventListener("click", handleWindowClick);
+    window.addEventListener("click", closeActionMenu);
+    window.addEventListener("resize", closeActionMenu);
+    window.addEventListener("scroll", closeActionMenu, true);
+    return () => {
+      window.removeEventListener("click", closeActionMenu);
+      window.removeEventListener("resize", closeActionMenu);
+      window.removeEventListener("scroll", closeActionMenu, true);
+    };
   }, [actionMenuBotId]);
 
   const paperBots = runtimeBots.filter((bot) => bot.mode === BotMode.Paper).length;
@@ -1131,6 +1151,17 @@ export function BotManagementConsole({
     void archiveBot(bot);
   }
 
+  function toggleActionMenu(bot: ManagedBot, button: HTMLButtonElement) {
+    if (actionMenuBotId === bot.id) {
+      setActionMenuBotId(null);
+      setActionMenuPosition(null);
+      return;
+    }
+
+    setActionMenuBotId(bot.id);
+    setActionMenuPosition(getActionMenuPosition(button.getBoundingClientRect()));
+  }
+
   async function archiveBot(bot: ManagedBot) {
     const nextBot = runtimeBots.find((item) => item.id !== bot.id) ?? null;
     await runMutation({
@@ -1481,7 +1512,7 @@ export function BotManagementConsole({
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setActionMenuBotId((current) => (current === bot.id ? null : bot.id));
+                              toggleActionMenu(bot, e.currentTarget);
                             }}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/12 hover:bg-white/[0.05] hover:text-white"
                             aria-label={`${bot.name} actions`}
@@ -1489,33 +1520,6 @@ export function BotManagementConsole({
                           >
                             <MoreHorizontal className="h-4 w-4" />
                           </button>
-                          {actionMenuBotId === bot.id ? (
-                            <BotRowActionMenu
-                              bot={bot}
-                              busyKey={busyKey}
-                              onDetails={() => {
-                                setActionMenuBotId(null);
-                                setSelectedBotId(bot.id);
-                                setDrawerBotId(bot.id);
-                              }}
-                              onConfigure={() => {
-                                setActionMenuBotId(null);
-                                openEditPanel(bot.id);
-                              }}
-                              onStatusAction={(action) => {
-                                setActionMenuBotId(null);
-                                void handleStatusAction(bot.id, action);
-                              }}
-                              onEntryModeAction={(entryMode) => {
-                                setActionMenuBotId(null);
-                                void handleEntryModeAction(bot.id, entryMode);
-                              }}
-                              onArchive={() => {
-                                setActionMenuBotId(null);
-                                requestArchiveBot(bot);
-                              }}
-                            />
-                          ) : null}
                         </td>
                       </tr>
                     );
@@ -1613,6 +1617,39 @@ export function BotManagementConsole({
           }}
         />
       ) : null}
+      {actionMenuBot && actionMenuPosition ? (
+        <BotRowActionMenu
+          bot={actionMenuBot}
+          busyKey={busyKey}
+          position={actionMenuPosition}
+          onDetails={() => {
+            setActionMenuBotId(null);
+            setActionMenuPosition(null);
+            setSelectedBotId(actionMenuBot.id);
+            setDrawerBotId(actionMenuBot.id);
+          }}
+          onConfigure={() => {
+            setActionMenuBotId(null);
+            setActionMenuPosition(null);
+            openEditPanel(actionMenuBot.id);
+          }}
+          onStatusAction={(action) => {
+            setActionMenuBotId(null);
+            setActionMenuPosition(null);
+            void handleStatusAction(actionMenuBot.id, action);
+          }}
+          onEntryModeAction={(entryMode) => {
+            setActionMenuBotId(null);
+            setActionMenuPosition(null);
+            void handleEntryModeAction(actionMenuBot.id, entryMode);
+          }}
+          onArchive={() => {
+            setActionMenuBotId(null);
+            setActionMenuPosition(null);
+            requestArchiveBot(actionMenuBot);
+          }}
+        />
+      ) : null}
       <BotTradingDrawer bot={drawerBot} open={Boolean(drawerBot)} onClose={() => setDrawerBotId(null)} />
     </section>
   );
@@ -1626,9 +1663,28 @@ function getBotPnl(bot: ManagedBot) {
   return bot.runtime.realizedPnlUsd + bot.runtime.unrealizedPnlUsd;
 }
 
+function getActionMenuPosition(rect: DOMRect): ActionMenuPosition {
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const preferredLeft = rect.right - ACTION_MENU_WIDTH;
+  const left = Math.min(
+    Math.max(ACTION_MENU_MARGIN, preferredLeft),
+    Math.max(ACTION_MENU_MARGIN, viewportWidth - ACTION_MENU_WIDTH - ACTION_MENU_MARGIN)
+  );
+  const belowTop = rect.bottom + 8;
+  const aboveTop = rect.top - ACTION_MENU_HEIGHT - 8;
+  const top =
+    belowTop + ACTION_MENU_HEIGHT <= viewportHeight - ACTION_MENU_MARGIN
+      ? belowTop
+      : Math.max(ACTION_MENU_MARGIN, aboveTop);
+
+  return { top, left };
+}
+
 function BotRowActionMenu({
   bot,
   busyKey,
+  position,
   onDetails,
   onConfigure,
   onStatusAction,
@@ -1637,6 +1693,7 @@ function BotRowActionMenu({
 }: {
   bot: ManagedBot;
   busyKey: string | null;
+  position: ActionMenuPosition;
   onDetails: () => void;
   onConfigure: () => void;
   onStatusAction: (action: "pause" | "resume" | "stop") => void;
@@ -1651,33 +1708,47 @@ function BotRowActionMenu({
   return (
     <div
       onClick={(event) => event.stopPropagation()}
-      className="absolute right-4 top-12 z-30 w-56 overflow-hidden rounded-md border border-[var(--line)] bg-[var(--panel)] text-left shadow-[0_18px_50px_rgba(0,0,0,0.45)]"
+      className="fixed z-50 overflow-hidden rounded-md border border-[var(--line)] bg-[var(--panel)] text-left shadow-[0_18px_50px_rgba(0,0,0,0.45)]"
+      style={{ top: position.top, left: position.left, width: ACTION_MENU_WIDTH }}
     >
-      <MenuActionButton label="Trading details" caption="Executions, lots, tx links" onClick={onDetails} />
-      <MenuActionButton label="Configure" caption="Edit range and budget" onClick={onConfigure} />
+      <div className="border-b border-[var(--line)] px-3 py-2">
+        <div className="truncate text-sm font-medium text-white">{bot.name}</div>
+        <div className="mt-0.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--muted)]">
+          <span>{bot.status.replaceAll("_", " ")}</span>
+          {isSellOnly ? <span className="text-[var(--amber)]">Sell only</span> : null}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 border-b border-[var(--line)]">
+        <MenuActionButton label="Details" caption="Tx / lots" onClick={onDetails} compact />
+        <MenuActionButton label="Configure" caption="Edit bot" onClick={onConfigure} compact />
+      </div>
       <div className="border-t border-[var(--line)]" />
       <MenuActionButton
         label={isRunning ? "Pause bot" : "Resume bot"}
-        caption={isRunning ? "Stop new engine ticks" : "Start engine ticks"}
+        caption={isRunning ? "Stop ticks" : "Start ticks"}
         onClick={() => onStatusAction(isRunning ? "pause" : "resume")}
         disabled={statusBusy}
+        compact
       />
       <MenuActionButton
         label={isSellOnly ? "Resume buys" : "Sell only"}
-        caption={isSellOnly ? "Allow new buys again" : "Block new buys, keep sells active"}
+        caption={isSellOnly ? "Allow entries" : "No new buys"}
         onClick={() => onEntryModeAction(isSellOnly ? EntryMode.Normal : EntryMode.SellOnly)}
         disabled={modeBusy}
         tone={isSellOnly ? "positive" : "amber"}
+        compact
       />
-      <MenuActionButton label="Stop bot" caption="Freeze the bot before archive" onClick={() => onStatusAction("stop")} disabled={statusBusy} tone="negative" />
-      <div className="border-t border-[var(--line)]" />
-      <MenuActionButton
-        label="Archive"
-        caption={bot.status === "stopped" ? "Keep long-term PnL history" : "Stop the bot first"}
-        onClick={onArchive}
-        disabled={Boolean(busyKey && busyKey !== `delete-${bot.id}`)}
-        tone="negative"
-      />
+      <div className="grid grid-cols-2 border-t border-[var(--line)]">
+        <MenuActionButton label="Stop" caption="Freeze" onClick={() => onStatusAction("stop")} disabled={statusBusy} tone="negative" compact />
+        <MenuActionButton
+          label="Archive"
+          caption={bot.status === "stopped" ? "Keep PnL" : "Stop first"}
+          onClick={onArchive}
+          disabled={Boolean(busyKey && busyKey !== `delete-${bot.id}`)}
+          tone="negative"
+          compact
+        />
+      </div>
     </div>
   );
 }
@@ -1687,13 +1758,15 @@ function MenuActionButton({
   caption,
   onClick,
   disabled,
-  tone = "neutral"
+  tone = "neutral",
+  compact = false
 }: {
   label: string;
   caption: string;
   onClick: () => void;
   disabled?: boolean;
   tone?: "neutral" | "positive" | "negative" | "amber";
+  compact?: boolean;
 }) {
   const labelClass =
     tone === "positive"
@@ -1709,7 +1782,10 @@ function MenuActionButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="block w-full px-3 py-2.5 text-left transition hover:bg-white/[0.04] disabled:pointer-events-none disabled:opacity-45"
+      className={cn(
+        "block w-full text-left transition hover:bg-white/[0.04] disabled:pointer-events-none disabled:opacity-45",
+        compact ? "px-3 py-2" : "px-3 py-2.5"
+      )}
     >
       <span className={cn("block text-sm font-medium", labelClass)}>{label}</span>
       <span className="mt-0.5 block text-xs text-[var(--muted)]">{caption}</span>
