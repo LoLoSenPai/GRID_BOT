@@ -136,7 +136,9 @@ type BotRuntimeTelemetry = {
     targetPrice: number;
     quoteAmount: number | null;
     baseAmount: number | null;
+    feeAmount: number | null;
     effectivePrice: number | null;
+    netEffectivePrice: number | null;
     provider: string;
     executionRef: string;
     txId: string | null;
@@ -1987,7 +1989,9 @@ function applyTelemetry(bot: ManagedBot, telemetry?: BotRuntimeTelemetry): Manag
           targetPrice: telemetry.latestExecution.targetPrice,
           quoteAmount: telemetry.latestExecution.quoteAmount,
           baseAmount: telemetry.latestExecution.baseAmount,
+          feeAmount: telemetry.latestExecution.feeAmount,
           effectivePrice: telemetry.latestExecution.effectivePrice,
+          netEffectivePrice: telemetry.latestExecution.netEffectivePrice,
           provider: telemetry.latestExecution.provider,
           executionRef: telemetry.latestExecution.executionRef,
           txId: telemetry.latestExecution.txId,

@@ -132,10 +132,15 @@ export function BotTradingDrawer({
                       <div className="mt-3 text-sm font-medium text-white">{tradeDisplay.compact}</div>
                       <div className="mt-2 grid gap-2 text-sm text-[var(--muted)] md:grid-cols-2">
                         <div>Target {formatNumber(execution.targetPrice, 2)}</div>
-                        <div>{execution.effectivePrice ? `Executed @ ${formatNumber(execution.effectivePrice, 2)}` : "Executed @ --"}</div>
+                        <div>{execution.effectivePrice ? `Route @ ${formatNumber(execution.effectivePrice, 2)}` : "Route @ --"}</div>
                         <div>{formatDateTime(execution.time)}</div>
                         <div>{execution.reason.replaceAll("_", " ")}</div>
                       </div>
+                      {execution.feeAmount && execution.feeAmount > 0 ? (
+                        <div className="mt-2 text-xs text-[var(--amber)]">
+                          Net @ {execution.netEffectivePrice ? formatNumber(execution.netEffectivePrice, 2) : "--"} after {formatCurrency(execution.feeAmount)} fees
+                        </div>
+                      ) : null}
 
                       <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-[var(--muted)]">
                         <span>{execution.provider}</span>
@@ -190,7 +195,10 @@ export function BotTradingDrawer({
                       </div>
                       {order.execution ? (
                         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-[var(--muted)]">
-                          {order.execution.effectivePrice ? <span>@ {formatNumber(order.execution.effectivePrice, 2)}</span> : null}
+                          {order.execution.effectivePrice ? <span>route @ {formatNumber(order.execution.effectivePrice, 2)}</span> : null}
+                          {order.execution.feeAmount && order.execution.feeAmount > 0 ? (
+                            <span>net @ {order.execution.netEffectivePrice ? formatNumber(order.execution.netEffectivePrice, 2) : "--"} after {formatCurrency(order.execution.feeAmount)} fees</span>
+                          ) : null}
                           {order.execution.txId ? (
                             <a className="inline-flex items-center gap-1 text-white hover:text-[var(--accent)]" href={getTransactionUrl(order.execution.txId)} rel="noreferrer" target="_blank">
                               Tx link <ArrowUpRight className="h-3 w-3" />

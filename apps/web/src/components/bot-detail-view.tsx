@@ -101,7 +101,9 @@ export type BotDetailViewData = {
       txId: string | null;
       quoteAmount: number | null;
       baseAmount: number | null;
+      feeAmount: number | null;
       effectivePrice: number | null;
+      netEffectivePrice: number | null;
       errorMessage: string | null;
     } | null;
     executionSummary: string | null;
@@ -116,7 +118,9 @@ export type BotDetailViewData = {
     targetPrice: number;
     quoteAmount: number | null;
     baseAmount: number | null;
+    feeAmount: number | null;
     effectivePrice: number | null;
+    netEffectivePrice: number | null;
     provider: string;
     executionRef: string;
     txId: string | null;
@@ -1137,7 +1141,10 @@ export function BotDetailView({
                           </div>
                           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-[var(--muted)]">
                             <span>{formatOrderTimestamp(order.execution.time)}</span>
-                            {order.execution.effectivePrice ? <span>@ {formatNumber(order.execution.effectivePrice, 2)}</span> : null}
+                            {order.execution.effectivePrice ? <span>route @ {formatNumber(order.execution.effectivePrice, 2)}</span> : null}
+                            {order.execution.feeAmount && order.execution.feeAmount > 0 ? (
+                              <span>net @ {order.execution.netEffectivePrice ? formatNumber(order.execution.netEffectivePrice, 2) : "--"} after {formatCurrency(order.execution.feeAmount)} fees</span>
+                            ) : null}
                             {order.execution.txId ? <span>{order.execution.txId}</span> : <span>{order.execution.executionRef}</span>}
                           </div>
                           {order.execution.errorMessage ? <div className="mt-2 text-xs text-[var(--red)]">{order.execution.errorMessage}</div> : null}

@@ -78,11 +78,15 @@ function buildLatestExecution(execution: {
       ? executedOutputAmount ?? requestedBaseAmount
       : executedInputAmount ?? requestedBaseAmount;
   const effectivePrice =
-    quoteAmount > 0 && baseAmount > 0
-      ? quoteAmount / baseAmount
+    grossQuoteAmount > 0 && baseAmount > 0
+      ? grossQuoteAmount / baseAmount
       : execution.quotePrice
         ? Number(execution.quotePrice)
         : null;
+  const netEffectivePrice =
+    quoteAmount > 0 && baseAmount > 0
+      ? quoteAmount / baseAmount
+      : effectivePrice;
 
   return {
     id: execution.id,
@@ -95,6 +99,7 @@ function buildLatestExecution(execution: {
     baseAmount,
     feeAmount: executedFeeAmount,
     effectivePrice,
+    netEffectivePrice,
     provider: execution.provider,
     executionRef: execution.executionRef,
     txId: execution.txId,

@@ -43,12 +43,15 @@ function deriveExecutionAmounts(
       ? grossQuoteAmount + executedFeeAmount
       : Math.max(0, grossQuoteAmount - executedFeeAmount);
   const baseAmount = side === "buy" ? executedOutputAmount ?? requestedBaseAmount : executedInputAmount ?? requestedBaseAmount;
-  const effectivePrice = quoteAmount > 0 && baseAmount > 0 ? quoteAmount / baseAmount : execution.quotePrice ? Number(execution.quotePrice) : null;
+  const effectivePrice = grossQuoteAmount > 0 && baseAmount > 0 ? grossQuoteAmount / baseAmount : execution.quotePrice ? Number(execution.quotePrice) : null;
+  const netEffectivePrice = quoteAmount > 0 && baseAmount > 0 ? quoteAmount / baseAmount : effectivePrice;
 
   return {
     quoteAmount,
     baseAmount,
-    effectivePrice
+    feeAmount: executedFeeAmount,
+    effectivePrice,
+    netEffectivePrice
   };
 }
 
@@ -215,7 +218,9 @@ export function serializeBotOverview(bot: OverviewBot) {
           targetPrice: Number(latestExecution.order.targetPrice),
           quoteAmount: latestExecutionAmounts?.quoteAmount ?? null,
           baseAmount: latestExecutionAmounts?.baseAmount ?? null,
+          feeAmount: latestExecutionAmounts?.feeAmount ?? null,
           effectivePrice: latestExecutionAmounts?.effectivePrice ?? null,
+          netEffectivePrice: latestExecutionAmounts?.netEffectivePrice ?? null,
           provider: latestExecution.provider,
           executionRef: latestExecution.executionRef,
           txId: latestExecution.txId,
@@ -375,7 +380,9 @@ export function serializeBotBoard(bot: DetailBot): BotDetailViewData {
               txId: latestExecution.txId,
               quoteAmount: executionAmounts?.quoteAmount ?? null,
               baseAmount: executionAmounts?.baseAmount ?? null,
+              feeAmount: executionAmounts?.feeAmount ?? null,
               effectivePrice: executionAmounts?.effectivePrice ?? null,
+              netEffectivePrice: executionAmounts?.netEffectivePrice ?? null,
               errorMessage: latestExecution.errorMessage
             }
           : null,
@@ -394,7 +401,9 @@ export function serializeBotBoard(bot: DetailBot): BotDetailViewData {
         targetPrice: Number(execution.order.targetPrice),
         quoteAmount: executionAmounts.quoteAmount,
         baseAmount: executionAmounts.baseAmount,
+        feeAmount: executionAmounts.feeAmount,
         effectivePrice: executionAmounts.effectivePrice,
+        netEffectivePrice: executionAmounts.netEffectivePrice,
         provider: execution.provider,
         executionRef: execution.executionRef,
         txId: execution.txId,
