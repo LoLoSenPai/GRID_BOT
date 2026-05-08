@@ -567,31 +567,36 @@ export class BotEngineService {
           ? ((estimatedPrice - targetPrice) / targetPrice) * 10_000
           : ((targetPrice - estimatedPrice) / targetPrice) * 10_000;
 
-      if (adverseDriftBps <= maxAdverseDriftBps) {
+      if (adverseDriftBps > maxAdverseDriftBps) {
         return {
-          allowed: true,
-          message: "Quote is inside the execution guard.",
-          preparedExecution: estimate
+          allowed: false,
+          message:
+            `Quote guard blocked ${signal.side}: estimated ${estimatedPrice.toFixed(8)} is ` +
+            `${Math.max(0, adverseDriftBps).toFixed(1)} bps worse than target ${targetPrice.toFixed(8)} ` +
+            `(limit ${maxAdverseDriftBps} bps).`,
+          metadata: {
+            side: signal.side,
+            levelIndex: signal.levelIndex,
+            targetPrice,
+            estimatedPrice,
+            adverseDriftBps,
+            maxAdverseDriftBps,
+            requestedQuoteAmount: orderIntent.requestedQuoteAmount,
+            requestedBaseAmount: orderIntent.requestedBaseAmount,
+            checkedAt: now.toISOString()
+          }
         };
       }
 
+      const netProfitGuard = await this.validateNetSellQuote(aggregate, signal, orderIntent, estimate, estimatedPrice, now);
+      if (!netProfitGuard.allowed) {
+        return netProfitGuard;
+      }
+
       return {
-        allowed: false,
-        message:
-          `Quote guard blocked ${signal.side}: estimated ${estimatedPrice.toFixed(8)} is ` +
-          `${Math.max(0, adverseDriftBps).toFixed(1)} bps worse than target ${targetPrice.toFixed(8)} ` +
-          `(limit ${maxAdverseDriftBps} bps).`,
-        metadata: {
-          side: signal.side,
-          levelIndex: signal.levelIndex,
-          targetPrice,
-          estimatedPrice,
-          adverseDriftBps,
-          maxAdverseDriftBps,
-          requestedQuoteAmount: orderIntent.requestedQuoteAmount,
-          requestedBaseAmount: orderIntent.requestedBaseAmount,
-          checkedAt: now.toISOString()
-        }
+        allowed: true,
+        message: "Quote is inside the execution guard.",
+        preparedExecution: estimate
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown quote estimation error";
@@ -607,6 +612,100 @@ export class BotEngineService {
         }
       };
     }
+  }
+
+  private async validateNetSellQuote(
+    aggregate: BotAggregate,
+    signal: TriggerSignal,
+    orderIntent: OrderIntent,
+    estimate: ExecutionEstimate,
+    estimatedPrice: number,
+    now: Date
+  ): Promise<{
+    allowed: boolean;
+    message: string;
+    metadata?: Record<string, unknown>;
+  }> {
+    if (signal.side !== TradeSide.Sell) {
+      return { allowed: true, message: "Buy quotes do not require a net sell guard." };
+    }
+
+    const soldCostQuote = this.estimateSoldCostQuote(aggregate.openLots, orderIntent);
+    if (soldCostQuote <= 0) {
+      return { allowed: true, message: "No matched cost basis available for net sell guard." };
+    }
+
+    const estimatedFeeQuote = await this.estimateQuoteFeeAmount(aggregate, estimate, estimatedPrice);
+    const expectedNetQuoteOutput = round(estimate.expectedOutputAmount - estimatedFeeQuote, 8);
+    const expectedNetPnl = round(expectedNetQuoteOutput - soldCostQuote, 8);
+
+    if (expectedNetPnl > 0) {
+      return { allowed: true, message: "Sell quote is expected to be net profitable." };
+    }
+
+    return {
+      allowed: false,
+      message:
+        `Quote guard blocked sell: expected net output ${expectedNetQuoteOutput.toFixed(8)} ` +
+        `does not cover lot cost ${soldCostQuote.toFixed(8)} after estimated fees.`,
+      metadata: {
+        side: signal.side,
+        levelIndex: signal.levelIndex,
+        targetPrice: orderIntent.targetPrice,
+        estimatedPrice,
+        expectedOutputAmount: estimate.expectedOutputAmount,
+        estimatedFeeQuote,
+        soldCostQuote,
+        expectedNetPnl,
+        requestedQuoteAmount: orderIntent.requestedQuoteAmount,
+        requestedBaseAmount: orderIntent.requestedBaseAmount,
+        checkedAt: now.toISOString()
+      }
+    };
+  }
+
+  private estimateSoldCostQuote(openLots: PositionLot[], orderIntent: OrderIntent): number {
+    const matchedLotIds = new Set(orderIntent.matchedLotIds ?? []);
+    if (matchedLotIds.size === 0) {
+      return 0;
+    }
+
+    let remainingToSell = orderIntent.requestedBaseAmount;
+    let soldCostQuote = 0;
+
+    for (const lot of openLots) {
+      if (remainingToSell <= 0 || !matchedLotIds.has(lot.id) || lot.remainingBaseAmount <= 0) {
+        continue;
+      }
+
+      const sold = Math.min(lot.remainingBaseAmount, remainingToSell);
+      const costPerBase = lot.costQuote / lot.remainingBaseAmount;
+      soldCostQuote = round(soldCostQuote + costPerBase * sold, 8);
+      remainingToSell = round(remainingToSell - sold, 8);
+    }
+
+    return soldCostQuote;
+  }
+
+  private async estimateQuoteFeeAmount(
+    aggregate: BotAggregate,
+    estimate: ExecutionEstimate,
+    quotePrice: number
+  ): Promise<number> {
+    if (estimate.estimatedFeeAmount > 0) {
+      return estimate.estimatedFeeAmount;
+    }
+
+    if (estimate.nativeFeeSymbol !== "SOL" || !estimate.nativeFeeAmount || estimate.nativeFeeAmount <= 0) {
+      return 0;
+    }
+
+    const feeQuotePrice = await this.getNativeFeeQuotePrice(aggregate, quotePrice);
+    if (!feeQuotePrice || feeQuotePrice <= 0) {
+      return 0;
+    }
+
+    return round(estimate.nativeFeeAmount * feeQuotePrice, 8);
   }
 
   private async maybeWriteQuoteGuardLog(

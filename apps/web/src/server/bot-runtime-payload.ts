@@ -42,6 +42,7 @@ function buildLatestExecution(execution: {
   quotePrice: { toString(): string } | null;
   executedInputAmount: { toString(): string } | null;
   executedOutputAmount: { toString(): string } | null;
+  executedFeeAmount: { toString(): string } | null;
   errorMessage: string | null;
   completedAt: Date | null;
   createdAt: Date;
@@ -63,10 +64,15 @@ function buildLatestExecution(execution: {
   const requestedBaseAmount = Number(execution.order.requestedBaseAmount);
   const executedInputAmount = execution.executedInputAmount ? Number(execution.executedInputAmount) : null;
   const executedOutputAmount = execution.executedOutputAmount ? Number(execution.executedOutputAmount) : null;
-  const quoteAmount =
+  const executedFeeAmount = execution.executedFeeAmount ? Number(execution.executedFeeAmount) : 0;
+  const grossQuoteAmount =
     execution.order.side === "buy"
       ? executedInputAmount ?? requestedQuoteAmount
       : executedOutputAmount ?? requestedQuoteAmount;
+  const quoteAmount =
+    execution.order.side === "buy"
+      ? grossQuoteAmount + executedFeeAmount
+      : Math.max(0, grossQuoteAmount - executedFeeAmount);
   const baseAmount =
     execution.order.side === "buy"
       ? executedOutputAmount ?? requestedBaseAmount
@@ -87,6 +93,7 @@ function buildLatestExecution(execution: {
     targetPrice: Number(execution.order.targetPrice),
     quoteAmount,
     baseAmount,
+    feeAmount: executedFeeAmount,
     effectivePrice,
     provider: execution.provider,
     executionRef: execution.executionRef,
@@ -180,6 +187,7 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
             quotePrice: true,
             executedInputAmount: true,
             executedOutputAmount: true,
+            executedFeeAmount: true,
             errorMessage: true,
             completedAt: true,
             createdAt: true,
@@ -266,6 +274,7 @@ export async function getBotRuntimeListPayload(mode?: RuntimeMode) {
           completedAt: true,
           executedInputAmount: true,
           executedOutputAmount: true,
+          executedFeeAmount: true,
           quotePrice: true,
           errorMessage: true,
           order: {
@@ -358,6 +367,7 @@ export async function getBotRuntimePayload(id: string) {
           quotePrice: true,
           executedInputAmount: true,
           executedOutputAmount: true,
+          executedFeeAmount: true,
           errorMessage: true,
           completedAt: true,
           createdAt: true,

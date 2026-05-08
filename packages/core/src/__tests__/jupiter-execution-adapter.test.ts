@@ -166,6 +166,14 @@ describe("JupiterExecutionAdapter", () => {
       expect.stringContaining("taker=wallet-public-key"),
       expect.any(Object)
     );
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("priorityFeeLamports=50000"),
+      expect.any(Object)
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("broadcastFeeType=maxCap"),
+      expect.any(Object)
+    );
     expect(estimate.requestId).toBe("prepared-order");
     expect(estimate.expectedOutputAmount).toBe(0.15);
     expect(estimate.expectedPrice).toBeCloseTo(84.86666667, 6);
@@ -296,6 +304,8 @@ describe("JupiterExecutionAdapter", () => {
     );
 
     expect(report.feeAmount).toBe(0);
+    expect(estimate.nativeFeeAmount).toBe(0.000025);
+    expect(estimate.nativeFeeSymbol).toBe("SOL");
     expect(report.nativeFeeAmount).toBe(0.000025);
     expect(report.nativeFeeSymbol).toBe("SOL");
   });

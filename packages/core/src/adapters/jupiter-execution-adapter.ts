@@ -32,6 +32,7 @@ interface JupiterExecuteResponse {
 }
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
+const DEFAULT_PRIORITY_FEE_LAMPORTS = 50_000;
 
 export class JupiterExecutionAdapter implements ExecutionAdapter {
   private readonly env = getEnv();
@@ -77,6 +78,8 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       inputAmount: params.amount,
       expectedOutputAmount: Number(order.outAmount) / 10 ** params.outputDecimals,
       estimatedFeeAmount: 0,
+      nativeFeeAmount: this.getNativeFeeSol(order),
+      nativeFeeSymbol: "SOL",
       priceImpactPct: Number(order.priceImpact ?? 0),
       requestId: order.requestId,
       route: order.router ?? null,
@@ -205,6 +208,11 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
 
     if (params.taker) {
       query.set("taker", params.taker);
+      query.set(
+        "priorityFeeLamports",
+        String(this.env.JUPITER_PRIORITY_FEE_LAMPORTS ?? DEFAULT_PRIORITY_FEE_LAMPORTS)
+      );
+      query.set("broadcastFeeType", this.env.JUPITER_BROADCAST_FEE_TYPE ?? "maxCap");
     }
 
     const headers: Record<string, string> = {};
@@ -226,6 +234,8 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       inputAmount: params.amount,
       expectedOutputAmount,
       estimatedFeeAmount: 0,
+      nativeFeeAmount: this.getNativeFeeSol(order),
+      nativeFeeSymbol: "SOL",
       priceImpactPct: Number(order.priceImpact ?? 0),
       requestId: order.requestId,
       route: order.router ?? null,

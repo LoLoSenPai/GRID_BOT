@@ -816,6 +816,124 @@ describe("BotEngineService", () => {
     );
   });
 
+  it("blocks a live sell when estimated native fees make the cycle net-negative", async () => {
+    const openedAt = new Date("2026-05-07T21:06:00.000Z");
+    const aggregate = createAggregate({
+      bot: {
+        mode: BotMode.Live,
+        executionProvider: ExecutionProvider.Jupiter,
+        currentPrice: 88.1
+      },
+      config: {
+        totalBudgetUsd: 140,
+        maxDeployableUsd: 140,
+        reserveQuoteAmount: 0,
+        lowPrice: 88,
+        highPrice: 90.4,
+        levelCount: 11,
+        gridType: GridType.Arithmetic,
+        minOrderQuoteAmount: 10,
+        maxSlippageBps: 50,
+        priceConfirmationWindowMs: 0
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 88.1,
+        availableQuoteAmount: 110,
+        availableBaseAmount: 0.3408,
+        deployedQuoteAmount: 30,
+        averageEntryPrice: 88.02,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {
+            "0": {
+              buyLevelIndex: 0,
+              sellLevelIndex: 1,
+              lotId: "lot-tight",
+              openedAt: openedAt.toISOString()
+            }
+          },
+          recenterHistory: [],
+          recentExecutions: []
+        }
+      },
+      position: {
+        baseAmount: 0.3408,
+        quoteSpent: 30,
+        averageEntryPrice: 88.02,
+        realizedPnlUsd: 1.13,
+        unrealizedPnlUsd: 0.08,
+        totalFeesQuote: 0
+      },
+      openLots: [
+        {
+          id: "lot-tight",
+          botId: "bot-1",
+          originalBaseAmount: 0.3408,
+          remainingBaseAmount: 0.3408,
+          entryPrice: 88.02,
+          costQuote: 30,
+          openedByExecutionId: "exec-buy-tight",
+          closedByExecutionId: null,
+          openedAt,
+          closedAt: null
+        }
+      ]
+    });
+
+    const { engine, tradeRepository, executionAdapter, logRepository, botRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 88.25,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date("2026-05-07T23:06:00.000Z"),
+        feedId: "feed-sol"
+      },
+      executionEstimate: {
+        provider: ExecutionProvider.Jupiter,
+        inputMint: "SOL",
+        outputMint: "USDC",
+        inputAmount: 0.3408,
+        expectedOutputAmount: 30.08,
+        estimatedFeeAmount: 0,
+        nativeFeeAmount: 0.00205,
+        nativeFeeSymbol: "SOL",
+        priceImpactPct: 0,
+        expectedPrice: 88.25,
+        requestId: "prepared-tight-sell"
+      },
+      liveTradingEnabled: true
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(executionAdapter.prepareExecution).toHaveBeenCalledOnce();
+    expect(tradeRepository.createOrder).not.toHaveBeenCalled();
+    expect(executionAdapter.executeSwap).not.toHaveBeenCalled();
+    expect(executionAdapter.executePreparedSwap).not.toHaveBeenCalled();
+    expect(logRepository.writeLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: LogLevel.Warn,
+        category: "execution_guard",
+        message: expect.stringContaining("expected net output")
+      })
+    );
+    expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          pendingSignal: expect.objectContaining({
+            levelIndex: 1,
+            side: TradeSide.Sell
+          })
+        })
+      })
+    );
+  });
+
   it("executes a live trade with the same prepared Jupiter order that passed the quote guard", async () => {
     const aggregate = createAggregate({
       bot: {

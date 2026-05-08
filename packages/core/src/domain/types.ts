@@ -586,6 +586,8 @@ export interface ExecutionQuote {
   inputAmount: number;
   expectedOutputAmount: number;
   estimatedFeeAmount: number;
+  nativeFeeAmount?: number;
+  nativeFeeSymbol?: string;
   priceImpactPct: number;
   requestId?: string;
   expiresAt?: string | null;

@@ -24,6 +24,7 @@ function deriveExecutionAmounts(
   execution: {
     executedInputAmount: { toString(): string } | null;
     executedOutputAmount: { toString(): string } | null;
+    executedFeeAmount: { toString(): string } | null;
     quotePrice: { toString(): string } | null;
   },
   order: {
@@ -35,7 +36,12 @@ function deriveExecutionAmounts(
   const requestedBaseAmount = Number(order.requestedBaseAmount);
   const executedInputAmount = execution.executedInputAmount ? Number(execution.executedInputAmount) : null;
   const executedOutputAmount = execution.executedOutputAmount ? Number(execution.executedOutputAmount) : null;
-  const quoteAmount = side === "buy" ? executedInputAmount ?? requestedQuoteAmount : executedOutputAmount ?? requestedQuoteAmount;
+  const executedFeeAmount = execution.executedFeeAmount ? Number(execution.executedFeeAmount) : 0;
+  const grossQuoteAmount = side === "buy" ? executedInputAmount ?? requestedQuoteAmount : executedOutputAmount ?? requestedQuoteAmount;
+  const quoteAmount =
+    side === "buy"
+      ? grossQuoteAmount + executedFeeAmount
+      : Math.max(0, grossQuoteAmount - executedFeeAmount);
   const baseAmount = side === "buy" ? executedOutputAmount ?? requestedBaseAmount : executedInputAmount ?? requestedBaseAmount;
   const effectivePrice = quoteAmount > 0 && baseAmount > 0 ? quoteAmount / baseAmount : execution.quotePrice ? Number(execution.quotePrice) : null;
 
