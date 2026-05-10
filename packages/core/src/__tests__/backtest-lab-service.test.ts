@@ -119,6 +119,7 @@ describe("BacktestLabService", () => {
 
     expect(withFee.overallMetrics.endingEquityUsd).toBeLessThan(noFee.overallMetrics.endingEquityUsd);
     expect(withFee.overallMetrics.realizedPnlUsd).toBeLessThan(noFee.overallMetrics.realizedPnlUsd);
+    expect(withFee.overallMetrics.endingEquityUsd - withFee.overallMetrics.startingBudgetUsd).toBeCloseTo(withFee.overallMetrics.totalPnlUsd, 6);
     expect(withFee.executions.reduce((sum, execution) => sum + execution.feeAmount, 0)).toBeGreaterThan(0);
     expect(withFee.overallMetrics.totalFeesUsd).toBeGreaterThan(0);
   });
