@@ -260,6 +260,7 @@ export function BotManagementConsole({
   const [botBoardCache, setBotBoardCache] = useState<Partial<Record<string, BotDetailViewData>>>(() => botBoards);
   const [loadingBoardId, setLoadingBoardId] = useState<string | null>(null);
   const [boardLoadError, setBoardLoadError] = useState<string | null>(null);
+  const [archivedBotIds, setArchivedBotIds] = useState<Set<string>>(() => new Set());
 
   const [liveTelemetry, setLiveTelemetry] = useState<Record<string, BotRuntimeTelemetry>>({});
   const hydratedBotIdRef = useRef<string | null>(initialSelectedBotId ?? bots[0]?.id ?? null);
@@ -290,7 +291,11 @@ export function BotManagementConsole({
     }, {})
   );
 
-  const telemetryBots = useMemo(() => bots.map((bot) => applyTelemetry(bot, liveTelemetry[bot.id])), [bots, liveTelemetry]);
+  const visibleBots = useMemo(
+    () => (archivedBotIds.size ? bots.filter((bot) => !archivedBotIds.has(bot.id)) : bots),
+    [archivedBotIds, bots]
+  );
+  const telemetryBots = useMemo(() => visibleBots.map((bot) => applyTelemetry(bot, liveTelemetry[bot.id])), [visibleBots, liveTelemetry]);
   const sharedSpotByPair = useMemo(() => {
     return telemetryBots.reduce<Record<string, { price: number; timestampMs: number }>>((accumulator, bot) => {
       if (typeof bot.currentPrice !== "number" || !Number.isFinite(bot.currentPrice)) {
@@ -588,18 +593,18 @@ export function BotManagementConsole({
   }, [deskMode]);
 
   useEffect(() => {
-    botStatusRef.current = bots.reduce<Record<string, string>>((accumulator, bot) => {
+    botStatusRef.current = visibleBots.reduce<Record<string, string>>((accumulator, bot) => {
       accumulator[bot.id] = bot.status;
       return accumulator;
     }, {});
-    botMetaRef.current = bots.reduce<Record<string, { name: string; baseSymbol: string }>>((accumulator, bot) => {
+    botMetaRef.current = visibleBots.reduce<Record<string, { name: string; baseSymbol: string }>>((accumulator, bot) => {
       accumulator[bot.id] = {
         name: bot.name,
         baseSymbol: bot.pairLabel.split("/")[0] ?? "SOL"
       };
       return accumulator;
     }, {});
-  }, [bots]);
+  }, [visibleBots]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -703,8 +708,8 @@ export function BotManagementConsole({
 
 
   useEffect(() => {
-    if (!selectedBot && bots.length) {
-      setSelectedBotId(bots[0]?.id ?? null);
+    if (!selectedBot && visibleBots.length) {
+      setSelectedBotId(visibleBots[0]?.id ?? null);
       return;
     }
 
@@ -721,7 +726,7 @@ export function BotManagementConsole({
       setEditDraft(null);
       hydratedBotIdRef.current = null;
     }
-  }, [bots, selectedBot]);
+  }, [selectedBot, visibleBots]);
 
   useEffect(() => {
     if (!hasBots) {
@@ -1164,8 +1169,29 @@ export function BotManagementConsole({
       method: "DELETE",
       successMessage: `${bot.name} archived.`,
       afterSuccess: () => {
+        setArchivedBotIds((current) => {
+          const next = new Set(current);
+          next.add(bot.id);
+          return next;
+        });
+        setLiveTelemetry((current) => {
+          const next = { ...current };
+          delete next[bot.id];
+          return next;
+        });
+        setBotBoardCache((current) => {
+          const next = { ...current };
+          delete next[bot.id];
+          return next;
+        });
+        liveRefreshTimeoutsRef.current.get(bot.id)?.forEach((timeout) => clearTimeout(timeout));
+        liveRefreshTimeoutsRef.current.delete(bot.id);
+        delete botStatusRef.current[bot.id];
+        delete botMetaRef.current[bot.id];
+        delete latestExecutionKeyRef.current[bot.id];
         setSelectedBotId(nextBot?.id ?? null);
         setPanelKind(null);
+        setActionMenuBotId(null);
         setArchivePromptBotId(null);
         setDrawerBotId((current) => (current === bot.id ? null : current));
       }
