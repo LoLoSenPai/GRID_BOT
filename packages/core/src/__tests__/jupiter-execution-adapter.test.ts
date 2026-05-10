@@ -233,6 +233,52 @@ describe("JupiterExecutionAdapter", () => {
     expect(estimate.expectedOutputAmount).toBe(30);
   });
 
+  it("rejects executable orders when Jupiter returns a priority fee above the configured cap", async () => {
+    loadExecutionWalletMock.mockReturnValue({
+      keypair: {
+        publicKey: {
+          toBase58: () => "wallet-public-key"
+        }
+      }
+    });
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          inputMint: "So11111111111111111111111111111111111111112",
+          outputMint: "USDC",
+          inAmount: "652700000",
+          outAmount: "62500000",
+          transaction: "prepared-transaction",
+          requestId: "expensive-sell",
+          signatureFeeLamports: 5000,
+          prioritizationFeeLamports: 2_000_000,
+          rentFeeLamports: 0
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }
+      )
+    ) as typeof fetch;
+
+    const adapter = new JupiterExecutionAdapter();
+
+    await expect(
+      adapter.prepareExecution({
+        botId: "bot-1",
+        inputMint: "So11111111111111111111111111111111111111112",
+        outputMint: "USDC",
+        amount: 0.6527,
+        tradeSide: TradeSide.Sell,
+        inputDecimals: 9,
+        outputDecimals: 6,
+        slippageBps: 50,
+        clientOrderId: "client-1",
+        referencePrice: 96
+      })
+    ).rejects.toThrow("exceeds configured cap");
+  });
+
   it("reports native Solana network fees separately from quote fees", async () => {
     loadExecutionWalletMock.mockReturnValue({
       keypair: {

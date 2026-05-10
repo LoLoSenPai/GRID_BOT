@@ -220,9 +220,27 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       headers["x-api-key"] = this.env.JUPITER_API_KEY;
     }
 
-    return this.fetchJson<JupiterOrderResponse>(`https://api.jup.ag/swap/v2/order?${query.toString()}`, {
+    const order = await this.fetchJson<JupiterOrderResponse>(`https://api.jup.ag/swap/v2/order?${query.toString()}`, {
       headers
     });
+
+    if (params.taker) {
+      this.assertPriorityFeeWithinCap(order);
+    }
+
+    return order;
+  }
+
+  private assertPriorityFeeWithinCap(order: JupiterOrderResponse) {
+    const priorityFeeLamports = Number(order.prioritizationFeeLamports) || 0;
+    const capLamports = this.env.JUPITER_PRIORITY_FEE_LAMPORTS ?? DEFAULT_PRIORITY_FEE_LAMPORTS;
+    if (priorityFeeLamports <= capLamports) {
+      return;
+    }
+
+    throw new Error(
+      `Jupiter priority fee ${priorityFeeLamports} lamports exceeds configured cap ${capLamports} lamports.`
+    );
   }
 
   private buildEstimateFromOrder(params: ExecuteSwapParams, order: JupiterOrderResponse): ExecutionEstimate {

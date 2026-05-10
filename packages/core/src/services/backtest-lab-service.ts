@@ -785,7 +785,8 @@ export class BacktestLabService {
     now: Date
   ): { lots: PositionLot[]; realizedPnlDelta: number; openedLotId: string | null } {
     if (side === TradeSide.Buy) {
-      const entryPrice = report.outputAmount > 0 ? round(report.inputAmount / report.outputAmount, 8) : levelPrice;
+      const costQuote = round(report.inputAmount + report.feeAmount, 8);
+      const entryPrice = report.outputAmount > 0 ? round(costQuote / report.outputAmount, 8) : levelPrice;
       const openedLotId = `lot-${report.executionId}`;
       return {
         lots: [
@@ -796,7 +797,7 @@ export class BacktestLabService {
             originalBaseAmount: report.outputAmount,
             remainingBaseAmount: report.outputAmount,
             entryPrice,
-            costQuote: report.inputAmount,
+            costQuote,
             openedByExecutionId: report.executionId,
             closedByExecutionId: null,
             openedAt: now,
