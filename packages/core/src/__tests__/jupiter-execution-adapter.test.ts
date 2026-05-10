@@ -81,6 +81,7 @@ describe("JupiterExecutionAdapter", () => {
 
     expect(quote.estimatedFeeAmount).toBe(0);
     expect(estimate.estimatedFeeAmount).toBe(0);
+    expect(estimate.nativeFeeAmount).toBe(0.000025);
   });
 
   it("reports sell effective price as quote per base", async () => {

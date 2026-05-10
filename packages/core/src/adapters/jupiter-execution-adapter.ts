@@ -285,10 +285,12 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
   }
 
   private getNativeFeeSol(order: JupiterOrderResponse): number {
+    // `rentFeeLamports` is not a route execution fee in the same sense as signature
+    // and priority fees. Counting it as a consumed fee made normal swaps look like
+    // they paid ~$0.20 when the explorer showed sub-cent network cost.
     const lamports =
       (Number(order.signatureFeeLamports) || 0) +
-      (Number(order.prioritizationFeeLamports) || 0) +
-      (Number(order.rentFeeLamports) || 0);
+      (Number(order.prioritizationFeeLamports) || 0);
 
     return lamports > 0 ? lamports / LAMPORTS_PER_SOL : 0;
   }
