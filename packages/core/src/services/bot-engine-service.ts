@@ -118,10 +118,28 @@ export class BotEngineService {
         }
 
         if (this.isOutOfRange(aggregate, marketPrice.price)) {
+          const lowerBoundaryBuySignal =
+            marketPrice.price < aggregate.config.lowPrice
+              ? this.getOutOfRangeBoundaryBuySignal(aggregate, marketPrice.price, now, levels, crossedSignals)
+              : null;
           const upperBoundarySellSignal =
             marketPrice.price > aggregate.config.highPrice
               ? this.getOutOfRangeRecoverySellSignal(aggregate, marketPrice.price, now, levels, crossedSignals)
               : null;
+
+          if (lowerBoundaryBuySignal?.side === TradeSide.Buy) {
+            const handledLowerBoundaryBuy = await this.executeConfirmedSignal(
+              aggregate,
+              lowerBoundaryBuySignal,
+              marketPrice,
+              now,
+              levels,
+              crossedSignals
+            );
+            if (handledLowerBoundaryBuy) {
+              return;
+            }
+          }
 
           if (upperBoundarySellSignal?.side === TradeSide.Sell) {
             const handledUpperBoundarySell = await this.executeConfirmedSignal(
@@ -833,6 +851,27 @@ export class BotEngineService {
     crossedSignals: TriggerSignal[]
   ): TriggerSignal | null {
     return this.gridDecisionService.getOutOfRangeRecoverySellSignal({
+      botId: aggregate.bot.id,
+      botStatus: aggregate.bot.status,
+      latestStatus: aggregate.latestState?.status,
+      pendingSignal: aggregate.latestState?.metadata.pendingSignal ?? null,
+      currentPrice,
+      now,
+      levels,
+      crossedSignals,
+      priceConfirmationWindowMs: aggregate.config.priceConfirmationWindowMs,
+      canBuildOrder: (signal) => Boolean(this.gridStrategyService.buildOrderIntent(aggregate, signal))
+    });
+  }
+
+  private getOutOfRangeBoundaryBuySignal(
+    aggregate: BotAggregate,
+    currentPrice: number,
+    now: Date,
+    levels: Array<{ index: number; price: number }>,
+    crossedSignals: TriggerSignal[]
+  ): TriggerSignal | null {
+    return this.gridDecisionService.getOutOfRangeBoundaryBuySignal({
       botId: aggregate.bot.id,
       botStatus: aggregate.bot.status,
       latestStatus: aggregate.latestState?.status,

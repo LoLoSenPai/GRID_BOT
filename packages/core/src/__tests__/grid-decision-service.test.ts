@@ -171,4 +171,50 @@ describe("GridDecisionService", () => {
     });
     expect(canBuildOrder).toHaveBeenCalled();
   });
+
+  it("returns the lower boundary buy when price drops below the range", () => {
+    const now = new Date("2026-04-17T10:00:00.000Z");
+    const canBuildOrder = vi.fn((candidate: TriggerSignal) => candidate.levelIndex === 0 && candidate.side === TradeSide.Buy);
+    const service = new GridDecisionService();
+
+    const result = service.getOutOfRangeBoundaryBuySignal({
+      botId: "bot-1",
+      botStatus: BotStatus.Running,
+      latestStatus: BotStatus.Running,
+      pendingSignal: null,
+      currentPrice: 79,
+      now,
+      levels,
+      crossedSignals: [],
+      priceConfirmationWindowMs: 0,
+      canBuildOrder
+    });
+
+    expect(result).toMatchObject({
+      levelIndex: 0,
+      side: TradeSide.Buy,
+      levelPrice: 80,
+      idempotencyKey: `bot-1:boundary:buy:0:${now.getTime()}`
+    });
+    expect(canBuildOrder).toHaveBeenCalled();
+  });
+
+  it("does not return a lower boundary buy when the bottom rail is already occupied", () => {
+    const service = new GridDecisionService();
+
+    const result = service.getOutOfRangeBoundaryBuySignal({
+      botId: "bot-1",
+      botStatus: BotStatus.OutOfRange,
+      latestStatus: BotStatus.OutOfRange,
+      pendingSignal: null,
+      currentPrice: 79,
+      now: new Date("2026-04-17T10:00:00.000Z"),
+      levels,
+      crossedSignals: [],
+      priceConfirmationWindowMs: 0,
+      canBuildOrder: () => false
+    });
+
+    expect(result).toBeNull();
+  });
 });

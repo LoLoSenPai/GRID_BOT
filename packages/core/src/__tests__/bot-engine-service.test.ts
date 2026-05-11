@@ -602,6 +602,123 @@ describe("BotEngineService", () => {
     );
   });
 
+  it("executes the lower boundary buy before marking the bot out_of_range below the lower bound", async () => {
+    const aggregate = createAggregate({
+      config: {
+        totalBudgetUsd: 50,
+        maxDeployableUsd: 40,
+        reserveQuoteAmount: 0,
+        lowPrice: 82,
+        highPrice: 85,
+        levelCount: 4,
+        gridType: GridType.Arithmetic,
+        minOrderQuoteAmount: 10,
+        priceConfirmationWindowMs: 0
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 82.3,
+        availableQuoteAmount: 40,
+        availableBaseAmount: 0,
+        deployedQuoteAmount: 0,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {},
+          recenterHistory: [],
+          recentExecutions: []
+        }
+      },
+      position: null,
+      openLots: []
+    });
+
+    const { engine, tradeRepository, botRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 81.5,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol"
+      }
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.createOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        side: TradeSide.Buy,
+        levelIndex: 0,
+        targetPrice: 82
+      })
+    );
+    expect(botRepository.updateBotStatus).toHaveBeenCalledWith(aggregate.bot.id, BotStatus.Cooldown);
+    expect(botRepository.updateBotStatus).not.toHaveBeenCalledWith(aggregate.bot.id, BotStatus.OutOfRange);
+  });
+
+  it("can recover an already out_of_range bot by buying the still-actionable bottom rail once", async () => {
+    const aggregate = createAggregate({
+      bot: {
+        status: BotStatus.OutOfRange
+      },
+      config: {
+        totalBudgetUsd: 50,
+        maxDeployableUsd: 40,
+        reserveQuoteAmount: 0,
+        lowPrice: 82,
+        highPrice: 85,
+        levelCount: 4,
+        gridType: GridType.Arithmetic,
+        minOrderQuoteAmount: 10,
+        priceConfirmationWindowMs: 0
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        status: BotStatus.OutOfRange,
+        currentPrice: 81.7,
+        availableQuoteAmount: 40,
+        availableBaseAmount: 0,
+        deployedQuoteAmount: 0,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {},
+          recenterHistory: [],
+          recentExecutions: []
+        }
+      },
+      position: null,
+      openLots: []
+    });
+
+    const { engine, tradeRepository, botRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 81.5,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol"
+      }
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.createOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        side: TradeSide.Buy,
+        levelIndex: 0,
+        targetPrice: 82
+      })
+    );
+    expect(botRepository.updateBotStatus).toHaveBeenCalledWith(aggregate.bot.id, BotStatus.Cooldown);
+  });
+
   it("executes the next actionable lower buy rail immediately when a drop crosses an already occupied level", async () => {
     const aggregate = createAggregate({
       config: {

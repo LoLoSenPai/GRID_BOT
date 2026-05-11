@@ -20,10 +20,16 @@ export class RiskManagerService {
       reasons.push(`bot is ${bot.bot.status}`);
     }
 
+    const isLowerBoundaryBuy =
+      signal.side === TradeSide.Buy &&
+      signal.levelIndex === 0 &&
+      marketPrice.price <= order.targetPrice;
+
     if (
       bot.bot.status === BotStatus.OutOfRange &&
       bot.config.recenterMode === "manual_recenter" &&
-      signal.side === TradeSide.Buy
+      signal.side === TradeSide.Buy &&
+      !isLowerBoundaryBuy
     ) {
       reasons.push("bot is out of range");
     }

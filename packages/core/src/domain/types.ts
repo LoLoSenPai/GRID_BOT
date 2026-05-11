@@ -519,7 +519,7 @@ export interface BacktestRunMeta {
 
 export interface BacktestAssumptions {
   candleTraversal: "bullish_open_low_high_close_bearish_open_high_low_close";
-  fillPolicy: "immediate_on_confirmed_level_cross";
+  fillPolicy: "immediate_on_confirmed_level_cross" | "immediate_on_confirmed_level_cross_or_boundary_recovery";
   executionCostModel: "pessimistic_slippage_plus_fee";
   executionCostSource: BacktestExecutionCostSource;
   maxSlippageBps: number;
@@ -528,7 +528,7 @@ export interface BacktestAssumptions {
   recenterMode: RecenterMode;
   recenterScope: "advisory_only" | "simulated_when_auto_recenter";
   rangeControlMode: "static" | "adaptive_lab_only";
-  outOfRangeModel: "pause_new_entries_allow_recovery_sells";
+  outOfRangeModel: "pause_new_entries_allow_recovery_sells" | "pause_new_entries_allow_recovery_sells_and_single_l01_boundary_buy";
   excludedCosts: string[];
   notes: string[];
 }

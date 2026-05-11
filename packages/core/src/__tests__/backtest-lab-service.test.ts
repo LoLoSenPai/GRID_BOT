@@ -132,6 +132,38 @@ describe("BacktestLabService", () => {
     expect(result.assumptions.maxSlippageBps).toBe(50);
   });
 
+  it("buys the lower boundary rail when a candle wick drops below the configured range", () => {
+    const result = service.replay({
+      series: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        resolution: "1h",
+        candles: [
+          candle("2026-04-01T00:00:00Z", 96, 97, 94, 94),
+          candle("2026-04-01T01:00:00Z", 94, 95, 93, 94)
+        ]
+      },
+      config: {
+        ...buildBacktestConfig(StrategyMode.AccumulateUsdc),
+        budgetUsd: 60,
+        lowPrice: 95,
+        highPrice: 100,
+        levelCount: 6,
+        minOrderMode: MinOrderMode.Manual,
+        minOrderQuoteAmount: 10
+      }
+    });
+
+    expect(result.executions).toContainEqual(
+      expect.objectContaining({
+        side: TradeSide.Buy,
+        levelIndex: 0,
+        targetPrice: 95,
+        status: OrderStatus.Simulated
+      })
+    );
+  });
+
   it("adds recenter advice when validation ends outside the range", () => {
     const result = service.replay({
       series: {

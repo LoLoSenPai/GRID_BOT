@@ -25,7 +25,7 @@ interface PendingSignalInput {
   canBuildOrder: (signal: TriggerSignal) => boolean;
 }
 
-interface RecoverySellInput {
+interface OutOfRangeSignalInput {
   botId: string;
   botStatus: BotStatus;
   latestStatus?: BotStatus | null;
@@ -139,7 +139,7 @@ export class GridDecisionService {
     };
   }
 
-  getOutOfRangeRecoverySellSignal(input: RecoverySellInput): TriggerSignal | null {
+  getOutOfRangeRecoverySellSignal(input: OutOfRangeSignalInput): TriggerSignal | null {
     const confirmedCrossing = this.getConfirmedSignal(input);
     if (confirmedCrossing?.side === TradeSide.Sell) {
       return confirmedCrossing;
@@ -152,6 +152,33 @@ export class GridDecisionService {
       now: input.now,
       canBuildOrder: input.canBuildOrder
     });
+  }
+
+  getOutOfRangeBoundaryBuySignal(input: OutOfRangeSignalInput): TriggerSignal | null {
+    const boundaryLevel = input.levels[0];
+    if (!boundaryLevel || !this.priceStillConfirms(TradeSide.Buy, boundaryLevel.price, input.currentPrice)) {
+      return null;
+    }
+
+    const crossedBoundary = input.crossedSignals.find(
+      (signal) => signal.side === TradeSide.Buy && signal.levelIndex === boundaryLevel.index
+    );
+    const candidate: TriggerSignal = crossedBoundary
+      ? this.materializeCrossedSignal(input.botId, crossedBoundary, input.now)
+      : {
+          levelIndex: boundaryLevel.index,
+          side: TradeSide.Buy,
+          levelPrice: boundaryLevel.price,
+          observedPrice: input.currentPrice,
+          idempotencyKey: `${input.botId}:boundary:buy:${boundaryLevel.index}:${input.now.getTime()}`,
+          triggeredAt: input.now
+        };
+
+    if (!input.canBuildOrder(candidate)) {
+      return null;
+    }
+
+    return candidate;
   }
 
   priceStillConfirms(side: TradeSide, levelPrice: number, currentPrice: number): boolean {

@@ -455,9 +455,11 @@ export class BacktestLabService {
         const crossedSignals = previousObservedPrice !== null ? this.gridStrategyService.detectCrossedLevels(levels, previousObservedPrice, step.price) : [];
         const outOfRange = this.isOutOfRange(activeConfig, step.price);
         const signal =
-          outOfRange && step.price > activeConfig.highPrice
-            ? this.getOutOfRangeRecoverySellSignal(state, step.price, step.timestamp, levels, crossedSignals, activeConfig)
-            : this.getConfirmedSignalFromState(state, step.price, step.timestamp, levels, crossedSignals, activeConfig);
+          outOfRange && step.price < activeConfig.lowPrice
+            ? this.getOutOfRangeBoundaryBuySignal(state, step.price, step.timestamp, levels, crossedSignals, activeConfig)
+            : outOfRange && step.price > activeConfig.highPrice
+              ? this.getOutOfRangeRecoverySellSignal(state, step.price, step.timestamp, levels, crossedSignals, activeConfig)
+              : this.getConfirmedSignalFromState(state, step.price, step.timestamp, levels, crossedSignals, activeConfig);
 
         if (outOfRange && !signal) {
           state.status = BotStatus.OutOfRange;
@@ -654,6 +656,28 @@ export class BacktestLabService {
     config: BacktestConfig
   ): TriggerSignal | null {
     return this.gridDecisionService.getOutOfRangeRecoverySellSignal({
+      botId: state.bot.id,
+      botStatus: state.bot.status,
+      latestStatus: state.status,
+      pendingSignal: state.metadata.pendingSignal ?? null,
+      currentPrice,
+      now,
+      levels,
+      crossedSignals,
+      priceConfirmationWindowMs: config.priceConfirmationWindowMs,
+      canBuildOrder: (signal) => this.canBuildOrder(state, signal)
+    });
+  }
+
+  private getOutOfRangeBoundaryBuySignal(
+    state: BacktestRuntimeState,
+    currentPrice: number,
+    now: Date,
+    levels: Array<{ index: number; price: number }>,
+    crossedSignals: TriggerSignal[],
+    config: BacktestConfig
+  ): TriggerSignal | null {
+    return this.gridDecisionService.getOutOfRangeBoundaryBuySignal({
       botId: state.bot.id,
       botStatus: state.bot.status,
       latestStatus: state.status,
@@ -1221,7 +1245,7 @@ export class BacktestLabService {
   private buildAssumptions(config: BacktestConfig): BacktestAssumptions {
     return {
       candleTraversal: "bullish_open_low_high_close_bearish_open_high_low_close",
-      fillPolicy: "immediate_on_confirmed_level_cross",
+      fillPolicy: "immediate_on_confirmed_level_cross_or_boundary_recovery",
       executionCostModel: "pessimistic_slippage_plus_fee",
       executionCostSource: config.executionCostSource ?? "fixed_pessimistic",
       maxSlippageBps: config.maxSlippageBps,
@@ -1230,7 +1254,7 @@ export class BacktestLabService {
       recenterMode: config.recenterMode,
       recenterScope: config.recenterMode === RecenterMode.Auto ? "simulated_when_auto_recenter" : "advisory_only",
       rangeControlMode: config.rangeControlMode === "adaptive" ? "adaptive_lab_only" : "static",
-      outOfRangeModel: "pause_new_entries_allow_recovery_sells",
+      outOfRangeModel: "pause_new_entries_allow_recovery_sells_and_single_l01_boundary_buy",
       excludedCosts: ["network fees", "rent", "priority fees", "failed transaction costs"],
       notes: [
         "Candle replay approximates intrabar order; it is not tick-level execution data.",
