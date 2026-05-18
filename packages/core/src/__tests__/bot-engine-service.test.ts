@@ -200,7 +200,7 @@ function createEngine({
     getQuote: vi.fn(),
     estimateExecution: vi.fn(async () => adapterEstimate),
     prepareExecution: vi.fn(async () => adapterEstimate),
-    executeSwap: vi.fn(async () => adapterReport),
+    executeSwap: vi.fn(async (_params?: unknown) => adapterReport),
     executePreparedSwap: vi.fn(async () => {
       if (executionError) {
         throw executionError;
@@ -1504,6 +1504,163 @@ describe("BotEngineService", () => {
         targetPrice: 85.36363636,
       }),
     );
+  });
+
+  it("catches up multiple already exceeded sells during one fast upward move", async () => {
+    const openedAt = new Date("2026-04-17T10:00:00.000Z");
+    const aggregate = createAggregate({
+      bot: {
+        strategyMode: StrategyMode.AccumulateUsdc,
+      },
+      config: {
+        totalBudgetUsd: 50,
+        maxDeployableUsd: 40,
+        reserveQuoteAmount: 0,
+        lowPrice: 80,
+        highPrice: 90,
+        levelCount: 6,
+        gridType: GridType.Arithmetic,
+        minOrderQuoteAmount: 10,
+        cooldownMs: 300_000,
+        priceConfirmationWindowMs: 10_000,
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 83.5,
+        availableQuoteAmount: 20,
+        availableBaseAmount: 0.240998,
+        deployedQuoteAmount: 20,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {
+            "1": {
+              buyLevelIndex: 1,
+              sellLevelIndex: 2,
+              lotId: "lot-1",
+              openedAt: openedAt.toISOString(),
+            },
+            "2": {
+              buyLevelIndex: 2,
+              sellLevelIndex: 3,
+              lotId: "lot-2",
+              openedAt: openedAt.toISOString(),
+            },
+          },
+          recenterHistory: [],
+          recentExecutions: [],
+        },
+      },
+      position: {
+        baseAmount: 0.240998,
+        quoteSpent: 20,
+        averageEntryPrice: 82.99,
+      },
+      openLots: [
+        {
+          id: "lot-1",
+          botId: "bot-1",
+          originalBaseAmount: 0.121951,
+          remainingBaseAmount: 0.121951,
+          entryPrice: 82,
+          costQuote: 10,
+          openedByExecutionId: "exec-1",
+          closedByExecutionId: null,
+          openedAt,
+          closedAt: null,
+        },
+        {
+          id: "lot-2",
+          botId: "bot-1",
+          originalBaseAmount: 0.119047,
+          remainingBaseAmount: 0.119047,
+          entryPrice: 84,
+          costQuote: 10,
+          openedByExecutionId: "exec-2",
+          closedByExecutionId: null,
+          openedAt,
+          closedAt: null,
+        },
+      ],
+    });
+    let currentAggregate = aggregate;
+    let executionCount = 0;
+
+    const { engine, tradeRepository, botRepository, executionAdapter } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 87.5,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol",
+      },
+    });
+
+    vi.mocked(botRepository.getBotAggregate).mockImplementation(async () => currentAggregate);
+    botRepository.updateBotStatus.mockImplementation(async (_botId: string, status: BotStatus) => {
+      currentAggregate = {
+        ...currentAggregate,
+        bot: {
+          ...currentAggregate.bot,
+          status,
+        },
+      };
+    });
+    botRepository.createStateSnapshot.mockImplementation(async (snapshot) => {
+      currentAggregate = {
+        ...currentAggregate,
+        bot: {
+          ...currentAggregate.bot,
+          status: snapshot.status,
+        },
+        latestState: {
+          id: `snapshot-${executionCount}`,
+          ...snapshot,
+        },
+      };
+    });
+    vi.mocked(tradeRepository.replaceLots).mockImplementation(async (_botId: string, lots: PositionLot[]) => {
+      currentAggregate = {
+        ...currentAggregate,
+        openLots: lots,
+      };
+    });
+    executionAdapter.executeSwap.mockImplementation(async (params) => {
+      executionCount += 1;
+      const amount = typeof params === "object" && params && "amount" in params ? Number(params.amount) : 0;
+      return {
+        provider: ExecutionProvider.Paper,
+        status: ExecutionStatus.Simulated,
+        executionId: `sim-sell-${executionCount}`,
+        txId: null,
+        inputAmount: amount,
+        outputAmount: Number((amount * 87.5).toFixed(8)),
+        effectivePrice: 87.5,
+        feeAmount: 0,
+      };
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.createOrder).toHaveBeenCalledTimes(2);
+    expect(tradeRepository.createOrder).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        side: TradeSide.Sell,
+        levelIndex: 2,
+      }),
+    );
+    expect(tradeRepository.createOrder).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        side: TradeSide.Sell,
+        levelIndex: 3,
+      }),
+    );
+    expect(executionAdapter.executeSwap).toHaveBeenCalledTimes(2);
   });
 
   it("creates a simulated execution and enters cooldown after a confirmed signal", async () => {

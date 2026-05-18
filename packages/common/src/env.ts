@@ -45,6 +45,7 @@ export const envSchema = z.object({
   PYTH_HERMES_BASE_URL: z.string().url().default("https://hermes.pyth.network"),
   PYTH_HISTORY_BASE_URL: z.string().url().default("https://pyth.dourolabs.app/v1"),
   BOT_TICK_INTERVAL_MS: z.coerce.number().int().positive().default(2000),
+  SYMBOL_RUN_MIN_INTERVAL_MS: z.coerce.number().int().nonnegative().default(750),
   PRICE_STALE_AFTER_MS: z.coerce.number().int().positive().default(10000)
 });
 

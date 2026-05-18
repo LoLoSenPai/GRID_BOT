@@ -460,6 +460,7 @@ export function createSseResponse<T>({
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+      let pushing = false;
       let eventCachePrimed = false;
       const seenEventKeys = new Set<string>();
       const safeEnqueue = (chunk: Uint8Array) => {
@@ -475,10 +476,11 @@ export function createSseResponse<T>({
       };
 
       const pushEvent = async () => {
-        if (closed) {
+        if (closed || pushing) {
           return;
         }
 
+        pushing = true;
         try {
           const payload = await getPayload();
           safeEnqueue(
@@ -524,6 +526,8 @@ export function createSseResponse<T>({
           safeEnqueue(
             encoder.encode(`event: error\ndata: ${JSON.stringify({ error: message })}\n\n`),
           );
+        } finally {
+          pushing = false;
         }
       };
 

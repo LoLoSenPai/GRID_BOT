@@ -39,6 +39,9 @@ import { round } from "../utils/math";
 const HEARTBEAT_UPDATE_INTERVAL_MS = 2_000;
 const QUOTE_GUARD_LOG_INTERVAL_MS = 60_000;
 const EXECUTION_RETRY_LOG_INTERVAL_MS = 60_000;
+const MAX_SELL_CATCH_UP_PER_RUN = 4;
+
+type SignalExecutionOutcome = "not_actionable" | "handled_no_execution" | "executed";
 
 export class BotEngineService {
   private readonly passivePriceSnapshotWriteAt = new Map<string, number>();
@@ -46,6 +49,7 @@ export class BotEngineService {
   private readonly lastHeartbeatWriteAt = new Map<string, number>();
   private readonly quoteGuardLogWriteAt = new Map<string, number>();
   private readonly executionRetryLogWriteAt = new Map<string, number>();
+  private readonly runningBotIds = new Set<string>();
   private readonly gridDecisionService = new GridDecisionService();
 
   constructor(
@@ -136,13 +140,13 @@ export class BotEngineService {
               levels,
               crossedSignals
             );
-            if (handledLowerBoundaryBuy) {
+            if (handledLowerBoundaryBuy !== "not_actionable") {
               return;
             }
           }
 
           if (upperBoundarySellSignal?.side === TradeSide.Sell) {
-            const handledUpperBoundarySell = await this.executeConfirmedSignal(
+            const handledUpperBoundarySell = await this.executeSellCatchUp(
               aggregate,
               upperBoundarySellSignal,
               marketPrice,
@@ -167,7 +171,10 @@ export class BotEngineService {
           return;
         }
 
-        const handledSignal = await this.executeConfirmedSignal(aggregate, signal, marketPrice, now, levels, crossedSignals);
+        const handledSignal =
+          signal.side === TradeSide.Sell
+            ? await this.executeSellCatchUp(aggregate, signal, marketPrice, now, levels, crossedSignals)
+            : (await this.executeConfirmedSignal(aggregate, signal, marketPrice, now, levels, crossedSignals)) !== "not_actionable";
         if (!handledSignal) {
           await this.persistPassivePriceSnapshot(aggregate, marketPrice, now);
           await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null }, undefined, undefined, levels, crossedSignals);
@@ -198,7 +205,16 @@ export class BotEngineService {
       return;
     }
 
-    await this.botRepository.withBotLock(botId, execute);
+    if (this.runningBotIds.has(botId)) {
+      return;
+    }
+
+    this.runningBotIds.add(botId);
+    try {
+      await execute();
+    } finally {
+      this.runningBotIds.delete(botId);
+    }
   }
 
   private async persistPriceSnapshot(
@@ -269,11 +285,11 @@ export class BotEngineService {
     now: Date,
     levels: Array<{ index: number; price: number }>,
     crossedSignals: TriggerSignal[]
-  ): Promise<boolean> {
+  ): Promise<SignalExecutionOutcome> {
     const botId = aggregate.bot.id;
     const orderIntent = this.gridStrategyService.buildOrderIntent(aggregate, signal);
     if (!orderIntent) {
-      return false;
+      return "not_actionable";
     }
 
     const risk = this.riskManagerService.evaluate(aggregate, signal, orderIntent, marketPrice, now);
@@ -297,7 +313,7 @@ export class BotEngineService {
         });
       }
       await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null }, undefined, undefined, levels, crossedSignals);
-      return true;
+      return "handled_no_execution";
     }
 
     const executionParams = this.buildExecutionParams(aggregate, signal, orderIntent);
@@ -317,7 +333,7 @@ export class BotEngineService {
         levels,
         crossedSignals
       );
-      return true;
+      return "handled_no_execution";
     }
 
     await this.persistPriceSnapshot(botId, marketPrice, now);
@@ -355,7 +371,7 @@ export class BotEngineService {
       quoteGuard.preparedExecution
     );
     if (!report) {
-      return true;
+      return "handled_no_execution";
     }
 
     const accountingReport = await this.withQuoteFeeAmount(aggregate, report, marketPrice.price);
@@ -379,7 +395,7 @@ export class BotEngineService {
         message: "Execution adapter returned a failed status."
       });
       await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null }, BotStatus.Error);
-      return true;
+      return "handled_no_execution";
     }
 
     const lotUpdate = this.applyExecutionToLots(aggregate.openLots, aggregate.bot.id, signal.side, accountingReport, orderIntent, orderIntent.targetPrice);
@@ -439,7 +455,53 @@ export class BotEngineService {
       }
     });
 
-    return true;
+    return "executed";
+  }
+
+  private async executeSellCatchUp(
+    aggregate: BotAggregate,
+    initialSignal: TriggerSignal,
+    marketPrice: MarketPrice,
+    now: Date,
+    levels: Array<{ index: number; price: number }>,
+    crossedSignals: TriggerSignal[]
+  ): Promise<boolean> {
+    let currentAggregate = aggregate;
+    let currentSignal: TriggerSignal | null = initialSignal;
+    let handledAny = false;
+
+    for (let attempt = 0; attempt < MAX_SELL_CATCH_UP_PER_RUN && currentSignal?.side === TradeSide.Sell; attempt += 1) {
+      const signalNow = attempt === 0 ? now : new Date(now.getTime() + attempt);
+      const outcome = await this.executeConfirmedSignal(currentAggregate, currentSignal, marketPrice, signalNow, levels, attempt === 0 ? crossedSignals : []);
+      if (outcome === "not_actionable") {
+        return handledAny;
+      }
+
+      handledAny = true;
+      if (outcome !== "executed") {
+        return true;
+      }
+
+      const refreshedAggregate = await this.botRepository.getBotAggregate(currentAggregate.bot.id);
+      if (!refreshedAggregate) {
+        return true;
+      }
+
+      currentAggregate = refreshedAggregate;
+      currentSignal = this.getConfirmedSignalFromState(
+        currentAggregate,
+        marketPrice.price,
+        signalNow,
+        levels,
+        []
+      );
+
+      if (currentSignal?.side !== TradeSide.Sell) {
+        return true;
+      }
+    }
+
+    return handledAny;
   }
 
   private buildExecutionParams(

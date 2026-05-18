@@ -272,6 +272,7 @@ export function BotManagementConsole({
     }, {})
   );
   const actionButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const botBoardCacheRef = useRef<Partial<Record<string, BotDetailViewData>>>(botBoards);
   const botMetaRef = useRef<Record<string, { name: string; baseSymbol: string }>>(
     bots.reduce<Record<string, { name: string; baseSymbol: string }>>((accumulator, bot) => {
       accumulator[bot.id] = {
@@ -411,6 +412,10 @@ export function BotManagementConsole({
   }, [botBoards]);
 
   useEffect(() => {
+    botBoardCacheRef.current = botBoardCache;
+  }, [botBoardCache]);
+
+  useEffect(() => {
     if (!selectedBotId || botBoardCache[selectedBotId]) {
       return;
     }
@@ -478,6 +483,10 @@ export function BotManagementConsole({
   }
 
   async function refreshBotDetail(botId: string) {
+    if (!botBoardCacheRef.current[botId]) {
+      return;
+    }
+
     const response = await fetch(`/api/bots/${botId}/detail?${new URLSearchParams({ mode: deskMode }).toString()}`);
     const payload = (await response.json().catch(() => null)) as { bot?: BotDetailViewData; error?: string } | null;
     if (!response.ok || !payload?.bot) {
@@ -497,11 +506,11 @@ export function BotManagementConsole({
   }
 
   function scheduleLiveRefresh(botId: string) {
-    if (liveRefreshTimeoutsRef.current.has(botId)) {
+    if (liveRefreshTimeoutsRef.current.has(botId) || !botBoardCacheRef.current[botId]) {
       return;
     }
 
-    const delaysMs = [700, 2000, 4500];
+    const delaysMs = [1200];
     const timeouts = delaysMs.map((delayMs, index) =>
       setTimeout(() => {
         void refreshBotDetail(botId).catch(() => {

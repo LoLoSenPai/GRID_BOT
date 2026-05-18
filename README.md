@@ -182,6 +182,7 @@ Variables principales:
 | `EXECUTION_WALLET_SECRET_KEY_PATH` | chemin du fichier keypair du wallet hot |
 | `DISCORD_WEBHOOK_URL` | webhook alertes Discord |
 | `BOT_TICK_INTERVAL_MS` | cadence du worker, `2000` recommande en prod live sur petit VPS optimise |
+| `SYMBOL_RUN_MIN_INTERVAL_MS` | cadence minimale entre deux cycles Pyth du meme symbole, `750` garde la reactivite sans marteler le VPS |
 | `PRICE_STALE_AFTER_MS` | garde-fou sur fraicheur du prix |
 
 ## Execution locale

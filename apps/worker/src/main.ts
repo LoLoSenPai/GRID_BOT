@@ -59,6 +59,8 @@ async function main() {
   );
   const symbolRunScheduler = new SymbolRunScheduler(async (symbol) => {
     await engine.runBotsForSymbol(symbol);
+  }, {
+    minIntervalMs: env.SYMBOL_RUN_MIN_INTERVAL_MS
   });
   const priceStream = new PythPriceStreamService(async (marketPrice) => {
     marketPriceService.setLatestPrice(marketPrice);
@@ -87,7 +89,10 @@ async function main() {
     }
   };
 
-  logger.info({ tickIntervalMs: env.BOT_TICK_INTERVAL_MS }, "Worker started");
+  logger.info(
+    { tickIntervalMs: env.BOT_TICK_INTERVAL_MS, symbolRunMinIntervalMs: env.SYMBOL_RUN_MIN_INTERVAL_MS },
+    "Worker started"
+  );
   priceStream.start();
   await safeBackfillPortfolioSnapshots();
   await safeCreatePortfolioSnapshots();
