@@ -3,6 +3,7 @@ import { getEnv } from "@grid-bot/common";
 import {
   BotMode,
   GridStrategyService,
+  reconcileOpenPositionLots,
   type BotRuntimeMetadata,
   type BotStatus,
   type PositionLot,
@@ -113,7 +114,7 @@ export async function PATCH(
     }
 
     const migratedGridCycles = gridChanged
-      ? await buildMigratedGridCycles(id, parsed)
+      ? await buildMigratedGridCycles(id, parsed, latestState)
       : null;
 
     await prisma.$transaction(async (tx) => {
@@ -272,6 +273,10 @@ async function buildMigratedGridCycles(
     levelCount: number;
     gridType: Parameters<GridStrategyService["calculateLevels"]>[3];
   },
+  latestState: {
+    deployedQuoteAmount: unknown;
+    availableBaseAmount: unknown;
+  } | null,
 ) {
   const strategyService = new GridStrategyService();
   const levels = strategyService.calculateLevels(
@@ -285,10 +290,17 @@ async function buildMigratedGridCycles(
     orderBy: { openedAt: "asc" },
   });
 
-  return strategyService.remapOpenLotsToGridCycles(
-    levels,
+  const reconciledOpenLots = reconcileOpenPositionLots(
     openLots.map(mapPositionLot),
+    latestState
+      ? {
+          deployedQuoteAmount: decimalLikeToNumber(latestState.deployedQuoteAmount),
+          availableBaseAmount: decimalLikeToNumber(latestState.availableBaseAmount),
+        }
+      : null,
   );
+
+  return strategyService.remapOpenLotsToGridCycles(levels, reconciledOpenLots);
 }
 
 function mapPositionLot(lot: {

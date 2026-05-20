@@ -22,3 +22,4 @@ export * from "./services/risk-manager-service";
 export * from "./services/strategy-registry-service";
 export * from "./services/strategy-selection-service";
 export * from "./services/wallet-service";
+export * from "./utils/position-lots";

@@ -1,3 +1,4 @@
+import { reconcileOpenPositionLots, type PositionLot } from "@grid-bot/core";
 import { BotMode, EntryMode } from "@grid-bot/core/enums";
 
 import type { BotDetailViewData } from "@/components/bot-detail-view";
@@ -99,6 +100,32 @@ function serializePriceSnapshots(snapshots: Array<{ capturedAt: Date; price: { t
       time: snapshot.capturedAt.toISOString(),
       value: Number(snapshot.price)
     }));
+}
+
+function mapPositionLot(lot: {
+  id: string;
+  botId: string;
+  originalBaseAmount: { toString(): string };
+  remainingBaseAmount: { toString(): string };
+  entryPrice: { toString(): string };
+  costQuote: { toString(): string };
+  openedByExecutionId: string;
+  closedByExecutionId: string | null;
+  openedAt: Date;
+  closedAt: Date | null;
+}): PositionLot {
+  return {
+    id: lot.id,
+    botId: lot.botId,
+    originalBaseAmount: Number(lot.originalBaseAmount),
+    remainingBaseAmount: Number(lot.remainingBaseAmount),
+    entryPrice: Number(lot.entryPrice),
+    costQuote: Number(lot.costQuote),
+    openedByExecutionId: lot.openedByExecutionId,
+    closedByExecutionId: lot.closedByExecutionId,
+    openedAt: lot.openedAt,
+    closedAt: lot.closedAt
+  };
 }
 
 export function buildMarketPreviewBoard(symbol: PreviewSymbol, history: MarketPreviewHistory, mode: BotMode): BotDetailViewData {
@@ -294,9 +321,18 @@ export function serializeBotBoard(bot: DetailBot): BotDetailViewData {
     runtimeMetadata && runtimeMetadata.gridCycles && typeof runtimeMetadata.gridCycles === "object"
       ? (runtimeMetadata.gridCycles as Record<string, { buyLevelIndex: number; sellLevelIndex: number | null; lotId: string; openedAt: string }>)
       : {};
+  const openPositionLots = reconcileOpenPositionLots(
+    bot.positionLots.map(mapPositionLot),
+    latestState
+      ? {
+          deployedQuoteAmount: Number(latestState.deployedQuoteAmount),
+          availableBaseAmount: Number(latestState.availableBaseAmount)
+        }
+      : null
+  );
   const behaviorPresetId = inferBehaviorPresetId(draftConfig);
   const behaviorPreset = BOT_BEHAVIOR_PRESETS[behaviorPresetId];
-  const lotLookup = new Map(bot.positionLots.map((lot) => [lot.id, lot]));
+  const lotLookup = new Map(openPositionLots.map((lot) => [lot.id, lot]));
   const deployedQuoteAmount = Number(latestState?.deployedQuoteAmount ?? 0);
   const inventoryValue = bot.position ? Number(bot.position.baseAmount) * currentPrice : 0;
   const rangeProgress =
@@ -411,11 +447,11 @@ export function serializeBotBoard(bot: DetailBot): BotDetailViewData {
         reason: execution.order.reason
       };
     }),
-    positionLots: bot.positionLots.map((lot) => ({
+    positionLots: openPositionLots.map((lot) => ({
       id: lot.id,
-      remainingBaseAmount: Number(lot.remainingBaseAmount),
-      entryPrice: Number(lot.entryPrice),
-      costQuote: Number(lot.costQuote),
+      remainingBaseAmount: lot.remainingBaseAmount,
+      entryPrice: lot.entryPrice,
+      costQuote: lot.costQuote,
       openedAt: lot.openedAt.toISOString()
     })),
     openCycles: Object.entries(gridCycles)

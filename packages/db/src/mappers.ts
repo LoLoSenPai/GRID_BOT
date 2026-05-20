@@ -19,6 +19,7 @@ import type {
   Position as DomainPosition,
   PositionLot as DomainPositionLot
 } from "@grid-bot/core";
+import { reconcileOpenPositionLots } from "@grid-bot/core";
 
 export function decimalToNumber(value: { toNumber(): number } | number | null | undefined): number {
   if (value === null || value === undefined) {
@@ -189,11 +190,14 @@ export function mapAggregate(input: {
     return null;
   }
 
+  const latestState = input.stateSnapshots[0] ? mapState(input.stateSnapshots[0]) : null;
+  const openLots = reconcileOpenPositionLots(input.positionLots.map(mapLot), latestState);
+
   return {
     bot: mapBot(input.bot),
     config: mapConfig(input.config),
-    latestState: input.stateSnapshots[0] ? mapState(input.stateSnapshots[0]) : null,
+    latestState,
     position: input.position ? mapPosition(input.position) : null,
-    openLots: input.positionLots.map(mapLot)
+    openLots
   };
 }
