@@ -171,7 +171,7 @@ describe("GridStrategyService", () => {
     );
 
     expect(order?.requestedQuoteAmount).toBe(100);
-    expect(order?.requestedBaseAmount).toBeCloseTo(0.90909091, 6);
+    expect(order?.requestedBaseAmount).toBeCloseTo(0.89285714, 6);
     expect(order?.matchedLotIds).toEqual(["lot-1"]);
   });
 
@@ -222,8 +222,8 @@ describe("GridStrategyService", () => {
       }
     );
 
-    expect(order?.requestedQuoteAmount).toBe(105);
-    expect(order?.requestedBaseAmount).toBeCloseTo(0.95454545, 6);
+    expect(order?.requestedQuoteAmount).toBe(106);
+    expect(order?.requestedBaseAmount).toBeCloseTo(0.94642857, 6);
   });
 
   it("builds an accumulate_usdc sell that exits the profitable lot", () => {
@@ -273,7 +273,7 @@ describe("GridStrategyService", () => {
       }
     );
 
-    expect(order?.requestedQuoteAmount).toBe(110);
+    expect(order?.requestedQuoteAmount).toBe(112);
     expect(order?.requestedBaseAmount).toBe(1);
   });
 
@@ -333,7 +333,7 @@ describe("GridStrategyService", () => {
     expect(order).toEqual(
       expect.objectContaining({
         side: TradeSide.Sell,
-        requestedQuoteAmount: 12.6,
+        requestedQuoteAmount: 12.63,
         requestedBaseAmount: 0.15,
         matchedLotIds: ["lot-small"]
       })
@@ -437,9 +437,74 @@ describe("GridStrategyService", () => {
       expect.objectContaining({
         side: TradeSide.Sell,
         levelIndex: 8,
-        requestedQuoteAmount: 12.8,
+        requestedQuoteAmount: 12.88,
         requestedBaseAmount: 0.15,
         matchedLotIds: ["lot-inferred"]
+      })
+    );
+  });
+
+  it("uses the already exceeded observed sell price to avoid trapping the top rail", () => {
+    const order = service.buildOrderIntent(
+      {
+        ...aggregate,
+        bot: {
+          ...aggregate.bot,
+          strategyMode: StrategyMode.AccumulateUsdc
+        },
+        config: {
+          ...aggregate.config,
+          lowPrice: 83,
+          highPrice: 86,
+          levelCount: 18
+        },
+        latestState: {
+          ...aggregate.latestState!,
+          metadata: {
+            ...aggregate.latestState!.metadata,
+            gridCycles: {
+              "16": {
+                buyLevelIndex: 16,
+                sellLevelIndex: 17,
+                lotId: "lot-top",
+                openedAt: "2026-05-20T12:00:00.000Z"
+              }
+            }
+          }
+        },
+        openLots: [
+          {
+            id: "lot-top",
+            botId: "bot_1",
+            originalBaseAmount: 0.5489,
+            remainingBaseAmount: 0.5489,
+            entryPrice: 85.83,
+            costQuote: 47.19,
+            openedByExecutionId: "exec-top-buy",
+            closedByExecutionId: null,
+            openedAt: new Date("2026-05-20T12:00:00.000Z"),
+            closedAt: null
+          }
+        ]
+      },
+      {
+        levelIndex: 17,
+        side: TradeSide.Sell,
+        levelPrice: 86,
+        observedPrice: 86.09,
+        idempotencyKey: "signal-top-sell",
+        triggeredAt: new Date("2026-05-20T12:05:00.000Z")
+      }
+    );
+
+    expect(order).toEqual(
+      expect.objectContaining({
+        side: TradeSide.Sell,
+        levelIndex: 17,
+        targetPrice: 86,
+        requestedBaseAmount: 0.5489,
+        requestedQuoteAmount: 47.25,
+        matchedLotIds: ["lot-top"]
       })
     );
   });

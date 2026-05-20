@@ -106,7 +106,8 @@ export class GridStrategyService {
       };
     }
 
-    const sellPlan = this.buildSellPlan(bot, signal.levelIndex, signal.levelPrice);
+    const sellValuationPrice = Math.max(signal.levelPrice, signal.observedPrice);
+    const sellPlan = this.buildSellPlan(bot, signal.levelIndex, sellValuationPrice);
     if (!sellPlan) {
       return null;
     }
