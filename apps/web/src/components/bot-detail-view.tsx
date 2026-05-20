@@ -197,8 +197,6 @@ type LiveRuntimeState = {
   totalEquityUsd: number | null;
 };
 
-const PRICE_EPSILON = 0.00000001;
-
 function isMarkerVisibleExecution(execution: BotExecutionView) {
   return execution.status === "submitted" || execution.status === "filled" || execution.status === "simulated";
 }
@@ -304,40 +302,6 @@ function getVisibleExtremes(candles: CandlePoint[], lowFallback: number, highFal
     low: Number.isFinite(low) ? low : lowFallback,
     high: Number.isFinite(high) ? high : highFallback
   };
-}
-
-function remapOpenLotsToDisplayCycles(
-  lots: BotDetailViewData["positionLots"],
-  levels: number[]
-): BotOpenCycleView[] {
-  if (levels.length < 2) {
-    return [];
-  }
-
-  return lots
-    .flatMap((lot) => {
-      if (lot.remainingBaseAmount <= 0 || lot.costQuote <= 0) {
-        return [];
-      }
-
-      const costBasis = lot.costQuote / lot.remainingBaseAmount;
-      const firstProfitableRail = levels.findIndex((level) => level > costBasis + PRICE_EPSILON);
-      const sellLevelIndex = firstProfitableRail === -1 ? null : Math.max(1, firstProfitableRail);
-      const buyLevelIndex = sellLevelIndex === null ? Math.max(0, levels.length - 2) : Math.max(0, sellLevelIndex - 1);
-
-      return {
-        id: `preview:${lot.id}`,
-        lotId: lot.id,
-        buyLevelIndex,
-        buyPrice: levels[buyLevelIndex] ?? costBasis,
-        sellLevelIndex,
-        sellPrice: sellLevelIndex !== null ? levels[sellLevelIndex] ?? null : null,
-        remainingBaseAmount: lot.remainingBaseAmount,
-        costQuote: lot.costQuote,
-        openedAt: lot.openedAt
-      };
-    })
-    .sort((left, right) => left.buyLevelIndex - right.buyLevelIndex);
 }
 
 function mergeLivePriceIntoCandles(
@@ -823,11 +787,8 @@ export function BotDetailView({
   );
 
   const displayedOpenCycles = useMemo(
-    () =>
-      previewActive
-        ? remapOpenLotsToDisplayCycles(bot.positionLots, chartLevels)
-        : bot.openCycles.filter((cycle) => cycle.remainingBaseAmount > 0),
-    [bot.openCycles, bot.positionLots, chartLevels, previewActive]
+    () => bot.openCycles.filter((cycle) => cycle.remainingBaseAmount > 0),
+    [bot.openCycles]
   );
 
   const orderLines = useMemo(
