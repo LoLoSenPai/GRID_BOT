@@ -69,7 +69,7 @@ export class GridStrategyService {
 
   buildOrderIntent(bot: BotAggregate, signal: TriggerSignal): OrderIntent | null {
     const snapshot = bot.latestState;
-    const gridCycles = snapshot?.metadata.gridCycles ?? {};
+    const gridCycles = this.getActiveGridCycles(bot);
     const availableQuote = snapshot?.availableQuoteAmount ?? bot.config.totalBudgetUsd;
     const tradeCycleCount = Math.max(1, bot.config.levelCount - 1);
     const targetNotional = round(bot.config.maxDeployableUsd / tradeCycleCount, 2);
@@ -141,7 +141,7 @@ export class GridStrategyService {
   }
 
   private findCycleMatchedSellLot(bot: BotAggregate, signalLevelIndex: number): PositionLot | null {
-    const gridCycles = bot.latestState?.metadata.gridCycles ?? {};
+    const gridCycles = this.getActiveGridCycles(bot);
     const activeCycle = Object.values(gridCycles)
       .filter((cycle) => cycle.sellLevelIndex === signalLevelIndex)
       .sort((left, right) => new Date(left.openedAt).getTime() - new Date(right.openedAt).getTime())[0];
@@ -155,7 +155,7 @@ export class GridStrategyService {
 
   private findInferredSellLot(bot: BotAggregate, signalLevelIndex: number): PositionLot | null {
     const levels = this.calculateLevels(bot.config.lowPrice, bot.config.highPrice, bot.config.levelCount, bot.config.gridType);
-    const trackedLotIds = new Set(Object.values(bot.latestState?.metadata.gridCycles ?? {}).map((cycle) => cycle.lotId));
+    const trackedLotIds = new Set(Object.values(this.getActiveGridCycles(bot)).map((cycle) => cycle.lotId));
     const candidates = bot.openLots
       .filter((lot) => this.isOpenLotSellable(lot))
       .filter((lot) => !trackedLotIds.has(lot.id))
@@ -217,6 +217,13 @@ export class GridStrategyService {
 
   private isOpenLotSellable(lot: PositionLot): boolean {
     return lot.remainingBaseAmount > 0 && lot.costQuote > 0 && !lot.closedAt;
+  }
+
+  private getActiveGridCycles(bot: BotAggregate): Record<string, GridCycle> {
+    const openLotIds = new Set(bot.openLots.filter((lot) => this.isOpenLotSellable(lot)).map((lot) => lot.id));
+    return Object.fromEntries(
+      Object.entries(bot.latestState?.metadata.gridCycles ?? {}).filter(([, cycle]) => openLotIds.has(cycle.lotId))
+    );
   }
 
   private getLotCostBasis(lot: PositionLot): number {

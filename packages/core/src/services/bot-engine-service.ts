@@ -1165,7 +1165,7 @@ export class BotEngineService {
     openedLotId: string | null,
     orderIntent: { matchedLotIds?: string[] }
   ) {
-    const currentCycles = aggregate.latestState?.metadata.gridCycles ?? {};
+    const currentCycles = this.getActiveGridCycles(aggregate);
     const nextCycles: Record<string, GridCycle> = { ...currentCycles };
 
     if (signal.side === TradeSide.Buy) {
@@ -1224,5 +1224,12 @@ export class BotEngineService {
       unrealizedPnlUsd,
       totalEquityUsd
     };
+  }
+
+  private getActiveGridCycles(aggregate: BotAggregate): Record<string, GridCycle> {
+    const openLotIds = new Set(aggregate.openLots.filter((lot) => lot.remainingBaseAmount > 0 && lot.costQuote > 0 && !lot.closedAt).map((lot) => lot.id));
+    return Object.fromEntries(
+      Object.entries(aggregate.latestState?.metadata.gridCycles ?? {}).filter(([, cycle]) => openLotIds.has(cycle.lotId))
+    );
   }
 }

@@ -620,6 +620,20 @@ describe("GridStrategyService", () => {
     const order = service.buildOrderIntent(
       {
         ...aggregate,
+        openLots: [
+          {
+            id: "lot-1",
+            botId: "bot_1",
+            originalBaseAmount: 1,
+            remainingBaseAmount: 1,
+            entryPrice: 120,
+            costQuote: 120,
+            openedByExecutionId: "exec-lot-1",
+            closedByExecutionId: null,
+            openedAt: new Date("2026-04-01T00:00:00.000Z"),
+            closedAt: null
+          }
+        ],
         latestState: {
           ...aggregate.latestState!,
           metadata: {
@@ -680,6 +694,20 @@ describe("GridStrategyService", () => {
     const order = service.buildOrderIntent(
       {
         ...aggregate,
+        openLots: [
+          {
+            id: "lot-duplicate",
+            botId: "bot_1",
+            originalBaseAmount: 1,
+            remainingBaseAmount: 1,
+            entryPrice: 120,
+            costQuote: 120,
+            openedByExecutionId: "exec-duplicate",
+            closedByExecutionId: null,
+            openedAt: new Date("2026-05-08T10:00:00.000Z"),
+            closedAt: null
+          }
+        ],
         latestState: {
           ...aggregate.latestState!,
           metadata: {
@@ -706,6 +734,45 @@ describe("GridStrategyService", () => {
     );
 
     expect(order).toBeNull();
+  });
+
+  it("does not let stale cycle metadata block a buy after the lot is closed", () => {
+    const order = service.buildOrderIntent(
+      {
+        ...aggregate,
+        openLots: [],
+        latestState: {
+          ...aggregate.latestState!,
+          metadata: {
+            ...aggregate.latestState!.metadata,
+            gridCycles: {
+              "stale-lot": {
+                buyLevelIndex: 2,
+                sellLevelIndex: 3,
+                lotId: "closed-lot",
+                openedAt: "2026-05-08T10:00:00.000Z"
+              }
+            }
+          }
+        }
+      },
+      {
+        levelIndex: 2,
+        side: TradeSide.Buy,
+        levelPrice: 120,
+        observedPrice: 119,
+        idempotencyKey: "signal-stale-cycle",
+        triggeredAt: new Date()
+      }
+    );
+
+    expect(order).toEqual(
+      expect.objectContaining({
+        side: TradeSide.Buy,
+        levelIndex: 2,
+        requestedQuoteAmount: 250
+      })
+    );
   });
 
   it("blocks new buys in sell only mode but keeps profitable sells available", () => {

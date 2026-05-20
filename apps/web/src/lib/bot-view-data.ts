@@ -419,8 +419,12 @@ export function serializeBotBoard(bot: DetailBot): BotDetailViewData {
       openedAt: lot.openedAt.toISOString()
     })),
     openCycles: Object.entries(gridCycles)
-      .map(([cycleId, cycle]) => {
+      .flatMap(([cycleId, cycle]) => {
         const lot = lotLookup.get(cycle.lotId);
+        if (!lot || Number(lot.remainingBaseAmount) <= 0) {
+          return [];
+        }
+
         return {
           id: cycleId,
           lotId: cycle.lotId,
