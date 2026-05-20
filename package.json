@@ -14,6 +14,7 @@
     "db:deploy": "pnpm --filter @grid-bot/db prisma:migrate:deploy",
     "db:seed": "pnpm --filter @grid-bot/db seed",
     "db:fix-jupiter-rent-fees": "pnpm --filter @grid-bot/db fix:jupiter-rent-fees",
+    "db:repair-open-lots": "pnpm --filter @grid-bot/db repair:open-lots",
     "wallet:generate": "npx tsx scripts/generate-wallet.ts",
     "wallet:import": "npx tsx scripts/export-wallet-env.ts"
   },

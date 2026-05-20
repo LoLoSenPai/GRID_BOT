@@ -16,6 +16,7 @@
     "prisma:migrate:dev": "prisma migrate dev --schema=prisma/schema.prisma",
     "prisma:migrate:deploy": "prisma migrate deploy --schema=prisma/schema.prisma",
     "fix:jupiter-rent-fees": "tsx prisma/fix-jupiter-rent-fees.ts",
+    "repair:open-lots": "tsx prisma/repair-open-position-lots.ts",
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {

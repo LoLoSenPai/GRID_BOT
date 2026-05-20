@@ -113,8 +113,8 @@ export async function PATCH(
       );
     }
 
-    const migratedGridCycles = gridChanged
-      ? await buildMigratedGridCycles(id, parsed, latestState)
+    const migratedOpenState = gridChanged
+      ? await buildMigratedOpenState(id, parsed, latestState)
       : null;
 
     await prisma.$transaction(async (tx) => {
@@ -181,10 +181,29 @@ export async function PATCH(
           snapshotData.lastProcessedAt = new Date();
         }
 
-        if (gridChanged && migratedGridCycles) {
+        if (gridChanged && migratedOpenState) {
+          await tx.positionLot.deleteMany({ where: { botId: id } });
+
+          if (migratedOpenState.openLots.length > 0) {
+            await tx.positionLot.createMany({
+              data: migratedOpenState.openLots.map((lot) => ({
+                id: lot.id,
+                botId: id,
+                originalBaseAmount: lot.originalBaseAmount,
+                remainingBaseAmount: lot.remainingBaseAmount,
+                entryPrice: lot.entryPrice,
+                costQuote: lot.costQuote,
+                openedByExecutionId: lot.openedByExecutionId,
+                closedByExecutionId: lot.closedByExecutionId ?? undefined,
+                openedAt: lot.openedAt,
+                closedAt: lot.closedAt ?? undefined,
+              })),
+            });
+          }
+
           snapshotData.metadata = buildMigratedRuntimeMetadata(
             snapshotData.metadata,
-            migratedGridCycles,
+            migratedOpenState.gridCycles,
           ) as never;
           snapshotData.lastProcessedAt = new Date();
         }
@@ -206,9 +225,10 @@ export async function PATCH(
             nextBudgetUsd: parsed.totalBudgetUsd,
             budgetDeltaUsd,
             gridChanged,
-            migratedOpenCycles: migratedGridCycles
-              ? Object.keys(migratedGridCycles).length
+            migratedOpenCycles: migratedOpenState
+              ? Object.keys(migratedOpenState.gridCycles).length
               : undefined,
+            removedInconsistentOpenLots: migratedOpenState?.removedOpenLotCount,
           },
         },
       });
@@ -265,7 +285,7 @@ function sameNumber(left: number, right: number) {
   return Math.abs(left - right) < 0.00000001;
 }
 
-async function buildMigratedGridCycles(
+async function buildMigratedOpenState(
   botId: string,
   config: {
     lowPrice: number;
@@ -300,7 +320,11 @@ async function buildMigratedGridCycles(
       : null,
   );
 
-  return strategyService.remapOpenLotsToGridCycles(levels, reconciledOpenLots);
+  return {
+    openLots: reconciledOpenLots,
+    gridCycles: strategyService.remapOpenLotsToGridCycles(levels, reconciledOpenLots),
+    removedOpenLotCount: openLots.length - reconciledOpenLots.length,
+  };
 }
 
 function mapPositionLot(lot: {
