@@ -237,6 +237,7 @@ export function BotManagementConsole({
   marketPreviewBoards?: Partial<Record<"SOL" | "BTC", BotDetailViewData>>;
 }) {
   const router = useRouter();
+  const initialEditBot = bots.find((bot) => bot.id === (initialSelectedBotId ?? null)) ?? bots[0] ?? null;
   const [isPending, startTransition] = useTransition();
   const [selectedBotId, setSelectedBotId] = useState<string | null>(initialSelectedBotId ?? bots[0]?.id ?? null);
   const [panelKind, setPanelKind] = useState<PanelKind>(null);
@@ -245,12 +246,12 @@ export function BotManagementConsole({
   const [editOpenSection, setEditOpenSection] = useState<ConfigSectionId | null>(null);
   const [createMinOrderMode, setCreateMinOrderMode] = useState<MinOrderMode>("auto");
   const [editMinOrderMode, setEditMinOrderMode] = useState<MinOrderMode>(() =>
-    bots[0] ? inferMinOrderMode(bots[0].config) : "auto"
+    initialEditBot ? inferMinOrderMode(initialEditBot.config) : "auto"
   );
   const [createDraft, setCreateDraft] = useState<BotFormDraft>(() =>
     syncDraftMinOrder(normalizeBotDraftCapital(createDraftFromPreset("SOL_USDC", deskMode)), "auto")
   );
-  const [editDraft, setEditDraft] = useState<BotFormDraft | null>(() => (bots[0] ? cloneDraft(bots[0].config) : null));
+  const [editDraft, setEditDraft] = useState<BotFormDraft | null>(() => (initialEditBot ? cloneDraft(initialEditBot.config) : null));
   const [feedback, setFeedback] = useState<FeedbackState>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [drawerBotId, setDrawerBotId] = useState<string | null>(null);
@@ -263,7 +264,7 @@ export function BotManagementConsole({
   const [archivedBotIds, setArchivedBotIds] = useState<Set<string>>(() => new Set());
 
   const [liveTelemetry, setLiveTelemetry] = useState<Record<string, BotRuntimeTelemetry>>({});
-  const hydratedBotIdRef = useRef<string | null>(initialSelectedBotId ?? bots[0]?.id ?? null);
+  const hydratedBotIdRef = useRef<string | null>(initialEditBot?.id ?? null);
   const liveEventSeenRef = useRef<Set<string>>(new Set());
   const botStatusRef = useRef<Record<string, string>>(
     bots.reduce<Record<string, string>>((accumulator, bot) => {
@@ -460,13 +461,6 @@ export function BotManagementConsole({
       active = false;
     };
   }, [botBoardCache, deskMode, selectedBotId]);
-
-  const activePreviewDraft =
-    panelKind === "create" && panelTab === "setup"
-      ? createDraft
-      : panelKind === "edit" && panelTab === "setup" && editDraft
-        ? editDraft
-        : null;
 
   function pushDeskToast(toast: DeskToast) {
     setDeskToasts((current) => {
@@ -818,6 +812,12 @@ export function BotManagementConsole({
   );
   const editDraftAnalysis = useMemo(() => (editDraft ? analyzeBotDraft(editDraft, liveTradingEnabled) : null), [editDraft, liveTradingEnabled]);
   const editDraftChanges = useMemo(() => (selectedBot && editDraft ? diffBotDraft(selectedBot.config, editDraft) : []), [selectedBot, editDraft]);
+  const activePreviewDraft =
+    panelKind === "create" && panelTab === "setup"
+      ? createDraft
+      : panelKind === "edit" && panelTab === "setup" && editDraft && editDraftChanges.length > 0
+        ? editDraft
+        : null;
   const requiresPauseBeforeEdit = Boolean(selectedBot && (selectedBot.status === "running" || selectedBot.status === "cooldown"));
   const createSubmitDisabled = isPending || busyKey === "create" || !createDraftAnalysis.canSubmit;
   const editSubmitDisabled =
