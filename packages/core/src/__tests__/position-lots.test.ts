@@ -51,6 +51,19 @@ describe("reconcileOpenPositionLots", () => {
     expect(reconciled?.entryPrice).toBeCloseTo(86.0614, 4);
   });
 
+  it("normalizes stale lot cost quote to the runtime deployed balance", () => {
+    const lots = [lot("stale-cost", 45.55, "2026-05-20T14:00:00.000Z", 83.2)];
+
+    const [reconciled] = reconcileOpenPositionLots(lots, {
+      deployedQuoteAmount: 47.11,
+      availableBaseAmount: 0.5474
+    });
+
+    expect(reconciled?.id).toBe("stale-cost");
+    expect(reconciled?.costQuote).toBeCloseTo(47.11, 8);
+    expect(reconciled?.entryPrice).toBeGreaterThan(86);
+  });
+
   it("returns no lots when runtime says no capital is deployed", () => {
     expect(reconcileOpenPositionLots([lot("phantom", 47.1, "2026-05-20T12:00:00.000Z")], { deployedQuoteAmount: 0, availableBaseAmount: 0 })).toEqual([]);
   });

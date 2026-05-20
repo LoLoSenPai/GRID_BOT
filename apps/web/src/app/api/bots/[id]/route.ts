@@ -320,96 +320,11 @@ async function buildMigratedOpenState(
         }
       : null,
   );
-  const openedBuyLevelByLotId = await getOpenedBuyLevelByLotId(reconciledOpenLots);
-  const existingCycleBuyLevelByLotId = getExistingCycleBuyLevelByLotId(latestState?.metadata);
-
   return {
     openLots: reconciledOpenLots,
-    gridCycles: buildGridCyclesFromLotOrigins(
-      levels,
-      reconciledOpenLots,
-      openedBuyLevelByLotId,
-      existingCycleBuyLevelByLotId,
-    ),
+    gridCycles: strategyService.remapOpenLotsToGridCycles(levels, reconciledOpenLots),
     removedOpenLotCount: openLots.length - reconciledOpenLots.length,
   };
-}
-
-async function getOpenedBuyLevelByLotId(openLots: PositionLot[]) {
-  const executionIds = openLots.map((lot) => lot.openedByExecutionId).filter(Boolean);
-  if (executionIds.length === 0) {
-    return new Map<string, number>();
-  }
-
-  const executions = await prisma.execution.findMany({
-    where: { id: { in: executionIds } },
-    select: {
-      id: true,
-      order: {
-        select: {
-          side: true,
-          levelIndex: true,
-        },
-      },
-    },
-  });
-  const executionLevelById = new Map(
-    executions
-      .filter((execution) => execution.order.side === "buy")
-      .map((execution) => [execution.id, execution.order.levelIndex]),
-  );
-
-  return new Map(
-    openLots.flatMap((lot) => {
-      const levelIndex = executionLevelById.get(lot.openedByExecutionId);
-      return typeof levelIndex === "number" ? [[lot.id, levelIndex] as const] : [];
-    }),
-  );
-}
-
-function getExistingCycleBuyLevelByLotId(metadata: unknown) {
-  const current = normalizeRuntimeMetadata(metadata);
-  return new Map(
-    Object.values(current.gridCycles ?? {}).map((cycle) => [
-      cycle.lotId,
-      cycle.buyLevelIndex,
-    ]),
-  );
-}
-
-function buildGridCyclesFromLotOrigins(
-  levels: ReturnType<GridStrategyService["calculateLevels"]>,
-  openLots: PositionLot[],
-  openedBuyLevelByLotId: Map<string, number>,
-  existingCycleBuyLevelByLotId: Map<string, number>,
-) {
-  if (levels.length < 2) {
-    return {};
-  }
-
-  const maxBuyLevelIndex = levels.length - 2;
-  const cycles: NonNullable<BotRuntimeMetadata["gridCycles"]> = {};
-
-  for (const lot of openLots) {
-    const rawBuyLevelIndex =
-      openedBuyLevelByLotId.get(lot.id) ?? existingCycleBuyLevelByLotId.get(lot.id);
-
-    if (typeof rawBuyLevelIndex !== "number") {
-      continue;
-    }
-
-    const buyLevelIndex = Math.max(0, Math.min(maxBuyLevelIndex, rawBuyLevelIndex));
-    const levelKey = String(buyLevelIndex);
-    const cycleKey = cycles[levelKey] ? `lot:${lot.id}` : levelKey;
-    cycles[cycleKey] = {
-      buyLevelIndex,
-      sellLevelIndex: buyLevelIndex + 1 < levels.length ? buyLevelIndex + 1 : null,
-      lotId: lot.id,
-      openedAt: lot.openedAt.toISOString(),
-    };
-  }
-
-  return cycles;
 }
 
 function mapPositionLot(lot: {

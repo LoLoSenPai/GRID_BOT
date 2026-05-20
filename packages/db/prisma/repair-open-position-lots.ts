@@ -4,8 +4,6 @@ import {
   GridStrategyService,
   reconcileOpenPositionLots,
   type BotRuntimeMetadata,
-  type GridCycle,
-  type GridLevel,
   type PositionLot,
 } from "@grid-bot/core";
 import type { Prisma } from "@prisma/client";
@@ -184,87 +182,6 @@ function describeLot(lot: PositionLot) {
   return `${lot.id} entry=${costBasis.toFixed(4)} cost=$${lot.costQuote.toFixed(2)} base=${lot.remainingBaseAmount.toFixed(6)}`;
 }
 
-async function getOpenedBuyLevelByLotId(
-  prisma: PrismaClientShape,
-  openLots: PositionLot[],
-) {
-  const executionIds = [
-    ...new Set(openLots.map((lot) => lot.openedByExecutionId).filter(Boolean)),
-  ];
-  if (executionIds.length === 0) {
-    return new Map<string, number>();
-  }
-
-  const executions = await prisma.execution.findMany({
-    where: { id: { in: executionIds } },
-    select: {
-      id: true,
-      order: {
-        select: {
-          side: true,
-          levelIndex: true,
-        },
-      },
-    },
-  });
-  const buyLevelByExecutionId = new Map(
-    executions
-      .filter((execution) => String(execution.order.side).toLowerCase() === "buy")
-      .map((execution) => [execution.id, execution.order.levelIndex]),
-  );
-
-  return new Map(
-    openLots.flatMap((lot) => {
-      const levelIndex = buyLevelByExecutionId.get(lot.openedByExecutionId);
-      return typeof levelIndex === "number" ? [[lot.id, levelIndex] as const] : [];
-    }),
-  );
-}
-
-function getExistingCycleBuyLevelByLotId(metadata: BotRuntimeMetadata) {
-  return new Map(
-    Object.values(metadata.gridCycles ?? {}).map((cycle) => [
-      cycle.lotId,
-      cycle.buyLevelIndex,
-    ]),
-  );
-}
-
-function buildGridCyclesFromLotOrigins(
-  levels: GridLevel[],
-  openLots: PositionLot[],
-  openedBuyLevelByLotId: Map<string, number>,
-  existingCycleBuyLevelByLotId: Map<string, number>,
-): Record<string, GridCycle> {
-  if (levels.length < 2) {
-    return {};
-  }
-
-  const cycles: Record<string, GridCycle> = {};
-  const maxBuyLevelIndex = levels.length - 2;
-
-  for (const lot of openLots) {
-    const rawBuyLevelIndex =
-      openedBuyLevelByLotId.get(lot.id) ?? existingCycleBuyLevelByLotId.get(lot.id);
-
-    if (typeof rawBuyLevelIndex !== "number") {
-      continue;
-    }
-
-    const buyLevelIndex = Math.max(0, Math.min(maxBuyLevelIndex, rawBuyLevelIndex));
-    const levelKey = String(buyLevelIndex);
-    const cycleKey = cycles[levelKey] ? `lot:${lot.id}` : levelKey;
-    cycles[cycleKey] = {
-      buyLevelIndex,
-      sellLevelIndex: buyLevelIndex + 1 < levels.length ? buyLevelIndex + 1 : null,
-      lotId: lot.id,
-      openedAt: lot.openedAt.toISOString(),
-    };
-  }
-
-  return cycles;
-}
-
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes("--help") || args.includes("-h")) {
@@ -316,14 +233,7 @@ async function main() {
       bot.config.gridType as never,
     );
     const currentMetadata = normalizeMetadata(latestState.metadata);
-    const openedBuyLevelByLotId = await getOpenedBuyLevelByLotId(prisma, reconciledOpenLots);
-    const existingCycleBuyLevelByLotId = getExistingCycleBuyLevelByLotId(currentMetadata);
-    const gridCycles = buildGridCyclesFromLotOrigins(
-      levels,
-      reconciledOpenLots,
-      openedBuyLevelByLotId,
-      existingCycleBuyLevelByLotId,
-    );
+    const gridCycles = strategyService.remapOpenLotsToGridCycles(levels, reconciledOpenLots);
     const lotsNeedRepair = !sameLotState(rawOpenLots, reconciledOpenLots);
     const metadataNeedsRepair = !sameGridCycles(currentMetadata.gridCycles, gridCycles);
 
@@ -344,7 +254,7 @@ async function main() {
     console.log(`  deployed=$${latestState.deployedQuoteAmount.toNumber().toFixed(2)} base=${latestState.availableBaseAmount.toNumber().toFixed(6)}`);
     console.log(`  open lots: ${rawOpenLots.length} -> ${reconciledOpenLots.length}`);
     if (lotsNeedRepair && removedLots.length === 0) {
-      console.log("  normalize open lot amounts to latest runtime base balance");
+      console.log("  normalize open lot amounts to latest runtime deployed/base balance");
     }
     if (metadataNeedsRepair) {
       console.log(`  rebuild gridCycles: ${Object.keys(currentMetadata.gridCycles ?? {}).length} -> ${Object.keys(gridCycles).length}`);
@@ -404,7 +314,7 @@ async function main() {
   }
 
   if (changedBotCount === 0) {
-    console.log("No inconsistent open position lots found.");
+    console.log("No stale open lots or grid-cycle mismatches found.");
   } else if (!apply) {
     console.log(`\nDry-run only. Re-run with --apply to write ${changedBotCount} bot repair(s).`);
   } else {

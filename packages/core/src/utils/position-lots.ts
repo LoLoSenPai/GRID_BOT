@@ -25,29 +25,44 @@ function round(value: number, decimals = 10) {
   return Math.round((value + Number.EPSILON) * factor) / factor;
 }
 
-function normalizeSelectedLotsToRuntimeBase(
+function normalizeSelectedLotsToRuntimeState(
   lots: PositionLot[],
-  runtime?: Pick<BotStateSnapshot, "availableBaseAmount"> | null
+  runtime?: Pick<BotStateSnapshot, "deployedQuoteAmount" | "availableBaseAmount"> | null
 ) {
-  const availableBaseAmount = runtime?.availableBaseAmount ?? null;
-  if (availableBaseAmount === null || availableBaseAmount <= 0 || lots.length === 0) {
+  if (!runtime || lots.length === 0) {
     return lots;
   }
 
+  const deployedQuoteAmount = runtime.deployedQuoteAmount;
+  const availableBaseAmount = runtime.availableBaseAmount;
   const totalBaseAmount = lots.reduce((sum, lot) => sum + lot.remainingBaseAmount, 0);
-  const tolerance = getBaseTolerance(availableBaseAmount);
-  if (totalBaseAmount <= 0 || Math.abs(totalBaseAmount - availableBaseAmount) <= tolerance) {
+  const totalCostQuote = lots.reduce((sum, lot) => sum + lot.costQuote, 0);
+  const baseScale =
+    availableBaseAmount > 0 &&
+    totalBaseAmount > 0 &&
+    Math.abs(totalBaseAmount - availableBaseAmount) > getBaseTolerance(availableBaseAmount)
+      ? availableBaseAmount / totalBaseAmount
+      : 1;
+  const quoteScale =
+    deployedQuoteAmount > 0 &&
+    totalCostQuote > 0 &&
+    Math.abs(totalCostQuote - deployedQuoteAmount) > getTolerance(deployedQuoteAmount)
+      ? deployedQuoteAmount / totalCostQuote
+      : 1;
+
+  if (baseScale === 1 && quoteScale === 1) {
     return lots;
   }
 
-  const scale = availableBaseAmount / totalBaseAmount;
   return lots.map((lot) => {
-    const remainingBaseAmount = round(lot.remainingBaseAmount * scale);
+    const remainingBaseAmount = round(lot.remainingBaseAmount * baseScale);
+    const costQuote = round(lot.costQuote * quoteScale);
     return {
       ...lot,
-      originalBaseAmount: Math.max(remainingBaseAmount, round(lot.originalBaseAmount * scale)),
+      originalBaseAmount: Math.max(remainingBaseAmount, round(lot.originalBaseAmount * baseScale)),
       remainingBaseAmount,
-      entryPrice: remainingBaseAmount > 0 ? round(lot.costQuote / remainingBaseAmount, 8) : lot.entryPrice
+      costQuote,
+      entryPrice: remainingBaseAmount > 0 && costQuote > 0 ? round(costQuote / remainingBaseAmount, 8) : lot.entryPrice
     };
   });
 }
@@ -73,7 +88,7 @@ export function reconcileOpenPositionLots(
     Math.abs(totalBaseAmount - availableBaseAmount) <= getBaseTolerance(availableBaseAmount);
 
   if (totalCostQuote <= deployedQuoteAmount + tolerance && baseMatches) {
-    return activeLots;
+    return normalizeSelectedLotsToRuntimeState(activeLots, runtime);
   }
 
   const targetAverageEntry =
@@ -101,7 +116,7 @@ export function reconcileOpenPositionLots(
     }
   }
 
-  return normalizeSelectedLotsToRuntimeBase(
+  return normalizeSelectedLotsToRuntimeState(
     selected.sort((left, right) => left.openedAt.getTime() - right.openedAt.getTime()),
     runtime
   );
