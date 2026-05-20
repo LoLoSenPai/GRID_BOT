@@ -135,6 +135,27 @@ function sameLotSet(left: PositionLot[], right: PositionLot[]) {
   return leftIds.every((id, index) => id === rightIds[index]);
 }
 
+function sameLotState(left: PositionLot[], right: PositionLot[]) {
+  if (!sameLotSet(left, right)) {
+    return false;
+  }
+
+  const rightById = new Map(right.map((lot) => [lot.id, lot]));
+  return left.every((leftLot) => {
+    const rightLot = rightById.get(leftLot.id);
+    if (!rightLot) {
+      return false;
+    }
+
+    return (
+      Math.abs(leftLot.remainingBaseAmount - rightLot.remainingBaseAmount) < 0.000001 &&
+      Math.abs(leftLot.originalBaseAmount - rightLot.originalBaseAmount) < 0.000001 &&
+      Math.abs(leftLot.entryPrice - rightLot.entryPrice) < 0.000001 &&
+      Math.abs(leftLot.costQuote - rightLot.costQuote) < 0.000001
+    );
+  });
+}
+
 function sameGridCycles(
   left: BotRuntimeMetadata["gridCycles"],
   right: BotRuntimeMetadata["gridCycles"],
@@ -220,7 +241,7 @@ async function main() {
     );
     const gridCycles = strategyService.remapOpenLotsToGridCycles(levels, reconciledOpenLots);
     const currentMetadata = normalizeMetadata(latestState.metadata);
-    const lotsNeedRepair = !sameLotSet(rawOpenLots, reconciledOpenLots);
+    const lotsNeedRepair = !sameLotState(rawOpenLots, reconciledOpenLots);
     const metadataNeedsRepair = !sameGridCycles(currentMetadata.gridCycles, gridCycles);
 
     if (!lotsNeedRepair && !metadataNeedsRepair) {
@@ -237,6 +258,9 @@ async function main() {
     console.log(`\n${bot.name} (${bot.id})`);
     console.log(`  deployed=$${latestState.deployedQuoteAmount.toNumber().toFixed(2)} base=${latestState.availableBaseAmount.toNumber().toFixed(6)}`);
     console.log(`  open lots: ${rawOpenLots.length} -> ${reconciledOpenLots.length}`);
+    if (lotsNeedRepair && removedLots.length === 0) {
+      console.log("  normalize open lot amounts to latest runtime base balance");
+    }
     if (metadataNeedsRepair) {
       console.log(`  rebuild gridCycles: ${Object.keys(currentMetadata.gridCycles ?? {}).length} -> ${Object.keys(gridCycles).length}`);
     }

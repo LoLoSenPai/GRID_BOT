@@ -38,6 +38,19 @@ describe("reconcileOpenPositionLots", () => {
     expect(reconcileOpenPositionLots(lots, { deployedQuoteAmount: 94.22, availableBaseAmount: 1.0959 }).map((entry) => entry.id)).toEqual(["real-mid", "real-top"]);
   });
 
+  it("normalizes stale lot base amounts to the runtime base balance", () => {
+    const lots = [lot("stale-base", 47.11, "2026-05-20T14:00:00.000Z", 83.2)];
+
+    const [reconciled] = reconcileOpenPositionLots(lots, {
+      deployedQuoteAmount: 47.11,
+      availableBaseAmount: 0.5474
+    });
+
+    expect(reconciled?.id).toBe("stale-base");
+    expect(reconciled?.remainingBaseAmount).toBeCloseTo(0.5474, 8);
+    expect(reconciled?.entryPrice).toBeCloseTo(86.0614, 4);
+  });
+
   it("returns no lots when runtime says no capital is deployed", () => {
     expect(reconcileOpenPositionLots([lot("phantom", 47.1, "2026-05-20T12:00:00.000Z")], { deployedQuoteAmount: 0, availableBaseAmount: 0 })).toEqual([]);
   });
