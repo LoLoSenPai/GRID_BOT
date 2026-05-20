@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { PositionLot } from "../domain/types";
 import { reconcileOpenPositionLots } from "../utils/position-lots";
 
-function lot(id: string, costQuote: number, openedAt: string): PositionLot {
+function lot(id: string, costQuote: number, openedAt: string, costBasis = 86): PositionLot {
   return {
     id,
     botId: "bot_1",
-    originalBaseAmount: costQuote / 86,
-    remainingBaseAmount: costQuote / 86,
-    entryPrice: 86,
+    originalBaseAmount: costQuote / costBasis,
+    remainingBaseAmount: costQuote / costBasis,
+    entryPrice: costBasis,
     costQuote,
     openedByExecutionId: `exec-${id}`,
     closedByExecutionId: null,
@@ -28,13 +28,14 @@ describe("reconcileOpenPositionLots", () => {
     expect(reconcileOpenPositionLots(lots, { deployedQuoteAmount: 94.21, availableBaseAmount: 1.095 }).map((entry) => entry.id)).toEqual(["old", "new"]);
   });
 
-  it("drops older phantom lots when runtime deployed quote only covers the newest lot", () => {
+  it("drops lots that do not match the runtime average entry", () => {
     const lots = [
-      lot("phantom-bottom", 47.1, "2026-05-20T12:00:00.000Z"),
-      lot("real-top", 47.11, "2026-05-20T13:00:00.000Z")
+      lot("phantom-bottom", 47.1, "2026-05-20T14:00:00.000Z", 83.2),
+      lot("real-mid", 47.11, "2026-05-20T12:00:00.000Z", 85.85),
+      lot("real-top", 47.11, "2026-05-20T13:00:00.000Z", 86.06)
     ];
 
-    expect(reconcileOpenPositionLots(lots, { deployedQuoteAmount: 47.11, availableBaseAmount: 0.5474 }).map((entry) => entry.id)).toEqual(["real-top"]);
+    expect(reconcileOpenPositionLots(lots, { deployedQuoteAmount: 94.22, availableBaseAmount: 1.0959 }).map((entry) => entry.id)).toEqual(["real-mid", "real-top"]);
   });
 
   it("returns no lots when runtime says no capital is deployed", () => {
