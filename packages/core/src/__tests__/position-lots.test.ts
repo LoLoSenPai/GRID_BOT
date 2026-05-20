@@ -67,4 +67,26 @@ describe("reconcileOpenPositionLots", () => {
   it("returns no lots when runtime says no capital is deployed", () => {
     expect(reconcileOpenPositionLots([lot("phantom", 47.1, "2026-05-20T12:00:00.000Z")], { deployedQuoteAmount: 0, availableBaseAmount: 0 })).toEqual([]);
   });
+
+  it("returns no lots when runtime only has dust capital", () => {
+    expect(
+      reconcileOpenPositionLots([lot("phantom", 47.1, "2026-05-20T12:00:00.000Z")], {
+        deployedQuoteAmount: 0.004,
+        availableBaseAmount: 0.0000001
+      })
+    ).toEqual([]);
+  });
+
+  it("ignores dust lots that would otherwise create phantom chart cycles", () => {
+    const lots = [
+      lot("dust-bottom", 0.001, "2026-05-20T11:00:00.000Z", 83.2),
+      lot("real-mid", 47.11, "2026-05-20T12:00:00.000Z", 85.85),
+      lot("real-top", 47.11, "2026-05-20T13:00:00.000Z", 86.06)
+    ];
+
+    expect(reconcileOpenPositionLots(lots, { deployedQuoteAmount: 94.22, availableBaseAmount: 1.0959 }).map((entry) => entry.id)).toEqual([
+      "real-mid",
+      "real-top"
+    ]);
+  });
 });

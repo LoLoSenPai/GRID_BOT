@@ -26,6 +26,8 @@ type DbLot = {
 type DbBot = {
   id: string;
   name: string;
+  mode: string;
+  status: string;
   config: {
     lowPrice: { toNumber(): number };
     highPrice: { toNumber(): number };
@@ -37,6 +39,7 @@ type DbBot = {
     deployedQuoteAmount: { toNumber(): number };
     availableBaseAmount: { toNumber(): number };
     metadata: Prisma.JsonValue;
+    createdAt: Date;
   }>;
   positionLots: DbLot[];
 };
@@ -46,9 +49,12 @@ function printHelp() {
 Usage:
   pnpm db:repair-open-lots
   pnpm db:repair-open-lots -- --bot-id <botId>
+  pnpm db:repair-open-lots -- --bot-name "plus agressif"
+  pnpm db:repair-open-lots -- --inspect --bot-name "plus agressif"
   pnpm db:repair-open-lots -- --apply
 
 Default mode is dry-run. Use --apply to write the cleaned open lots.
+Use --inspect to print the raw DB source behind chart Bxx/Sxx labels.
 
 What it fixes:
   - Removes stale position_lots that no longer match latest deployed quote/base state.
@@ -182,6 +188,80 @@ function describeLot(lot: PositionLot) {
   return `${lot.id} entry=${costBasis.toFixed(4)} cost=$${lot.costQuote.toFixed(2)} base=${lot.remainingBaseAmount.toFixed(6)}`;
 }
 
+function formatLevelCode(levelIndex: number | null | undefined) {
+  if (typeof levelIndex !== "number" || !Number.isFinite(levelIndex)) {
+    return "--";
+  }
+
+  return String(levelIndex + 1).padStart(2, "0");
+}
+
+function formatCycleLabel(cycle: NonNullable<BotRuntimeMetadata["gridCycles"]>[string]) {
+  const buyLabel = `B${formatLevelCode(cycle.buyLevelIndex)}`;
+  const sellLabel = cycle.sellLevelIndex === null ? "--" : `S${formatLevelCode(cycle.sellLevelIndex)}`;
+  return `${buyLabel}/${sellLabel}`;
+}
+
+function getLotMateriality(lot: PositionLot) {
+  return lot.remainingBaseAmount > 0.000001 && lot.costQuote > 0.05;
+}
+
+function printInspectBlock({
+  bot,
+  latestState,
+  rawOpenLots,
+  reconciledOpenLots,
+  currentMetadata,
+  gridCycles,
+  lotsNeedRepair,
+  metadataNeedsRepair,
+}: {
+  bot: DbBot;
+  latestState: DbBot["stateSnapshots"][number];
+  rawOpenLots: PositionLot[];
+  reconciledOpenLots: PositionLot[];
+  currentMetadata: BotRuntimeMetadata;
+  gridCycles: NonNullable<BotRuntimeMetadata["gridCycles"]>;
+  lotsNeedRepair: boolean;
+  metadataNeedsRepair: boolean;
+}) {
+  const rawLotIds = new Set(rawOpenLots.map((lot) => lot.id));
+  const reconciledLotIds = new Set(reconciledOpenLots.map((lot) => lot.id));
+
+  console.log(`\n[inspect] ${bot.name} (${bot.id})`);
+  console.log(`  mode=${bot.mode} status=${bot.status}`);
+  console.log(
+    `  config range=${bot.config?.lowPrice.toNumber()}-${bot.config?.highPrice.toNumber()} rails=${bot.config?.levelCount} grid=${bot.config?.gridType}`,
+  );
+  console.log(
+    `  latestState=${latestState.id} at=${latestState.createdAt.toISOString()} deployed=${latestState.deployedQuoteAmount.toNumber().toFixed(10)} base=${latestState.availableBaseAmount.toNumber().toFixed(10)}`,
+  );
+
+  console.log(`  raw open lots (${rawOpenLots.length})`);
+  for (const lot of rawOpenLots) {
+    console.log(`    ${describeLot(lot)} material=${getLotMateriality(lot) ? "yes" : "no"}`);
+  }
+
+  console.log(`  reconciled lots (${reconciledOpenLots.length})`);
+  for (const lot of reconciledOpenLots) {
+    console.log(`    ${describeLot(lot)}`);
+  }
+
+  console.log(`  current metadata.gridCycles (${Object.keys(currentMetadata.gridCycles ?? {}).length})`);
+  for (const [key, cycle] of Object.entries(currentMetadata.gridCycles ?? {}).sort((left, right) => left[0].localeCompare(right[0]))) {
+    console.log(
+      `    key=${key} ${formatCycleLabel(cycle)} lot=${cycle.lotId} rawLot=${rawLotIds.has(cycle.lotId) ? "yes" : "no"} reconciledLot=${reconciledLotIds.has(cycle.lotId) ? "yes" : "no"}`,
+    );
+  }
+
+  console.log(`  rebuilt gridCycles (${Object.keys(gridCycles).length})`);
+  for (const [key, cycle] of Object.entries(gridCycles).sort((left, right) => left[0].localeCompare(right[0]))) {
+    console.log(`    key=${key} ${formatCycleLabel(cycle)} lot=${cycle.lotId}`);
+  }
+
+  console.log(`  repair needed: lots=${lotsNeedRepair ? "yes" : "no"} metadata=${metadataNeedsRepair ? "yes" : "no"}`);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes("--help") || args.includes("-h")) {
@@ -190,7 +270,9 @@ async function main() {
   }
 
   const apply = args.includes("--apply");
+  const inspect = args.includes("--inspect");
   const botId = getArgValue(args, "--bot-id");
+  const botName = getArgValue(args, "--bot-name");
   const { prisma } = (await import("../src/client")) as { prisma: PrismaClientShape };
   const strategyService = new GridStrategyService();
 
@@ -198,6 +280,7 @@ async function main() {
     where: {
       archivedAt: null,
       ...(botId ? { id: botId } : {}),
+      ...(botName ? { name: { contains: botName, mode: "insensitive" } } : {}),
     },
     include: {
       config: true,
@@ -212,6 +295,12 @@ async function main() {
     },
     orderBy: { createdAt: "asc" },
   })) as unknown as DbBot[];
+
+  if (bots.length === 0) {
+    console.log("No matching active bots found.");
+    await prisma.$disconnect();
+    return;
+  }
 
   let changedBotCount = 0;
 
@@ -236,6 +325,19 @@ async function main() {
     const gridCycles = strategyService.remapOpenLotsToGridCycles(levels, reconciledOpenLots);
     const lotsNeedRepair = !sameLotState(rawOpenLots, reconciledOpenLots);
     const metadataNeedsRepair = !sameGridCycles(currentMetadata.gridCycles, gridCycles);
+
+    if (inspect) {
+      printInspectBlock({
+        bot,
+        latestState,
+        rawOpenLots,
+        reconciledOpenLots,
+        currentMetadata,
+        gridCycles,
+        lotsNeedRepair,
+        metadataNeedsRepair,
+      });
+    }
 
     if (!lotsNeedRepair && !metadataNeedsRepair) {
       continue;

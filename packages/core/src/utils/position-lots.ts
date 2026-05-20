@@ -5,7 +5,11 @@ const MIN_RECONCILE_TOLERANCE_BASE = 0.000001;
 const RECONCILE_TOLERANCE_RATIO = 0.001;
 
 function isOpenLot(lot: PositionLot) {
-  return lot.remainingBaseAmount > 0 && lot.costQuote > 0 && !lot.closedAt;
+  return (
+    lot.remainingBaseAmount > MIN_RECONCILE_TOLERANCE_BASE &&
+    lot.costQuote > MIN_RECONCILE_TOLERANCE_USD &&
+    !lot.closedAt
+  );
 }
 
 function getTolerance(deployedQuoteAmount: number) {
@@ -73,14 +77,18 @@ export function reconcileOpenPositionLots(
 ) {
   const activeLots = lots.filter(isOpenLot);
   const deployedQuoteAmount = runtime?.deployedQuoteAmount ?? null;
+  const availableBaseAmount = runtime?.availableBaseAmount ?? null;
 
-  if (deployedQuoteAmount === null || deployedQuoteAmount <= 0) {
+  if (deployedQuoteAmount === null || deployedQuoteAmount <= MIN_RECONCILE_TOLERANCE_USD) {
     return deployedQuoteAmount === null ? activeLots : [];
+  }
+
+  if (availableBaseAmount !== null && availableBaseAmount <= MIN_RECONCILE_TOLERANCE_BASE) {
+    return [];
   }
 
   const tolerance = getTolerance(deployedQuoteAmount);
   const totalCostQuote = activeLots.reduce((sum, lot) => sum + lot.costQuote, 0);
-  const availableBaseAmount = runtime?.availableBaseAmount ?? null;
   const totalBaseAmount = activeLots.reduce((sum, lot) => sum + lot.remainingBaseAmount, 0);
   const baseMatches =
     availableBaseAmount === null ||
