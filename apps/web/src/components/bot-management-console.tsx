@@ -185,6 +185,8 @@ type DeskToast = {
   message: string;
 };
 
+const LIVE_DETAIL_REFRESH_DELAYS_MS = [700, 1800, 3500, 6500];
+
 type RuntimeDeskEvent = {
   kind: "execution";
   botId: string;
@@ -499,18 +501,31 @@ export function BotManagementConsole({
     });
   }
 
-  function scheduleLiveRefresh(botId: string) {
-    if (liveRefreshTimeoutsRef.current.has(botId) || !botBoardCacheRef.current[botId]) {
+  function clearScheduledLiveRefresh(botId: string) {
+    const existing = liveRefreshTimeoutsRef.current.get(botId);
+    if (!existing) {
       return;
     }
 
-    const delaysMs = [1200];
-    const timeouts = delaysMs.map((delayMs, index) =>
+    for (const timeout of existing) {
+      clearTimeout(timeout);
+    }
+    liveRefreshTimeoutsRef.current.delete(botId);
+  }
+
+  function scheduleLiveRefresh(botId: string) {
+    if (!botBoardCacheRef.current[botId]) {
+      return;
+    }
+
+    clearScheduledLiveRefresh(botId);
+
+    const timeouts = LIVE_DETAIL_REFRESH_DELAYS_MS.map((delayMs, index) =>
       setTimeout(() => {
         void refreshBotDetail(botId).catch(() => {
           // Runtime SSE already updated the live desk; a detail refresh miss should not blank the chart.
         });
-        if (index === delaysMs.length - 1) {
+        if (index === LIVE_DETAIL_REFRESH_DELAYS_MS.length - 1) {
           liveRefreshTimeoutsRef.current.delete(botId);
         }
       }, delayMs)
