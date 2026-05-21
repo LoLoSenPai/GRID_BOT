@@ -12,6 +12,9 @@ type WalletData = {
     solAvailable?: number;
     usdc: number;
     wbtc: number;
+    hype: number;
+    hypeReservedByBots?: number;
+    hypeAvailable?: number;
     allocatedUsd: number;
     reservedUsd?: number;
     availableUsd: number;
@@ -133,6 +136,7 @@ export function WalletBalancePanel({ deskMode }: { deskMode: BotMode }) {
                 ) : null}
                 <BalanceRow label="USDC" value={formatNumber(data.usdc, 2)} accent />
                 <BalanceRow label="WBTC" value={formatNumber(data.wbtc, 6)} />
+                <BalanceRow label="HYPE" value={formatNumber(data.hype, 4)} />
             </div>
 
             <div className="mt-2.5 border-t border-[var(--line)] pt-2 space-y-1">

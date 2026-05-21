@@ -6,6 +6,7 @@ const STREAM_RECONNECT_DELAY_MS = 2_000;
 const FEED_SYMBOL_BY_ID = new Map<string, string>([
   [normalizePythFeedId(PYTH_FEED_IDS.SOL_USD), "SOL"],
   [normalizePythFeedId(PYTH_FEED_IDS.BTC_USD), "BTC"],
+  [normalizePythFeedId(PYTH_FEED_IDS.HYPE_USD), "HYPE"],
 ]);
 
 interface HermesStreamPayload {

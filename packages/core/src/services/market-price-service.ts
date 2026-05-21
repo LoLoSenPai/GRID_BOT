@@ -19,6 +19,7 @@ interface HermesLatestResponse {
 
 const FEED_ID_BY_SYMBOL = {
   BTC: PYTH_FEED_IDS.BTC_USD,
+  HYPE: PYTH_FEED_IDS.HYPE_USD,
   SOL: PYTH_FEED_IDS.SOL_USD,
 } as const;
 

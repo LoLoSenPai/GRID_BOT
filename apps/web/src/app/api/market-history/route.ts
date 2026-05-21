@@ -4,7 +4,7 @@ import { readSession } from "@/lib/auth";
 import { type HistoryResolution } from "@/lib/charting";
 import { fetchMarketHistory } from "@/lib/market-history";
 
-const validSymbols = new Set(["SOL", "BTC"]);
+const validSymbols = new Set(["SOL", "BTC", "HYPE"]);
 const validResolutions = new Set<HistoryResolution>(["5m", "30m", "1h", "4h", "1d", "1w", "1mo"]);
 
 export async function GET(request: Request) {
@@ -26,7 +26,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const history = await fetchMarketHistory(symbol as "SOL" | "BTC", resolution);
+    const history = await fetchMarketHistory(symbol as "SOL" | "BTC" | "HYPE", resolution);
     return NextResponse.json(history);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown history error";

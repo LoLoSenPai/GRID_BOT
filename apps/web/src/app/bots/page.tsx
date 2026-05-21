@@ -9,7 +9,7 @@ import { DESK_MODE_COOKIE, parseDeskMode } from "@/lib/desk-mode";
 import { getBotDetail, getBotsOverview } from "@/lib/data";
 import { buildMarketPreviewBoard, serializeBotBoard, serializeBotOverview, type PreviewSymbol } from "@/lib/bot-view-data";
 
-const PREVIEW_SYMBOLS = ["SOL", "BTC"] as const;
+const PREVIEW_SYMBOLS = ["SOL", "BTC", "HYPE"] as const;
 
 export default async function BotsPage({
   searchParams

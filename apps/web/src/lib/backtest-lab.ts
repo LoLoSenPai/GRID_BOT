@@ -1,7 +1,7 @@
 import type { BacktestConfig } from "@grid-bot/core";
 import { GridType, MinOrderMode, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
 
-export const LAB_PAIR_OPTIONS = ["SOL", "BTC"] as const;
+export const LAB_PAIR_OPTIONS = ["SOL", "BTC", "HYPE"] as const;
 export const LAB_LOOKBACK_OPTIONS = [30, 60, 90, 180] as const;
 export const LAB_RESOLUTION_OPTIONS = ["5m", "30m", "1h", "4h"] as const;
 const MAX_LOOKBACK_BY_RESOLUTION: Record<LabResolution, LabLookbackDays> = {

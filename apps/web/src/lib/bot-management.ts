@@ -139,6 +139,40 @@ export const BOT_PAIR_PRESETS = {
       autoRecenterMaxPerDay: DEFAULTS.autoRecenterMaxPerDay,
       outOfRangePause: true
     }
+  },
+  HYPE_USDC: {
+    id: "HYPE_USDC",
+    label: "HYPE/USDC",
+    baseMint: MINTS.HYPE,
+    quoteMint: MINTS.USDC,
+    baseSymbol: "HYPE",
+    quoteSymbol: "USDC",
+    baseDecimals: 9,
+    quoteDecimals: 6,
+    defaultName: "HYPE / USDC Grid",
+    defaults: {
+      strategyMode: StrategyMode.AccumulateUsdc,
+      mode: BotMode.Paper,
+      gridType: GridType.Arithmetic,
+      totalBudgetUsd: 800,
+      maxDeployableUsd: 800,
+      reserveQuoteAmount: 0,
+      lowPrice: 50,
+      highPrice: 70,
+      levelCount: 18,
+      minOrderQuoteAmount: 30,
+      maxSlippageBps: 50,
+      cooldownMs: DEFAULTS.cooldownMs,
+      maxOrdersPerHour: DEFAULTS.maxOrdersPerHour,
+      maxDrawdownPct: 25,
+      maxConsecutiveFailures: DEFAULTS.maxConsecutiveFailures,
+      levelLockMs: DEFAULTS.levelLockMs,
+      priceConfirmationWindowMs: DEFAULTS.priceConfirmationWindowMs,
+      recenterMode: RecenterMode.Manual,
+      autoRecenterMinIntervalMs: DEFAULTS.autoRecenterMinIntervalMs,
+      autoRecenterMaxPerDay: DEFAULTS.autoRecenterMaxPerDay,
+      outOfRangePause: true
+    }
   }
 } as const;
 
@@ -152,16 +186,17 @@ export const BOT_BEHAVIOR_PRESETS = {
   token_stacker: {
     id: "token_stacker",
     label: "Token stacker",
-    summary: "Buy each grid level once. Recycle only the cost on the way back up and keep the profit in SOL/BTC.",
+    summary: "Buy each grid level once. Recycle only the cost on the way back up and keep the profit in the base token.",
     tags: ["slower", "bear market", "accumulate token"],
-    operatorHint: "Good when you want to stack SOL/BTC during long downside or sideways phases.",
+    operatorHint: "Good when you want to stack the base token during long downside or sideways phases.",
     cycleRule: "A buy level stays occupied until its paired sell closes the cycle.",
     exitRule: "Recover the quote spent, keep the profit in base asset.",
     strategyMode: StrategyMode.AccumulateBase,
     gridType: GridType.Arithmetic,
     levelCountByPair: {
       SOL_USDC: 12,
-      BTC_USDC: 10
+      BTC_USDC: 10,
+      HYPE_USDC: 12
     },
     cooldownMs: 120_000,
     maxOrdersPerHour: 18,
@@ -171,7 +206,7 @@ export const BOT_BEHAVIOR_PRESETS = {
   balanced_cycle: {
     id: "balanced_cycle",
     label: "Balanced cycle",
-    summary: "Buy each level once, then recycle part of the move back into USDC while keeping part in SOL/BTC.",
+    summary: "Buy each level once, then recycle part of the move back into USDC while keeping part in the base token.",
     tags: ["medium pace", "balanced", "default"],
     operatorHint: "Good default if you want the bot to keep trading the range without fully abandoning token accumulation.",
     cycleRule: "A buy level stays occupied until the paired sell completes.",
@@ -180,7 +215,8 @@ export const BOT_BEHAVIOR_PRESETS = {
     gridType: GridType.Arithmetic,
     levelCountByPair: {
       SOL_USDC: 16,
-      BTC_USDC: 14
+      BTC_USDC: 14,
+      HYPE_USDC: 16
     },
     cooldownMs: 45_000,
     maxOrdersPerHour: 48,
@@ -199,7 +235,8 @@ export const BOT_BEHAVIOR_PRESETS = {
     gridType: GridType.Arithmetic,
     levelCountByPair: {
       SOL_USDC: 24,
-      BTC_USDC: 18
+      BTC_USDC: 18,
+      HYPE_USDC: 22
     },
     cooldownMs: 15_000,
     maxOrdersPerHour: 96,
@@ -313,7 +350,7 @@ export function createDraftFromPreset(
 
 export function applyPaperTurbo(draft: BotFormDraft, currentPrice?: number | null): BotFormDraft {
   const centerPrice = currentPrice && currentPrice > 0 ? currentPrice : (draft.lowPrice + draft.highPrice) / 2;
-  const totalWidthRatio = draft.presetId === "BTC_USDC" ? 0.06 : 0.08;
+  const totalWidthRatio = draft.presetId === "BTC_USDC" ? 0.06 : draft.presetId === "HYPE_USDC" ? 0.1 : 0.08;
   const halfWidthRatio = totalWidthRatio / 2;
   const lowPrice = roundDraftNumber(centerPrice * (1 - halfWidthRatio), centerPrice >= 1000 ? 0 : 2);
   const highPrice = roundDraftNumber(centerPrice * (1 + halfWidthRatio), centerPrice >= 1000 ? 0 : 2);
@@ -324,7 +361,7 @@ export function applyPaperTurbo(draft: BotFormDraft, currentPrice?: number | nul
     gridType: GridType.Arithmetic,
     lowPrice,
     highPrice,
-    levelCount: draft.presetId === "BTC_USDC" ? 16 : 18,
+    levelCount: draft.presetId === "BTC_USDC" ? 16 : draft.presetId === "HYPE_USDC" ? 20 : 18,
     cooldownMs: 30_000,
     maxOrdersPerHour: 60,
     levelLockMs: 15_000,
@@ -368,6 +405,10 @@ export function inferPresetId(baseSymbol: string): BotPairPresetId | null {
 
   if (baseSymbol === "BTC") {
     return "BTC_USDC";
+  }
+
+  if (baseSymbol === "HYPE") {
+    return "HYPE_USDC";
   }
 
   return null;

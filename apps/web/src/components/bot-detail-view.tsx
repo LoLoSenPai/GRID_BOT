@@ -33,7 +33,7 @@ const historyRequestCache = new Map<string, Promise<HistoryCacheEntry>>();
 export type BotDetailViewData = {
   id: string;
   name: string;
-  baseSymbol: "SOL" | "BTC";
+  baseSymbol: string;
   quoteSymbol: string;
   strategyMode: string;
   mode: string;

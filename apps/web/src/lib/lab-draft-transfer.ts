@@ -57,7 +57,7 @@ function isBotMode(value: unknown): value is BotMode {
 }
 
 function isPairPresetId(value: unknown): value is BotPairPresetId {
-  return value === "SOL_USDC" || value === "BTC_USDC";
+  return value === "SOL_USDC" || value === "BTC_USDC" || value === "HYPE_USDC";
 }
 
 function parseConfig(value: unknown): LabDraftConfig | null {
@@ -110,7 +110,15 @@ function parseConfig(value: unknown): LabDraftConfig | null {
 }
 
 export function getLabPairPresetId(pair: LabPair): BotPairPresetId {
-  return pair === "BTC" ? "BTC_USDC" : "SOL_USDC";
+  if (pair === "BTC") {
+    return "BTC_USDC";
+  }
+
+  if (pair === "HYPE") {
+    return "HYPE_USDC";
+  }
+
+  return "SOL_USDC";
 }
 
 export function createLabBotDraftTransfer(input: {

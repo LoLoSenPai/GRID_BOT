@@ -7,7 +7,7 @@ import { CachedCandleHistoryProvider } from "@/lib/market-data/cached-candle-his
 import { PythHistoryProvider } from "@/lib/market-data/pyth-history-provider";
 import { getHistoryWindow } from "@/lib/market-history-window";
 
-type SupportedSymbol = "SOL" | "BTC";
+type SupportedSymbol = "SOL" | "BTC" | "HYPE";
 
 const HISTORY_CACHE_TTL_MS = 60_000;
 

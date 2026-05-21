@@ -33,7 +33,9 @@ export async function GET() {
       getReservedBaseBySymbol(),
     ]);
     const reservedSol = reservedBaseBySymbol.SOL ?? 0;
+    const reservedHype = reservedBaseBySymbol.HYPE ?? 0;
     const freeSol = Math.max(0, balances.sol - reservedSol);
+    const freeHype = Math.max(0, balances.hype - reservedHype);
 
     return NextResponse.json(
       {
@@ -43,6 +45,9 @@ export async function GET() {
         solAvailable: freeSol,
         usdc: balances.usdc,
         wbtc: balances.wbtc,
+        hype: balances.hype,
+        hypeReservedByBots: reservedHype,
+        hypeAvailable: freeHype,
         allocatedUsd: allocatedBudget,
         reservedUsd: reservedQuote,
         availableUsd: calculateAvailableBudgetUsd({

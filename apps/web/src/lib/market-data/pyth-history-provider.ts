@@ -7,7 +7,8 @@ import { type HistoryResolution, getResolutionParam } from "@/lib/charting";
 
 const SYMBOL_MAP: Record<string, string> = {
   SOL: "Crypto.SOL/USD",
-  BTC: "Crypto.BTC/USD"
+  BTC: "Crypto.BTC/USD",
+  HYPE: "Crypto.HYPE/USD"
 };
 const PYTH_HISTORY_TIMEOUT_MS = 8_000;
 

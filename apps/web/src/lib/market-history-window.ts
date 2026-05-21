@@ -2,7 +2,8 @@ import { type HistoryResolution } from "./charting";
 
 const SYMBOL_HISTORY_START_SECONDS = {
   SOL: Math.floor(Date.UTC(2020, 3, 10, 0, 0, 0, 0) / 1000),
-  BTC: Math.floor(Date.UTC(2010, 6, 17, 0, 0, 0, 0) / 1000)
+  BTC: Math.floor(Date.UTC(2010, 6, 17, 0, 0, 0, 0) / 1000),
+  HYPE: Math.floor(Date.UTC(2025, 9, 8, 0, 0, 0, 0) / 1000)
 } as const;
 
 const HISTORY_LOOKBACK_SECONDS: Record<HistoryResolution, number> = {

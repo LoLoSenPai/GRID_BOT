@@ -7,7 +7,7 @@ import { calculateGridLevels, getNextGridTriggers, parsePendingSignal } from "@/
 import { buildCandlesFromSnapshots } from "@/lib/charting";
 import type { getBotDetail, getBotsOverview } from "@/lib/data";
 
-const PREVIEW_SYMBOLS = ["SOL", "BTC"] as const;
+const PREVIEW_SYMBOLS = ["SOL", "BTC", "HYPE"] as const;
 export type PreviewSymbol = (typeof PREVIEW_SYMBOLS)[number];
 
 export type MarketPreviewHistory = {
@@ -61,7 +61,15 @@ function isVisibleSystemLog(log: { category: string; level: string; message: str
 }
 
 function getPairPresetIdFromSymbol(symbol: PreviewSymbol): BotPairPresetId {
-  return symbol === "SOL" ? "SOL_USDC" : "BTC_USDC";
+  if (symbol === "BTC") {
+    return "BTC_USDC";
+  }
+
+  if (symbol === "HYPE") {
+    return "HYPE_USDC";
+  }
+
+  return "SOL_USDC";
 }
 
 function toDraftConfig(bot: Pick<OverviewBot, "baseSymbol" | "name" | "strategyMode" | "mode" | "config">): BotFormDraft {
@@ -344,7 +352,7 @@ export function serializeBotBoard(bot: DetailBot): BotDetailViewData {
   return {
     id: bot.id,
     name: bot.name,
-    baseSymbol: bot.baseSymbol as "SOL" | "BTC",
+    baseSymbol: bot.baseSymbol,
     quoteSymbol: bot.quoteSymbol,
     strategyMode: bot.strategyMode,
     mode: bot.mode,

@@ -236,7 +236,7 @@ export function BotManagementConsole({
   liveTradingEnabled: boolean;
   initialSelectedBotId?: string | null;
   botBoards: Partial<Record<string, BotDetailViewData>>;
-  marketPreviewBoards?: Partial<Record<"SOL" | "BTC", BotDetailViewData>>;
+  marketPreviewBoards?: Partial<Record<string, BotDetailViewData>>;
 }) {
   const router = useRouter();
   const initialEditBot = bots.find((bot) => bot.id === (initialSelectedBotId ?? null)) ?? bots[0] ?? null;
@@ -349,7 +349,7 @@ export function BotManagementConsole({
   }, [botBoardCache, drawerBotId, runtimeBots]);
   const boardsBySymbol = useMemo(
     () =>
-      Object.values(botBoardCache).reduce<Partial<Record<"SOL" | "BTC", BotDetailViewData>>>((accumulator, board) => {
+      Object.values(botBoardCache).reduce<Partial<Record<string, BotDetailViewData>>>((accumulator, board) => {
         if (!board) {
           return accumulator;
         }
@@ -359,7 +359,7 @@ export function BotManagementConsole({
       }, {}),
     [botBoardCache]
   );
-  const createBaseSymbol = BOT_PAIR_PRESETS[createDraft.presetId].baseSymbol as "SOL" | "BTC";
+  const createBaseSymbol = BOT_PAIR_PRESETS[createDraft.presetId].baseSymbol;
   const createBoardSource = boardsBySymbol[createBaseSymbol] ?? marketPreviewBoards[createBaseSymbol] ?? null;
   const createPreviewBoard = useMemo(
     () => (createBoardSource ? buildCreatePreviewBoard(createBoardSource, createDraft) : null),

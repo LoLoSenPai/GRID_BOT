@@ -9,6 +9,7 @@ export type WalletBalances = {
   sol: number;
   usdc: number;
   wbtc: number;
+  hype: number;
 };
 
 export type LoadedExecutionWallet = {
@@ -68,8 +69,9 @@ export class WalletService {
   async getBalances(): Promise<WalletBalances> {
     const usdcMint = new PublicKey(MINTS.USDC);
     const btcMint = new PublicKey(MINTS.BTC);
+    const hypeMint = new PublicKey(MINTS.HYPE);
 
-    const [solLamports, usdcAccounts, btcAccounts] = await Promise.all([
+    const [solLamports, usdcAccounts, btcAccounts, hypeAccounts] = await Promise.all([
       this.connection.getBalance(this.publicKey),
       this.connection.getParsedTokenAccountsByOwner(this.publicKey, {
         mint: usdcMint,
@@ -77,16 +79,21 @@ export class WalletService {
       this.connection.getParsedTokenAccountsByOwner(this.publicKey, {
         mint: btcMint,
       }),
+      this.connection.getParsedTokenAccountsByOwner(this.publicKey, {
+        mint: hypeMint,
+      }),
     ]);
 
     const usdcBalance = sumTokenAccountBalances(usdcAccounts.value);
     const btcBalance = sumTokenAccountBalances(btcAccounts.value);
+    const hypeBalance = sumTokenAccountBalances(hypeAccounts.value);
 
     return {
       pubkey: this.publicKey.toBase58(),
       sol: solLamports / 1e9,
       usdc: usdcBalance,
       wbtc: btcBalance,
+      hype: hypeBalance,
     };
   }
 

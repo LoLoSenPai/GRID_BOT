@@ -401,7 +401,15 @@ type ReplayDefenseTimelineEntry = {
 
 function inferPairFromDraft(draft: BotFormDraft): LabPair {
   const symbol = BOT_PAIR_PRESETS[draft.presetId].baseSymbol;
-  return symbol === "BTC" ? "BTC" : "SOL";
+  if (symbol === "BTC") {
+    return "BTC";
+  }
+
+  if (symbol === "HYPE") {
+    return "HYPE";
+  }
+
+  return "SOL";
 }
 
 function inferMinOrderMode(draft: BotFormDraft) {
