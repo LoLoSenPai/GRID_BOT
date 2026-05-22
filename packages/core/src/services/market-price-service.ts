@@ -1,4 +1,4 @@
-import { PYTH_FEED_IDS, getEnv } from "@grid-bot/common";
+import { MINTS, PYTH_FEED_IDS, getEnv } from "@grid-bot/common";
 
 import type { MarketPricePort } from "../domain/contracts";
 import type { Bot, MarketPrice } from "../domain/types";
@@ -16,6 +16,16 @@ export interface HermesParsedPriceUpdate {
 interface HermesLatestResponse {
   parsed: HermesParsedPriceUpdate[];
 }
+
+interface JupiterPriceEntry {
+  usdPrice?: number | null;
+  blockId?: number;
+  decimals?: number;
+  priceChange24h?: number;
+  createdAt?: string;
+}
+
+type JupiterPriceResponse = Record<string, JupiterPriceEntry | null | undefined>;
 
 const FEED_ID_BY_SYMBOL = {
   BTC: PYTH_FEED_IDS.BTC_USD,
@@ -89,6 +99,7 @@ export function parseHermesPriceUpdate(
 export class MarketPriceService implements MarketPricePort {
   private readonly env = getEnv();
   private readonly latestBySymbol = new Map<string, MarketPrice>();
+  private readonly fallbackInFlightByPair = new Map<string, Promise<MarketPrice>>();
 
   async getLatestPrice(bot: Bot): Promise<MarketPrice> {
     const cached = this.getFreshPrice(bot.baseSymbol);
@@ -109,6 +120,18 @@ export class MarketPriceService implements MarketPricePort {
   }
 
   async fetchLatestPrice(symbol: string, quoteSymbol = "USDC"): Promise<MarketPrice> {
+    try {
+      return await this.fetchLatestPythPrice(symbol, quoteSymbol);
+    } catch (error) {
+      if (!isMarketDataUnavailableError(error)) {
+        throw error;
+      }
+
+      return this.fetchLatestJupiterFallbackPrice(symbol, quoteSymbol, error);
+    }
+  }
+
+  private async fetchLatestPythPrice(symbol: string, quoteSymbol: string): Promise<MarketPrice> {
     const feedId = getPythFeedId(symbol);
     const url = `${this.env.PYTH_HERMES_BASE_URL}/v2/updates/price/latest?ids[]=${feedId}&parsed=true`;
     let response: Response;
@@ -148,6 +171,97 @@ export class MarketPriceService implements MarketPricePort {
     return this.setLatestPrice(parseHermesPriceUpdate(symbol.toUpperCase(), quoteSymbol, item));
   }
 
+  private fetchLatestJupiterFallbackPrice(
+    symbol: string,
+    quoteSymbol: string,
+    cause: MarketDataUnavailableError
+  ): Promise<MarketPrice> {
+    if (!this.env.JUPITER_API_KEY) {
+      throw cause;
+    }
+
+    const normalizedSymbol = symbol.toUpperCase();
+    const normalizedQuoteSymbol = quoteSymbol.toUpperCase();
+    const pairKey = `${normalizedSymbol}/${normalizedQuoteSymbol}`;
+    const inFlight = this.fallbackInFlightByPair.get(pairKey);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const request = this.fetchJupiterFallbackPrice(normalizedSymbol, normalizedQuoteSymbol, cause).finally(() => {
+      this.fallbackInFlightByPair.delete(pairKey);
+    });
+    this.fallbackInFlightByPair.set(pairKey, request);
+    return request;
+  }
+
+  private async fetchJupiterFallbackPrice(
+    symbol: string,
+    quoteSymbol: string,
+    cause: MarketDataUnavailableError
+  ): Promise<MarketPrice> {
+    const apiKey = this.env.JUPITER_API_KEY;
+    if (!apiKey) {
+      throw cause;
+    }
+
+    const baseMint = getMintForSymbol(symbol);
+    const quoteMint = getMintForSymbol(quoteSymbol);
+    const ids = baseMint === quoteMint ? baseMint : `${baseMint},${quoteMint}`;
+    const url = `${this.env.JUPITER_PRICE_BASE_URL}?ids=${encodeURIComponent(ids)}`;
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: {
+          "x-api-key": apiKey,
+        },
+      });
+    } catch (error) {
+      throw new MarketDataUnavailableError(
+        `Jupiter price fallback failed: ${error instanceof Error ? error.message : String(error)}`,
+        {
+          provider: "jupiter-price",
+          symbol,
+          cause: error,
+        }
+      );
+    }
+
+    if (!response.ok) {
+      throw new MarketDataUnavailableError(`Jupiter price fallback failed with status ${response.status}`, {
+        provider: "jupiter-price",
+        status: response.status,
+        symbol,
+      });
+    }
+
+    const payload = (await response.json()) as JupiterPriceResponse;
+    const baseUsdPrice = getJupiterUsdPrice(payload, baseMint);
+    const quoteUsdPrice =
+      quoteSymbol === "USDC" && !getJupiterUsdPrice(payload, quoteMint)
+        ? 1
+        : getJupiterUsdPrice(payload, quoteMint);
+
+    if (!baseUsdPrice || !quoteUsdPrice || quoteUsdPrice <= 0) {
+      throw new MarketDataUnavailableError(`Jupiter price fallback returned no reliable price for ${symbol}/${quoteSymbol}`, {
+        provider: "jupiter-price",
+        symbol,
+        cause,
+      });
+    }
+
+    return this.setLatestPrice({
+      symbol,
+      pair: `${symbol}/${quoteSymbol}`,
+      price: baseUsdPrice / quoteUsdPrice,
+      confidence: 0,
+      source: "jupiter-price",
+      timestamp: new Date(),
+      feedId: baseMint,
+    });
+  }
+
   private getFreshPrice(symbol: string) {
     const cached = this.getCachedPrice(symbol);
     if (!cached) {
@@ -160,4 +274,18 @@ export class MarketPriceService implements MarketPricePort {
 
     return cached;
   }
+}
+
+function getMintForSymbol(symbol: string) {
+  const mint = MINTS[symbol.toUpperCase() as keyof typeof MINTS];
+  if (!mint) {
+    throw new Error(`Unsupported Jupiter price symbol: ${symbol}`);
+  }
+
+  return mint;
+}
+
+function getJupiterUsdPrice(payload: JupiterPriceResponse, mint: string) {
+  const price = payload[mint]?.usdPrice;
+  return typeof price === "number" && Number.isFinite(price) && price > 0 ? price : null;
 }

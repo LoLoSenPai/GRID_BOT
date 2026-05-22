@@ -176,6 +176,7 @@ Variables principales:
 | `RPC_HTTP_URL` | RPC Solana HTTP |
 | `RPC_WS_URL` | RPC Solana WebSocket |
 | `JUPITER_API_KEY` | cle API Jupiter |
+| `JUPITER_PRICE_BASE_URL` | endpoint Jupiter Price API v3 utilise comme fallback quand Hermes Pyth est indisponible |
 | `JUPITER_PRIORITY_FEE_LAMPORTS` | plafond de priority fee Jupiter en lamports, `50000` recommande pour petits cycles |
 | `JUPITER_BROADCAST_FEE_TYPE` | mode de fee Jupiter, `maxCap` recommande pour plafonner sans forcer un montant fixe |
 | `PYTH_HERMES_BASE_URL` | endpoint Hermes Pyth |

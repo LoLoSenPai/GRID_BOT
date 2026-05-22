@@ -40,6 +40,7 @@ export const envSchema = z.object({
   RPC_WS_URL: z.string().url(),
   EXECUTION_WALLET_SECRET_KEY_PATH: z.string().optional().or(z.literal("")),
   JUPITER_API_KEY: z.string().optional().or(z.literal("")),
+  JUPITER_PRICE_BASE_URL: z.string().url().default("https://api.jup.ag/price/v3"),
   JUPITER_PRIORITY_FEE_LAMPORTS: z.coerce.number().int().nonnegative().default(50000),
   JUPITER_BROADCAST_FEE_TYPE: z.enum(["maxCap", "exactFee"]).default("maxCap"),
   PYTH_HERMES_BASE_URL: z.string().url().default("https://hermes.pyth.network"),

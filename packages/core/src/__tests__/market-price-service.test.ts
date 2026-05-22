@@ -94,15 +94,106 @@ describe("MarketPriceService", () => {
     expect(globalThis.fetch).toHaveBeenCalledOnce();
   });
 
-  it("classifies retryable Hermes failures as temporary market data outages", async () => {
+  it("falls back to Jupiter price when Hermes is temporarily unavailable", async () => {
     const service = new MarketPriceService();
-    globalThis.fetch = vi.fn(async () => new Response("Service Unavailable", { status: 503 })) as typeof fetch;
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("Service Unavailable", { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            So11111111111111111111111111111111111111112: {
+              usdPrice: 82.44,
+              blockId: 398169359,
+              decimals: 9,
+            },
+            EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: {
+              usdPrice: 1.0001,
+              blockId: 398169360,
+              decimals: 6,
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+            },
+          }
+        )
+      ) as typeof fetch;
+
+    const marketPrice = await service.getLatestPrice(createBot());
+
+    expect(marketPrice).toMatchObject({
+      symbol: "SOL",
+      pair: "SOL/USDC",
+      source: "jupiter-price",
+      confidence: 0,
+      feedId: "So11111111111111111111111111111111111111112",
+    });
+    expect(marketPrice.price).toBeCloseTo(82.44 / 1.0001);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(globalThis.fetch).toHaveBeenLastCalledWith(
+      expect.stringContaining("https://api.jup.ag/price/v3?ids="),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "x-api-key": expect.any(String),
+        }),
+      })
+    );
+  });
+
+  it("deduplicates concurrent Jupiter fallback requests for the same pair", async () => {
+    const service = new MarketPriceService();
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("Service Unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response("Service Unavailable", { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            So11111111111111111111111111111111111111112: {
+              usdPrice: 82.44,
+              blockId: 398169359,
+              decimals: 9,
+            },
+            EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: {
+              usdPrice: 1,
+              blockId: 398169360,
+              decimals: 6,
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+            },
+          }
+        )
+      ) as typeof fetch;
+
+    const [first, second] = await Promise.all([
+      service.getLatestPrice(createBot()),
+      service.getLatestPrice(createBot()),
+    ]);
+
+    expect(first).toEqual(second);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(globalThis.fetch).mock.calls.filter(([url]) => String(url).includes("/price/v3")).length).toBe(1);
+  });
+
+  it("classifies retryable Hermes and Jupiter failures as temporary market data outages", async () => {
+    const service = new MarketPriceService();
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("Service Unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response("Too Many Requests", { status: 429 })) as typeof fetch;
 
     await expect(service.getLatestPrice(createBot())).rejects.toMatchObject({
       name: "MarketDataUnavailableError",
-      message: "Pyth request failed with status 503",
-      provider: "pyth",
-      status: 503,
+      message: "Jupiter price fallback failed with status 429",
+      provider: "jupiter-price",
+      status: 429,
       symbol: "SOL",
     } satisfies Partial<MarketDataUnavailableError>);
   });
