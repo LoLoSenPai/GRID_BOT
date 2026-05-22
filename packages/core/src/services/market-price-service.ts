@@ -23,6 +23,36 @@ const FEED_ID_BY_SYMBOL = {
   SOL: PYTH_FEED_IDS.SOL_USD,
 } as const;
 
+export class MarketDataUnavailableError extends Error {
+  readonly provider: string;
+  readonly status?: number;
+  readonly symbol?: string;
+
+  constructor(
+    message: string,
+    options: {
+      provider: string;
+      status?: number;
+      symbol?: string;
+      cause?: unknown;
+    }
+  ) {
+    super(message, { cause: options.cause });
+    this.name = "MarketDataUnavailableError";
+    this.provider = options.provider;
+    this.status = options.status;
+    this.symbol = options.symbol;
+  }
+}
+
+export function isMarketDataUnavailableError(error: unknown): error is MarketDataUnavailableError {
+  return error instanceof MarketDataUnavailableError;
+}
+
+function isRetryableMarketDataStatus(status: number) {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
 export function normalizePythFeedId(feedId: string) {
   return feedId.replace(/^0x/i, "").toLowerCase();
 }
@@ -81,9 +111,32 @@ export class MarketPriceService implements MarketPricePort {
   async fetchLatestPrice(symbol: string, quoteSymbol = "USDC"): Promise<MarketPrice> {
     const feedId = getPythFeedId(symbol);
     const url = `${this.env.PYTH_HERMES_BASE_URL}/v2/updates/price/latest?ids[]=${feedId}&parsed=true`;
-    const response = await fetch(url);
+    let response: Response;
+
+    try {
+      response = await fetch(url);
+    } catch (error) {
+      throw new MarketDataUnavailableError(
+        `Pyth request failed: ${error instanceof Error ? error.message : String(error)}`,
+        {
+          provider: "pyth",
+          symbol: symbol.toUpperCase(),
+          cause: error,
+        }
+      );
+    }
+
     if (!response.ok) {
-      throw new Error(`Pyth request failed with status ${response.status}`);
+      const message = `Pyth request failed with status ${response.status}`;
+      if (isRetryableMarketDataStatus(response.status)) {
+        throw new MarketDataUnavailableError(message, {
+          provider: "pyth",
+          status: response.status,
+          symbol: symbol.toUpperCase(),
+        });
+      }
+
+      throw new Error(message);
     }
 
     const payload = (await response.json()) as HermesLatestResponse;

@@ -7,6 +7,7 @@ import { AlertService } from "../services/alert-service";
 import { BotEngineService } from "../services/bot-engine-service";
 import { ExecutionService } from "../services/execution-service";
 import { GridStrategyService } from "../services/grid-strategy-service";
+import { MarketDataUnavailableError } from "../services/market-price-service";
 import { RiskManagerService } from "../services/risk-manager-service";
 
 function createAggregate(overrides: {
@@ -151,6 +152,7 @@ function createEngine({
   executionReport,
   executionEstimate,
   executionError,
+  marketPriceError,
   liveTradingEnabled = false
 }: {
   aggregate: BotAggregate;
@@ -158,6 +160,7 @@ function createEngine({
   executionReport?: ExecutionReport;
   executionEstimate?: ExecutionEstimate;
   executionError?: Error;
+  marketPriceError?: Error;
   liveTradingEnabled?: boolean;
 }) {
   const botRepository = createBotRepository(aggregate);
@@ -169,7 +172,13 @@ function createEngine({
     writeLog: vi.fn(async () => undefined)
   };
   const marketPriceService: MarketPricePort = {
-    getLatestPrice: vi.fn(async () => marketPrice)
+    getLatestPrice: vi.fn(async () => {
+      if (marketPriceError) {
+        throw marketPriceError;
+      }
+
+      return marketPrice;
+    })
   };
   const adapterReport =
     executionReport ??
@@ -315,6 +324,74 @@ describe("BotEngineService", () => {
       })
     );
     expect(tradeRepository.createOrder).not.toHaveBeenCalled();
+  });
+
+  it("keeps bots active when market data is temporarily unavailable", async () => {
+    const aggregate = createAggregate();
+    const { engine, botRepository, tradeRepository, logRepository, alert } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 121,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol"
+      },
+      marketPriceError: new MarketDataUnavailableError("Pyth request failed with status 503", {
+        provider: "pyth",
+        status: 503,
+        symbol: "SOL"
+      })
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(botRepository.updateBotStatus).not.toHaveBeenCalledWith(aggregate.bot.id, BotStatus.Error);
+    expect(botRepository.createStateSnapshot).not.toHaveBeenCalled();
+    expect(tradeRepository.createOrder).not.toHaveBeenCalled();
+    expect(alert.createAlert).not.toHaveBeenCalled();
+    expect(logRepository.writeLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: LogLevel.Warn,
+        category: "market_data",
+        message: "Market data retry deferred: Pyth request failed with status 503"
+      })
+    );
+  });
+
+  it("restores the previous operational status after a temporary market data outage tripped error state", async () => {
+    const aggregate = createAggregate({
+      bot: { status: BotStatus.Error },
+      latestState: {
+        ...createAggregate().latestState,
+        status: BotStatus.Running
+      }
+    });
+    const { engine, botRepository, alert } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 121,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol"
+      },
+      marketPriceError: new MarketDataUnavailableError("Pyth request failed with status 503", {
+        provider: "pyth",
+        status: 503,
+        symbol: "SOL"
+      })
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(botRepository.updateBotStatus).toHaveBeenCalledWith(aggregate.bot.id, BotStatus.Running);
+    expect(botRepository.updateBotStatus).not.toHaveBeenCalledWith(aggregate.bot.id, BotStatus.Error);
+    expect(alert.createAlert).not.toHaveBeenCalled();
   });
 
   it("moves a manual bot to out_of_range and emits an alert when price leaves the band", async () => {

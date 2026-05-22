@@ -32,6 +32,7 @@ import { AlertService } from "./alert-service";
 import { ExecutionService } from "./execution-service";
 import { GridDecisionService } from "./grid-decision-service";
 import { GridStrategyService } from "./grid-strategy-service";
+import { isMarketDataUnavailableError } from "./market-price-service";
 import { shouldPersistPassivePriceSnapshot, shouldPersistPassiveState } from "./passive-runtime-throttle";
 import { RiskManagerService } from "./risk-manager-service";
 import { round } from "../utils/math";
@@ -39,6 +40,7 @@ import { round } from "../utils/math";
 const HEARTBEAT_UPDATE_INTERVAL_MS = 2_000;
 const QUOTE_GUARD_LOG_INTERVAL_MS = 60_000;
 const EXECUTION_RETRY_LOG_INTERVAL_MS = 60_000;
+const MARKET_DATA_RETRY_LOG_INTERVAL_MS = 60_000;
 const MAX_SELL_CATCH_UP_PER_RUN = 4;
 
 type SignalExecutionOutcome = "not_actionable" | "handled_no_execution" | "executed";
@@ -49,6 +51,7 @@ export class BotEngineService {
   private readonly lastHeartbeatWriteAt = new Map<string, number>();
   private readonly quoteGuardLogWriteAt = new Map<string, number>();
   private readonly executionRetryLogWriteAt = new Map<string, number>();
+  private readonly marketDataRetryLogWriteAt = new Map<string, number>();
   private readonly runningBotIds = new Set<string>();
   private readonly gridDecisionService = new GridDecisionService();
 
@@ -183,6 +186,11 @@ export class BotEngineService {
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown bot engine error";
+        if (isMarketDataUnavailableError(error)) {
+          await this.handleMarketDataUnavailable(aggregate, now, message);
+          return;
+        }
+
         await this.logRepository.writeLog({
           botId,
           level: LogLevel.Error,
@@ -215,6 +223,52 @@ export class BotEngineService {
     } finally {
       this.runningBotIds.delete(botId);
     }
+  }
+
+  private async handleMarketDataUnavailable(aggregate: BotAggregate, now: Date, message: string) {
+    const restoredStatus = await this.restoreOperationalStatusAfterMarketDataOutage(aggregate);
+    await this.maybeWriteMarketDataRetryLog({
+      botId: aggregate.bot.id,
+      now,
+      message,
+      metadata: {
+        baseSymbol: aggregate.bot.baseSymbol,
+        quoteSymbol: aggregate.bot.quoteSymbol,
+        restoredStatus,
+      },
+    });
+  }
+
+  private async restoreOperationalStatusAfterMarketDataOutage(aggregate: BotAggregate) {
+    if (aggregate.bot.status !== BotStatus.Error) {
+      return aggregate.bot.status;
+    }
+
+    const previousStatus = aggregate.latestState?.status;
+    const restoredStatus = previousStatus && previousStatus !== BotStatus.Error ? previousStatus : BotStatus.Running;
+    await this.botRepository.updateBotStatus(aggregate.bot.id, restoredStatus);
+    return restoredStatus;
+  }
+
+  private async maybeWriteMarketDataRetryLog(input: {
+    botId: string;
+    now: Date;
+    message: string;
+    metadata?: Record<string, unknown>;
+  }) {
+    const lastWriteAt = this.marketDataRetryLogWriteAt.get(input.botId);
+    if (lastWriteAt && input.now.getTime() - lastWriteAt < MARKET_DATA_RETRY_LOG_INTERVAL_MS) {
+      return;
+    }
+
+    await this.logRepository.writeLog({
+      botId: input.botId,
+      level: LogLevel.Warn,
+      category: "market_data",
+      message: `Market data retry deferred: ${input.message}`,
+      metadata: input.metadata,
+    });
+    this.marketDataRetryLogWriteAt.set(input.botId, input.now.getTime());
   }
 
   private async persistPriceSnapshot(

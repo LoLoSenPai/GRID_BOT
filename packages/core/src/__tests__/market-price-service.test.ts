@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Bot } from "../domain/types";
-import { MarketPriceService } from "../services/market-price-service";
+import { MarketDataUnavailableError, MarketPriceService } from "../services/market-price-service";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 
@@ -92,5 +92,18 @@ describe("MarketPriceService", () => {
 
     expect(marketPrice.price).toBe(82.15);
     expect(globalThis.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("classifies retryable Hermes failures as temporary market data outages", async () => {
+    const service = new MarketPriceService();
+    globalThis.fetch = vi.fn(async () => new Response("Service Unavailable", { status: 503 })) as typeof fetch;
+
+    await expect(service.getLatestPrice(createBot())).rejects.toMatchObject({
+      name: "MarketDataUnavailableError",
+      message: "Pyth request failed with status 503",
+      provider: "pyth",
+      status: 503,
+      symbol: "SOL",
+    } satisfies Partial<MarketDataUnavailableError>);
   });
 });
