@@ -5,6 +5,7 @@ import {
   analyzeBotDraft,
   applyBehaviorPreset,
   applyPaperTurbo,
+  BOT_PAIR_PRESETS,
   buildBotKeyForMode,
   cloneStateSnapshot,
   createDraftFromPreset,
@@ -17,6 +18,10 @@ describe("analyzeBotDraft", () => {
     const draft = createDraftFromPreset("SOL_USDC", BotMode.Live);
 
     expect(draft.mode).toBe(BotMode.Live);
+  });
+
+  it("uses the on-chain WBTC decimal precision", () => {
+    expect(BOT_PAIR_PRESETS.BTC_USDC.baseDecimals).toBe(8);
   });
 
   it("normalizes budget so the whole amount stays active by default", () => {

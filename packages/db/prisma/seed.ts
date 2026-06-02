@@ -183,7 +183,7 @@ async function main() {
     quoteMint: MINTS.USDC,
     baseSymbol: "BTC",
     quoteSymbol: "USDC",
-    baseDecimals: 6,
+    baseDecimals: 8,
     quoteDecimals: 6,
     strategyMode: StrategyMode.AccumulateUsdc,
     mode: BotMode.Paper,

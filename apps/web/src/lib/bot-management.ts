@@ -113,7 +113,7 @@ export const BOT_PAIR_PRESETS = {
     quoteMint: MINTS.USDC,
     baseSymbol: "BTC",
     quoteSymbol: "USDC",
-    baseDecimals: 6,
+    baseDecimals: 8,
     quoteDecimals: 6,
     defaultName: "BTC / USDC Grid",
     defaults: {
