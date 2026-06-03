@@ -11,6 +11,27 @@ export type TradeMarkerDisplayInput = TradeDisplayInput & {
   strategyMode: string;
 };
 
+function getBaseAmountPrecision(amount: number) {
+  const absoluteAmount = Math.abs(amount);
+  if (absoluteAmount === 0) {
+    return 2;
+  }
+
+  if (absoluteAmount < 0.0001) {
+    return 8;
+  }
+
+  if (absoluteAmount < 1) {
+    return 6;
+  }
+
+  if (absoluteAmount < 100) {
+    return 4;
+  }
+
+  return 2;
+}
+
 export function formatGoalLabel(strategyMode: string) {
   switch (strategyMode) {
     case "accumulate_base":
@@ -43,7 +64,7 @@ export function formatTradeDisplay({
 }: TradeDisplayInput) {
   const primary = quoteAmount !== null ? formatCurrency(quoteAmount) : "--";
   const secondary =
-    baseAmount !== null ? `${formatNumber(baseAmount, baseAmount >= 100 ? 2 : 4)} ${baseSymbol}` : null;
+    baseAmount !== null ? `${formatNumber(baseAmount, getBaseAmountPrecision(baseAmount))} ${baseSymbol}` : null;
   const compact = secondary ? `${primary} | ${secondary}` : primary;
   const direction = side === "buy" ? "Buy" : "Sell";
 

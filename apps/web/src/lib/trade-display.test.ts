@@ -12,8 +12,8 @@ describe("trade-display", () => {
     });
 
     expect(display.primary).toBe("$10.00");
-    expect(display.secondary).toBe("0.1205 SOL");
-    expect(display.compact).toBe("$10.00 | 0.1205 SOL");
+    expect(display.secondary).toBe("0.12054 SOL");
+    expect(display.compact).toBe("$10.00 | 0.12054 SOL");
   });
 
   it("formats sell amounts with quote first and base second", () => {
@@ -25,8 +25,20 @@ describe("trade-display", () => {
     });
 
     expect(display.primary).toBe("$10.12");
-    expect(display.secondary).toBe("0.1205 SOL");
+    expect(display.secondary).toBe("0.12054 SOL");
     expect(display.direction).toBe("Sell");
+  });
+
+  it("does not round tiny BTC dust to zero", () => {
+    const display = formatTradeDisplay({
+      side: "sell",
+      quoteAmount: 0.73,
+      baseAmount: 0.00001093,
+      baseSymbol: "BTC"
+    });
+
+    expect(display.secondary).toBe("0.00001093 BTC");
+    expect(display.compact).toBe("$0.73 | 0.00001093 BTC");
   });
 
   it("maps goal and rail copy to operator language", () => {
@@ -54,7 +66,7 @@ describe("trade-display", () => {
         baseAmount: 0.12054,
         baseSymbol: "SOL"
       })
-    ).toBe("0.1205 SOL");
+    ).toBe("0.12054 SOL");
 
     expect(
       formatTradeMarkerLabel({
@@ -64,6 +76,6 @@ describe("trade-display", () => {
         baseAmount: 0.12054,
         baseSymbol: "SOL"
       })
-    ).toBe("$10.12 | 0.1205 SOL");
+    ).toBe("$10.12 | 0.12054 SOL");
   });
 });

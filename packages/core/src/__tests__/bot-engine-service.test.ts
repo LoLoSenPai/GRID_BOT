@@ -1928,6 +1928,103 @@ describe("BotEngineService", () => {
     );
   });
 
+  it("closes the sold lot for token accumulation instead of leaving retained base sellable", async () => {
+    const aggregate = createAggregate({
+      bot: {
+        strategyMode: StrategyMode.AccumulateBase
+      },
+      config: {
+        reserveQuoteAmount: 0,
+        priceConfirmationWindowMs: 0
+      },
+      latestState: {
+        ...createAggregate().latestState,
+        currentPrice: 135,
+        availableQuoteAmount: 1500,
+        availableBaseAmount: 1,
+        deployedQuoteAmount: 120,
+        averageEntryPrice: 120,
+        realizedPnlUsd: 0,
+        unrealizedPnlUsd: 15,
+        totalEquityUsd: 1635,
+        metadata: {
+          levelLocks: {},
+          pendingSignal: null,
+          gridCycles: {
+            "3": {
+              buyLevelIndex: 3,
+              sellLevelIndex: 4,
+              lotId: "lot-token-profit",
+              openedAt: "2026-04-01T00:00:00.000Z"
+            }
+          },
+          recenterHistory: [],
+          recentExecutions: []
+        }
+      },
+      openLots: [
+        {
+          id: "lot-token-profit",
+          botId: "bot-1",
+          originalBaseAmount: 1,
+          remainingBaseAmount: 1,
+          entryPrice: 120,
+          costQuote: 120,
+          openedByExecutionId: "exec-1",
+          closedByExecutionId: null,
+          openedAt: new Date("2026-04-01T00:00:00.000Z"),
+          closedAt: null
+        }
+      ]
+    });
+
+    const { engine, botRepository, tradeRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        price: 141,
+        confidence: 0.1,
+        source: "pyth",
+        timestamp: new Date(),
+        feedId: "feed-sol"
+      },
+      executionReport: {
+        provider: ExecutionProvider.Paper,
+        status: ExecutionStatus.Simulated,
+        executionId: "sim-sell-token-profit",
+        txId: null,
+        inputAmount: 0.85106383,
+        outputAmount: 120.5,
+        effectivePrice: 141.586777,
+        feeAmount: 0
+      },
+      executionEstimate: {
+        provider: ExecutionProvider.Paper,
+        inputMint: "SOL",
+        outputMint: "USDC",
+        inputAmount: 0.85106383,
+        expectedOutputAmount: 120.5,
+        expectedPrice: 141.586777,
+        estimatedFeeAmount: 0,
+        priceImpactPct: 0
+      }
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.replaceLots).toHaveBeenCalledWith("bot-1", []);
+    expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        availableBaseAmount: 0.14893617,
+        deployedQuoteAmount: 0,
+        metadata: expect.objectContaining({
+          gridCycles: {}
+        })
+      })
+    );
+  });
+
   it("does not log benign empty-intent signals", async () => {
     const aggregate = createAggregate({
       latestState: {

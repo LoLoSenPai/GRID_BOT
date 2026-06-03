@@ -7,6 +7,7 @@ import {
   LogLevel,
   OrderStatus,
   RecenterMode,
+  StrategyMode,
   TradeSide
 } from "../domain/enums";
 import type {
@@ -452,7 +453,15 @@ export class BotEngineService {
       return "handled_no_execution";
     }
 
-    const lotUpdate = this.applyExecutionToLots(aggregate.openLots, aggregate.bot.id, signal.side, accountingReport, orderIntent, orderIntent.targetPrice);
+    const lotUpdate = this.applyExecutionToLots(
+      aggregate.openLots,
+      aggregate.bot.id,
+      aggregate.bot.strategyMode,
+      signal.side,
+      accountingReport,
+      orderIntent,
+      orderIntent.targetPrice
+    );
     const nextState = this.computePortfolioState(aggregate, signal.side, accountingReport, marketPrice.price, lotUpdate.lots, lotUpdate.realizedPnlDelta);
     const nextGridCycles = this.applyExecutionToGridCycles(aggregate, signal, lotUpdate.openedLotId, orderIntent);
     await this.tradeRepository.replaceLots(botId, lotUpdate.lots);
@@ -1108,6 +1117,7 @@ export class BotEngineService {
   private applyExecutionToLots(
     currentLots: PositionLot[],
     botId: string,
+    strategyMode: StrategyMode,
     side: TradeSide,
     report: { executionId: string; inputAmount: number; outputAmount: number; feeAmount: number },
     orderIntent: { matchedLotIds?: string[] },
@@ -1139,6 +1149,7 @@ export class BotEngineService {
     }
 
     const matchedLotIds = new Set(orderIntent.matchedLotIds ?? currentLots.map((lot) => lot.id));
+    const closesRetainedBaseCycle = strategyMode === StrategyMode.AccumulateBase || strategyMode === StrategyMode.Balanced;
     let remainingToSell = report.inputAmount;
     let realizedPnlDelta = 0;
     const quotePerBase = report.inputAmount > 0 ? report.outputAmount / report.inputAmount : levelPrice;
@@ -1152,12 +1163,13 @@ export class BotEngineService {
 
         const sold = Math.min(lot.remainingBaseAmount, remainingToSell);
         const costPerBase = lot.remainingBaseAmount > 0 ? lot.costQuote / lot.remainingBaseAmount : 0;
-        const soldCostQuote = round(costPerBase * sold, 8);
+        const closesMatchedLotAsRetainedBase = closesRetainedBaseCycle && matchedLotIds.has(lot.id) && sold > 0;
+        const soldCostQuote = closesMatchedLotAsRetainedBase ? lot.costQuote : round(costPerBase * sold, 8);
         const soldQuoteOutput = round(quotePerBase * sold, 8);
         const soldFeeQuote = round(feePerBase * sold, 8);
         remainingToSell = round(remainingToSell - sold, 8);
-        const nextRemaining = round(lot.remainingBaseAmount - sold, 8);
-        const nextCostQuote = round(Math.max(lot.costQuote - soldCostQuote, 0), 8);
+        const nextRemaining = closesMatchedLotAsRetainedBase ? 0 : round(lot.remainingBaseAmount - sold, 8);
+        const nextCostQuote = closesMatchedLotAsRetainedBase ? 0 : round(Math.max(lot.costQuote - soldCostQuote, 0), 8);
         realizedPnlDelta = round(realizedPnlDelta + soldQuoteOutput - soldFeeQuote - soldCostQuote, 8);
         return {
           ...lot,
