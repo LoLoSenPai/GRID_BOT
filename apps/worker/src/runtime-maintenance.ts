@@ -18,6 +18,13 @@ export async function runRuntimeMaintenance(now = new Date()) {
   const infoLogCutoff = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
 
   try {
+    const latestStateSnapshotIds = (
+      await prisma.botStateSnapshot.findMany({
+        distinct: ["botId"],
+        orderBy: [{ botId: "asc" }, { createdAt: "desc" }],
+        select: { id: true },
+      })
+    ).map((snapshot: { id: string }) => snapshot.id);
     const [
       priceSnapshots,
       stateSnapshots,
@@ -38,6 +45,13 @@ export async function runRuntimeMaintenance(now = new Date()) {
           createdAt: {
             lt: stateSnapshotCutoff,
           },
+          ...(latestStateSnapshotIds.length > 0
+            ? {
+                id: {
+                  notIn: latestStateSnapshotIds,
+                },
+              }
+            : {}),
         },
       }),
       prisma.inventorySnapshot.deleteMany({

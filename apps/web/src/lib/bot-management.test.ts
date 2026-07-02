@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BotMode, BotStatus, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
+import { BotMode, BotStatus, GridType, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
 
 import {
   analyzeBotDraft,
@@ -9,8 +9,10 @@ import {
   buildBotKeyForMode,
   cloneStateSnapshot,
   createDraftFromPreset,
+  createStateSnapshotFromOpenLots,
   diffBotDraft,
   inferBehaviorPresetId,
+  shouldRebuildRuntimeStateFromOpenLots,
 } from "./bot-management";
 
 describe("analyzeBotDraft", () => {
@@ -247,5 +249,81 @@ describe("cloneStateSnapshot", () => {
     expect(snapshot.availableQuoteAmount).toBe(2000);
     expect(snapshot.totalEquityUsd).toBe(2000);
     expect(snapshot.consecutiveFailures).toBe(0);
+  });
+});
+
+describe("createStateSnapshotFromOpenLots", () => {
+  it("rebuilds runtime state from surviving open lots when old snapshots expired", () => {
+    const snapshot = createStateSnapshotFromOpenLots({
+      botId: "bot-1",
+      status: BotStatus.Running,
+      totalBudgetUsd: 800,
+      currentPrice: 82,
+      config: {
+        lowPrice: 80,
+        highPrice: 90,
+        levelCount: 6,
+        gridType: GridType.Arithmetic,
+      },
+      position: {
+        realizedPnlUsd: { toNumber: () => 12.5 },
+      },
+      openLots: [
+        {
+          id: "lot-1",
+          botId: "bot-1",
+          originalBaseAmount: { toNumber: () => 0.5 },
+          remainingBaseAmount: { toNumber: () => 0.5 },
+          entryPrice: { toNumber: () => 80 },
+          costQuote: { toNumber: () => 40 },
+          openedByExecutionId: "exec-1",
+          closedByExecutionId: null,
+          openedAt: new Date("2026-07-01T00:00:00.000Z"),
+          closedAt: null,
+        },
+      ],
+    });
+
+    expect(snapshot.deployedQuoteAmount).toBe(40);
+    expect(snapshot.availableBaseAmount).toBe(0.5);
+    expect(snapshot.availableQuoteAmount).toBe(772.5);
+    expect(snapshot.averageEntryPrice).toBe(80);
+    expect(
+      (snapshot.metadata as { gridCycles: Record<string, { lotId: string }> }).gridCycles["0"]?.lotId,
+    ).toBe("lot-1");
+  });
+});
+
+describe("shouldRebuildRuntimeStateFromOpenLots", () => {
+  const openLots = [
+    {
+      remainingBaseAmount: { toNumber: () => 0.5 },
+      costQuote: { toNumber: () => 40 },
+      closedAt: null,
+    },
+  ];
+
+  it("rebuilds when the stored snapshot is empty but open lots still exist", () => {
+    expect(
+      shouldRebuildRuntimeStateFromOpenLots(
+        {
+          deployedQuoteAmount: { toNumber: () => 0 },
+          availableBaseAmount: { toNumber: () => 0 },
+        },
+        openLots,
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps a stored snapshot that already tracks open exposure", () => {
+    expect(
+      shouldRebuildRuntimeStateFromOpenLots(
+        {
+          deployedQuoteAmount: { toNumber: () => 40 },
+          availableBaseAmount: { toNumber: () => 0.5 },
+        },
+        openLots,
+      ),
+    ).toBe(false);
   });
 });

@@ -14,8 +14,9 @@ import { readSession } from "@/lib/auth";
 import {
   BotManagementValidationError,
   cloneStateSnapshot,
-  createInitialStateSnapshot,
+  createStateSnapshotFromOpenLots,
   parseUpdateBotPayload,
+  shouldRebuildRuntimeStateFromOpenLots,
 } from "@/lib/bot-management";
 import { validateAdditionalBudgetAllocation } from "@/lib/wallet-budget";
 
@@ -34,6 +35,11 @@ export async function PATCH(
       where: { id, archivedAt: null },
       include: {
         config: true,
+        position: true,
+        positionLots: {
+          where: { closedAt: null },
+          orderBy: { openedAt: "asc" },
+        },
       },
     });
 
@@ -98,10 +104,33 @@ export async function PATCH(
       }
     }
 
-    const latestState =
+    const latestStoredState =
       budgetDeltaUsd > 0 || gridChanged
         ? await findLatestBotStateSnapshot(bot.id)
         : null;
+    const rebuildFromOpenLots =
+      budgetDeltaUsd > 0 || gridChanged
+        ? shouldRebuildRuntimeStateFromOpenLots(latestStoredState, bot.positionLots)
+        : false;
+    const latestState =
+      latestStoredState && !rebuildFromOpenLots
+        ? latestStoredState
+        : budgetDeltaUsd > 0 || gridChanged
+          ? createStateSnapshotFromOpenLots({
+              botId: bot.id,
+              status: bot.status as BotStatus,
+              totalBudgetUsd: previousBudgetUsd,
+              currentPrice: bot.currentPrice ? Number(bot.currentPrice) : null,
+              config: {
+                lowPrice: bot.config.lowPrice,
+                highPrice: bot.config.highPrice,
+                levelCount: bot.config.levelCount,
+                gridType: bot.config.gridType as never,
+              },
+              position: bot.position,
+              openLots: bot.positionLots,
+            })
+          : null;
 
     if (gridChanged && !latestState) {
       return NextResponse.json(
@@ -154,22 +183,15 @@ export async function PATCH(
       });
 
       if (budgetDeltaUsd > 0 || gridChanged) {
-        const snapshotData = latestState
-          ? cloneStateSnapshot(
-              id,
-              bot.status as BotStatus,
-              latestState,
-              {
-                totalBudgetUsd: parsed.totalBudgetUsd,
-                currentPrice: bot.currentPrice ? Number(bot.currentPrice) : null,
-              },
-            )
-          : createInitialStateSnapshot({
-              botId: id,
-              status: bot.status as BotStatus,
-              totalBudgetUsd: parsed.totalBudgetUsd,
-              currentPrice: bot.currentPrice ? Number(bot.currentPrice) : null,
-            });
+        const snapshotData = cloneStateSnapshot(
+          id,
+          bot.status as BotStatus,
+          latestState,
+          {
+            totalBudgetUsd: parsed.totalBudgetUsd,
+            currentPrice: bot.currentPrice ? Number(bot.currentPrice) : null,
+          },
+        );
 
         if (latestState && budgetDeltaUsd > 0) {
           snapshotData.availableQuoteAmount = roundUsd(
@@ -182,7 +204,7 @@ export async function PATCH(
         }
 
         if (gridChanged && migratedOpenState) {
-          await tx.positionLot.deleteMany({ where: { botId: id } });
+          await tx.positionLot.deleteMany({ where: { botId: id, closedAt: null } });
 
           if (migratedOpenState.openLots.length > 0) {
             await tx.positionLot.createMany({

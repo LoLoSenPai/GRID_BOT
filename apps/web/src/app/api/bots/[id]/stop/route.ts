@@ -3,7 +3,11 @@ import { BotStatus } from "@grid-bot/core";
 import { findLatestBotStateSnapshot, prisma } from "@grid-bot/db";
 
 import { readSession } from "@/lib/auth";
-import { cloneStateSnapshot, createInitialStateSnapshot } from "@/lib/bot-management";
+import {
+  cloneStateSnapshot,
+  createStateSnapshotFromOpenLots,
+  shouldRebuildRuntimeStateFromOpenLots,
+} from "@/lib/bot-management";
 
 export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await readSession();
@@ -15,7 +19,12 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const bot = await prisma.bot.findFirst({
     where: { id, archivedAt: null },
     include: {
-      config: true
+      config: true,
+      position: true,
+      positionLots: {
+        where: { closedAt: null },
+        orderBy: { openedAt: "asc" }
+      }
     }
   });
 
@@ -28,17 +37,26 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   }
 
   const latestState = await findLatestBotStateSnapshot(bot.id);
+  const rebuildFromOpenLots = shouldRebuildRuntimeStateFromOpenLots(latestState, bot.positionLots);
   const snapshotData =
-    latestState
+    latestState && !rebuildFromOpenLots
       ? cloneStateSnapshot(bot.id, BotStatus.Stopped, latestState, {
           totalBudgetUsd: Number(bot.config.totalBudgetUsd),
           currentPrice: bot.currentPrice ? Number(bot.currentPrice) : null
         })
-      : createInitialStateSnapshot({
+      : createStateSnapshotFromOpenLots({
           botId: bot.id,
           status: BotStatus.Stopped,
           totalBudgetUsd: Number(bot.config.totalBudgetUsd),
-          currentPrice: bot.currentPrice ? Number(bot.currentPrice) : null
+          currentPrice: bot.currentPrice ? Number(bot.currentPrice) : null,
+          config: {
+            lowPrice: bot.config.lowPrice,
+            highPrice: bot.config.highPrice,
+            levelCount: bot.config.levelCount,
+            gridType: bot.config.gridType as never
+          },
+          position: bot.position,
+          openLots: bot.positionLots
         });
 
   await prisma.$transaction([

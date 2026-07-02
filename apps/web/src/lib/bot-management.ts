@@ -1,4 +1,5 @@
 import { DEFAULTS, MINTS } from "@grid-bot/common/constants";
+import { GridStrategyService, type PositionLot } from "@grid-bot/core";
 import { BotMode, BotStatus, ExecutionProvider, GridType, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
 
 interface BotRuntimeMetadataShape {
@@ -621,6 +622,121 @@ export function createInitialStateSnapshot(input: {
   };
 }
 
+export function createStateSnapshotFromOpenLots(input: {
+  botId: string;
+  status: BotStatus;
+  totalBudgetUsd: number;
+  currentPrice?: number | null;
+  config: {
+    lowPrice: unknown;
+    highPrice: unknown;
+    levelCount: number;
+    gridType: GridType;
+  };
+  position?: {
+    realizedPnlUsd?: unknown;
+  } | null;
+  openLots: Array<{
+    id: string;
+    botId: string;
+    originalBaseAmount: unknown;
+    remainingBaseAmount: unknown;
+    entryPrice: unknown;
+    costQuote: unknown;
+    openedByExecutionId: string;
+    closedByExecutionId: string | null;
+    openedAt: Date;
+    closedAt: Date | null;
+  }>;
+}) {
+  const lots = input.openLots
+    .map(toDomainPositionLot)
+    .filter((lot) => lot.remainingBaseAmount > 0 && lot.costQuote > 0 && !lot.closedAt);
+  const deployedQuoteAmount = roundRuntimeNumber(lots.reduce((sum, lot) => sum + lot.costQuote, 0));
+  const availableBaseAmount = roundRuntimeNumber(lots.reduce((sum, lot) => sum + lot.remainingBaseAmount, 0));
+  const realizedPnlUsd = roundRuntimeNumber(numberOrZero(input.position?.realizedPnlUsd));
+  const currentPrice = input.currentPrice ?? null;
+  const availableQuoteAmount = roundRuntimeNumber(
+    Math.max(input.totalBudgetUsd + realizedPnlUsd - deployedQuoteAmount, 0),
+  );
+  const unrealizedPnlUsd =
+    currentPrice !== null && availableBaseAmount > 0
+      ? roundRuntimeNumber(availableBaseAmount * currentPrice - deployedQuoteAmount)
+      : 0;
+  const averageEntryPrice =
+    availableBaseAmount > 0 && deployedQuoteAmount > 0
+      ? roundRuntimeNumber(deployedQuoteAmount / availableBaseAmount)
+      : null;
+  const strategyService = new GridStrategyService();
+  const levels = strategyService.calculateLevels(
+    numberOrZero(input.config.lowPrice),
+    numberOrZero(input.config.highPrice),
+    input.config.levelCount,
+    input.config.gridType,
+  );
+  const gridCycles = strategyService.remapOpenLotsToGridCycles(levels, lots);
+  const latestOpenLotAt = lots.reduce<Date | null>(
+    (latest, lot) => (!latest || lot.openedAt > latest ? lot.openedAt : latest),
+    null,
+  );
+
+  return {
+    botId: input.botId,
+    status: input.status as never,
+    currentPrice: currentPrice ?? undefined,
+    availableQuoteAmount,
+    availableBaseAmount,
+    deployedQuoteAmount,
+    averageEntryPrice,
+    realizedPnlUsd,
+    unrealizedPnlUsd,
+    totalEquityUsd: roundRuntimeNumber(
+      availableQuoteAmount + (currentPrice ?? 0) * availableBaseAmount,
+    ),
+    consecutiveFailures: 0,
+    lastExecutionAt: latestOpenLotAt ?? undefined,
+    lastProcessedAt: new Date(),
+    metadata: {
+      ...createInitialRuntimeMetadata(),
+      gridCycles,
+    } as never,
+  };
+}
+
+export function shouldRebuildRuntimeStateFromOpenLots(
+  latestState:
+    | {
+        deployedQuoteAmount?: unknown;
+        availableBaseAmount?: unknown;
+      }
+    | null,
+  openLots: Array<{
+    remainingBaseAmount: unknown;
+    costQuote: unknown;
+    closedAt: Date | null;
+  }>,
+) {
+  const hasMaterialOpenLots = openLots.some(
+    (lot) =>
+      !lot.closedAt &&
+      numberOrZero(lot.remainingBaseAmount) > 0 &&
+      numberOrZero(lot.costQuote) > 0,
+  );
+
+  if (!hasMaterialOpenLots) {
+    return false;
+  }
+
+  if (!latestState) {
+    return true;
+  }
+
+  return (
+    numberOrZero(latestState.deployedQuoteAmount) <= 0 &&
+    numberOrZero(latestState.availableBaseAmount) <= 0
+  );
+}
+
 export function cloneStateSnapshot(
   botId: string,
   status: BotStatus,
@@ -886,6 +1002,41 @@ function numberOrZero(value: unknown) {
 
 function numberOrNull(value: unknown) {
   return decimalLikeToNumber(value);
+}
+
+function toDomainPositionLot(lot: {
+  id: string;
+  botId: string;
+  originalBaseAmount: unknown;
+  remainingBaseAmount: unknown;
+  entryPrice: unknown;
+  costQuote: unknown;
+  openedByExecutionId: string;
+  closedByExecutionId: string | null;
+  openedAt: Date;
+  closedAt: Date | null;
+}): PositionLot {
+  return {
+    id: lot.id,
+    botId: lot.botId,
+    originalBaseAmount: numberOrZero(lot.originalBaseAmount),
+    remainingBaseAmount: numberOrZero(lot.remainingBaseAmount),
+    entryPrice: numberOrZero(lot.entryPrice),
+    costQuote: numberOrZero(lot.costQuote),
+    openedByExecutionId: lot.openedByExecutionId,
+    closedByExecutionId: lot.closedByExecutionId,
+    openedAt: lot.openedAt,
+    closedAt: lot.closedAt,
+  };
+}
+
+function roundRuntimeNumber(value: number, digits = 8) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  const factor = 10 ** digits;
+  return Math.round((value + Number.EPSILON) * factor) / factor;
 }
 
 function cloneMetadata(metadata: unknown) {
