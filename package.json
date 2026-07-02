@@ -15,6 +15,7 @@
     "db:seed": "pnpm --filter @grid-bot/db seed",
     "db:fix-jupiter-rent-fees": "pnpm --filter @grid-bot/db fix:jupiter-rent-fees",
     "db:fix-btc-decimals": "pnpm --filter @grid-bot/db fix:btc-decimals",
+    "db:reconstruct-open-lots": "pnpm --filter @grid-bot/db reconstruct:open-lots",
     "db:repair-open-lots": "pnpm --filter @grid-bot/db repair:open-lots",
     "wallet:generate": "npx tsx scripts/generate-wallet.ts",
     "wallet:import": "npx tsx scripts/export-wallet-env.ts"

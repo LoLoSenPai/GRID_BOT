@@ -1,5 +1,4 @@
 import { DEFAULTS, MINTS } from "@grid-bot/common/constants";
-import { GridStrategyService, type PositionLot } from "@grid-bot/core";
 import { BotMode, BotStatus, ExecutionProvider, GridType, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
 
 interface BotRuntimeMetadataShape {
@@ -22,6 +21,24 @@ interface BotRuntimeMetadataShape {
   recenterHistory: string[];
   recentExecutions: string[];
 }
+
+type LocalPositionLot = {
+  id: string;
+  botId: string;
+  originalBaseAmount: number;
+  remainingBaseAmount: number;
+  entryPrice: number;
+  costQuote: number;
+  openedByExecutionId: string;
+  closedByExecutionId: string | null;
+  openedAt: Date;
+  closedAt: Date | null;
+};
+
+type LocalGridLevel = {
+  index: number;
+  price: number;
+};
 
 const DRAFT_FIELD_LABELS: Record<keyof BotFormDraft, string> = {
   presetId: "Pair preset",
@@ -667,14 +684,13 @@ export function createStateSnapshotFromOpenLots(input: {
     availableBaseAmount > 0 && deployedQuoteAmount > 0
       ? roundRuntimeNumber(deployedQuoteAmount / availableBaseAmount)
       : null;
-  const strategyService = new GridStrategyService();
-  const levels = strategyService.calculateLevels(
+  const levels = calculateGridLevels(
     numberOrZero(input.config.lowPrice),
     numberOrZero(input.config.highPrice),
     input.config.levelCount,
     input.config.gridType,
   );
-  const gridCycles = strategyService.remapOpenLotsToGridCycles(levels, lots);
+  const gridCycles = remapOpenLotsToGridCycles(levels, lots);
   const latestOpenLotAt = lots.reduce<Date | null>(
     (latest, lot) => (!latest || lot.openedAt > latest ? lot.openedAt : latest),
     null,
@@ -1015,7 +1031,7 @@ function toDomainPositionLot(lot: {
   closedByExecutionId: string | null;
   openedAt: Date;
   closedAt: Date | null;
-}): PositionLot {
+}): LocalPositionLot {
   return {
     id: lot.id,
     botId: lot.botId,
@@ -1028,6 +1044,78 @@ function toDomainPositionLot(lot: {
     openedAt: lot.openedAt,
     closedAt: lot.closedAt,
   };
+}
+
+function calculateGridLevels(
+  lowPrice: number,
+  highPrice: number,
+  levelCount: number,
+  gridType: GridType,
+): LocalGridLevel[] {
+  if (levelCount < 2) {
+    return [];
+  }
+
+  if (gridType === GridType.Arithmetic) {
+    const step = (highPrice - lowPrice) / (levelCount - 1);
+    return Array.from({ length: levelCount }, (_, index) => ({
+      index,
+      price: roundRuntimeNumber(lowPrice + step * index),
+    }));
+  }
+
+  const ratio = Math.pow(highPrice / lowPrice, 1 / (levelCount - 1));
+  return Array.from({ length: levelCount }, (_, index) => ({
+    index,
+    price: roundRuntimeNumber(lowPrice * ratio ** index),
+  }));
+}
+
+function remapOpenLotsToGridCycles(levels: LocalGridLevel[], openLots: LocalPositionLot[]) {
+  const cycles: BotRuntimeMetadataShape["gridCycles"] = {};
+  const activeLots = openLots
+    .filter((lot) => lot.remainingBaseAmount > 0 && lot.costQuote > 0 && !lot.closedAt)
+    .sort((left, right) => left.openedAt.getTime() - right.openedAt.getTime());
+
+  for (const lot of activeLots) {
+    const cycle = inferGridCycleForLot(levels, lot);
+    if (!cycle) {
+      continue;
+    }
+
+    const levelKey = String(cycle.buyLevelIndex);
+    const cycleKey = cycles[levelKey] ? `lot:${lot.id}` : levelKey;
+    cycles[cycleKey] = cycle;
+  }
+
+  return cycles;
+}
+
+function inferGridCycleForLot(levels: LocalGridLevel[], lot: LocalPositionLot) {
+  const costBasis = getLotCostBasis(lot);
+  if (costBasis <= 0 || levels.length < 2) {
+    return null;
+  }
+
+  const firstProfitableRail = levels.find((level) => level.price > costBasis + 0.00000001)?.index ?? null;
+  const sellLevelIndex = firstProfitableRail === null ? null : Math.max(1, firstProfitableRail);
+  const buyLevelIndex = sellLevelIndex === null ? Math.max(0, levels.length - 2) : Math.max(0, sellLevelIndex - 1);
+
+  return {
+    buyLevelIndex,
+    sellLevelIndex,
+    lotId: lot.id,
+    openedAt: lot.openedAt.toISOString(),
+  };
+}
+
+function getLotCostBasis(lot: LocalPositionLot) {
+  if (lot.remainingBaseAmount > 0 && lot.costQuote > 0) {
+    return lot.costQuote / lot.remainingBaseAmount;
+  }
+
+  const fallbackBaseAmount = lot.originalBaseAmount > 0 ? lot.originalBaseAmount : lot.remainingBaseAmount;
+  return lot.entryPrice > 0 ? lot.entryPrice : fallbackBaseAmount > 0 ? lot.costQuote / fallbackBaseAmount : 0;
 }
 
 function roundRuntimeNumber(value: number, digits = 8) {
