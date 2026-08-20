@@ -16,6 +16,7 @@ export * from "./services/grid-strategy-service";
 export * from "./services/indicator-service";
 export * from "./services/market-price-service";
 export * from "./services/market-regime-service";
+export * from "./services/portfolio-history-sanitizer";
 export * from "./services/range-plan-service";
 export * from "./services/recenter-policy-service";
 export * from "./services/risk-manager-service";

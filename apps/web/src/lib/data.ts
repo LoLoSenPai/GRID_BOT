@@ -1,4 +1,5 @@
 import { BotMode } from "@grid-bot/core/enums";
+import { removeIsolatedPortfolioSpikes } from "@grid-bot/core";
 import { findLatestBotStateSnapshot, findLatestBotStateSnapshots, prisma } from "@grid-bot/db";
 
 const BOT_DETAIL_EXECUTION_HISTORY_LIMIT = 500;
@@ -71,8 +72,7 @@ async function getPortfolioHistory(mode: BotMode) {
     ORDER BY bucket ASC, "created_at" DESC
   `;
 
-  return downsamplePoints(
-    rows.map((row) => ({
+  const points = rows.map((row) => ({
       time: row.bucket.toISOString(),
       botCount: row.bot_count,
       activeBotCount: row.active_bot_count,
@@ -82,7 +82,10 @@ async function getPortfolioHistory(mode: BotMode) {
       unrealizedPnlUsd: numberFromDatabase(row.unrealized_pnl_usd),
       totalPnlUsd: numberFromDatabase(row.total_pnl_usd),
       totalEquityUsd: numberFromDatabase(row.total_equity_usd),
-    })),
+    }));
+
+  return downsamplePoints(
+    removeIsolatedPortfolioSpikes(points),
     PORTFOLIO_HISTORY_MAX_POINTS,
   );
 }

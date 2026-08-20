@@ -3,6 +3,8 @@ import type { MarketCandleRepository } from "@grid-bot/core";
 import { prisma } from "../client";
 import { mapMarketCandle } from "../mappers";
 
+const CREATE_MANY_CHUNK_SIZE = 250;
+
 export class PrismaMarketCandleRepository implements MarketCandleRepository {
   async findCandles(request: Parameters<MarketCandleRepository["findCandles"]>[0]) {
     const candles = await prisma.marketCandle.findMany({
@@ -44,14 +46,16 @@ export class PrismaMarketCandleRepository implements MarketCandleRepository {
     }));
     const candlesToRefresh = candles.slice(-3);
 
-    await prisma.$transaction(
-      [
-        prisma.marketCandle.createMany({
-          data,
-          skipDuplicates: true
-        }),
-        ...candlesToRefresh.map((candle) =>
-          prisma.marketCandle.upsert({
+    for (let index = 0; index < data.length; index += CREATE_MANY_CHUNK_SIZE) {
+      await prisma.marketCandle.createMany({
+        data: data.slice(index, index + CREATE_MANY_CHUNK_SIZE),
+        skipDuplicates: true
+      });
+    }
+
+    await Promise.all(
+      candlesToRefresh.map((candle) =>
+        prisma.marketCandle.upsert({
             where: {
               provider_symbol_quoteSymbol_resolution_openTime: {
                 provider: candle.provider,
@@ -87,8 +91,7 @@ export class PrismaMarketCandleRepository implements MarketCandleRepository {
               fetchedAt: candle.fetchedAt
             }
           })
-        )
-      ]
+      )
     );
   }
 }

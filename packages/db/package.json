@@ -17,6 +17,7 @@
     "prisma:migrate:deploy": "prisma migrate deploy --schema=prisma/schema.prisma",
     "fix:jupiter-rent-fees": "tsx prisma/fix-jupiter-rent-fees.ts",
     "fix:btc-decimals": "tsx prisma/fix-btc-decimals.ts",
+    "repair:portfolio-history": "tsx prisma/repair-portfolio-history.ts",
     "reconstruct:open-lots": "tsx prisma/reconstruct-open-position-lots.ts",
     "repair:open-lots": "tsx prisma/repair-open-position-lots.ts",
     "seed": "tsx prisma/seed.ts"

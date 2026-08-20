@@ -114,7 +114,7 @@ export class CachedCandleHistoryProvider implements CandleHistoryProvider {
           ? new Date(Math.max(request.from.getTime(), lastOpenTime - intervalMs * 3))
           : request.from;
       const fresh = await this.upstream.getHistory({ ...request, from: refreshFrom });
-      await this.repository.upsertCandles(fresh.candles);
+      this.persistCandles(fresh.candles);
       const candles = windowCovered ? mergeCandles(cachedCandles, fresh.candles) : fresh.candles;
       return {
         candles,
@@ -130,6 +130,16 @@ export class CachedCandleHistoryProvider implements CandleHistoryProvider {
       }
 
       throw error;
+    }
+  }
+
+  private persistCandles(candles: NormalizedCandle[]) {
+    try {
+      void this.repository.upsertCandles(candles).catch((error) => {
+        console.error("Market candle cache persistence failed", error);
+      });
+    } catch (error) {
+      console.error("Market candle cache persistence failed", error);
     }
   }
 }

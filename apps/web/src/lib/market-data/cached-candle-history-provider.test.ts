@@ -103,6 +103,43 @@ describe("CachedCandleHistoryProvider", () => {
     expect(repo.upsertCandles).toHaveBeenCalledWith([fresh]);
   });
 
+  it("returns fresh candles without waiting for DB persistence", async () => {
+    let finishPersistence: (() => void) | undefined;
+    const repo = repository();
+    repo.upsertCandles = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPersistence = resolve;
+        })
+    );
+    const fresh = candle({ close: 106 });
+    const provider = new CachedCandleHistoryProvider(repo, upstream([fresh]), 60_000);
+
+    const result = await provider.getHistory(request);
+
+    expect(result.candles).toEqual([fresh]);
+    expect(finishPersistence).toBeTypeOf("function");
+    finishPersistence?.();
+  });
+
+  it("keeps fresh history available when DB persistence fails", async () => {
+    const persistenceError = new Error("database busy");
+    const repo = repository();
+    repo.upsertCandles = vi.fn(async () => {
+      throw persistenceError;
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const fresh = candle({ close: 107 });
+    const provider = new CachedCandleHistoryProvider(repo, upstream([fresh]), 60_000);
+
+    const result = await provider.getHistory(request);
+    await Promise.resolve();
+
+    expect(result.candles).toEqual([fresh]);
+    expect(consoleError).toHaveBeenCalledWith("Market candle cache persistence failed", persistenceError);
+    consoleError.mockRestore();
+  });
+
   it("refreshes only the tail when a covered cache is stale", async () => {
     const staleFetchedAt = new Date("2026-04-16T00:00:00.000Z");
     const cached = Array.from({ length: 12 }, (_, index) =>

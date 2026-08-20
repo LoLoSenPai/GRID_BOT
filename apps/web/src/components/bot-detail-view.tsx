@@ -221,7 +221,8 @@ function getFreshHistoryCacheEntry(symbol: BotDetailViewData["baseSymbol"], reso
   const cacheKey = getHistoryCacheKey(symbol, resolution);
   const cached = historyCache.get(cacheKey);
 
-  if (!cached) {
+  if (!cached || cached.candles.length === 0) {
+    historyCache.delete(cacheKey);
     return null;
   }
 
@@ -466,6 +467,7 @@ export function BotDetailView({
     totalEquityUsd: runtimeData?.totalEquityUsd ?? bot.metrics.inventoryValue + (runtimeData?.availableQuoteAmount ?? 0)
   });
   const [resolution, setResolution] = useState<HistoryResolution>(initialResolution);
+  const [historyReloadKey, setHistoryReloadKey] = useState(0);
   const fallbackCandles = useMemo(() => buildCandlesFromSnapshots(bot.priceSnapshots, resolution), [bot.priceSnapshots, resolution]);
   const fallbackCandlesRef = useRef(fallbackCandles);
   const initialCache = getFreshHistoryCacheEntry(bot.baseSymbol, resolution);
@@ -486,6 +488,10 @@ export function BotDetailView({
   });
 
   useEffect(() => {
+    if (bot.initialCandles.length === 0) {
+      return;
+    }
+
     const cacheKey = getHistoryCacheKey(bot.baseSymbol, initialResolution);
     const cached = historyCache.get(cacheKey);
     if (!cached || cached.candles.length < bot.initialCandles.length) {
@@ -682,7 +688,7 @@ export function BotDetailView({
     return () => {
       active = false;
     };
-  }, [bot.baseSymbol, resolution]);
+  }, [bot.baseSymbol, historyReloadKey, resolution]);
 
   useEffect(() => {
     setHistoryState((current) => {
@@ -948,6 +954,18 @@ export function BotDetailView({
             sourceLabel={activeHistoryState.sourceLabel}
             cappedLabel={activeHistoryState.cappedLabel}
           />
+          {activeHistoryState.error && activeHistoryState.candles.length === 0 ? (
+            <div className="flex items-center justify-between gap-3 border border-[color:rgba(255,107,122,0.2)] bg-[color:rgba(255,107,122,0.05)] px-3 py-2 text-xs text-[var(--red)]">
+              <span>Market history unavailable: {activeHistoryState.error}</span>
+              <button
+                type="button"
+                className="shrink-0 rounded border border-[color:rgba(255,107,122,0.28)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] hover:bg-white/[0.04]"
+                onClick={() => setHistoryReloadKey((current) => current + 1)}
+              >
+                Retry
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
     );
