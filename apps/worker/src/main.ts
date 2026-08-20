@@ -21,8 +21,8 @@ import {
 } from "@grid-bot/db";
 
 import { DiscordWebhookSink } from "./discord-webhook-sink";
+import { JupiterPricePoller } from "./jupiter-price-poller";
 import { getPortfolioSnapshotIntervalMs, safeBackfillPortfolioSnapshots, safeCreatePortfolioSnapshots } from "./portfolio-snapshots";
-import { PythPriceStreamService } from "./pyth-price-stream";
 import { getRuntimeMaintenanceIntervalMs, runRuntimeMaintenance } from "./runtime-maintenance";
 import { SymbolRunScheduler } from "./symbol-run-scheduler";
 
@@ -62,45 +62,23 @@ async function main() {
   }, {
     minIntervalMs: env.SYMBOL_RUN_MIN_INTERVAL_MS
   });
-  const priceStream = new PythPriceStreamService(async (marketPrice) => {
-    marketPriceService.setLatestPrice(marketPrice);
-    symbolRunScheduler.schedule(marketPrice.symbol);
-  });
-  let fullCycleRunning = false;
-  let fullCycleQueued = false;
-  const runFullCycle = async (reason: string) => {
-    if (fullCycleRunning) {
-      fullCycleQueued = true;
-      return;
-    }
-
-    fullCycleRunning = true;
-    try {
-      do {
-        fullCycleQueued = false;
-        try {
-          await engine.runCycle();
-        } catch (error) {
-          logger.error({ error, reason }, "Worker cycle failed");
-        }
-      } while (fullCycleQueued);
-    } finally {
-      fullCycleRunning = false;
-    }
-  };
-
+  const pricePoller = new JupiterPricePoller(
+    marketPriceService,
+    async (marketPrices) => {
+      for (const marketPrice of marketPrices) {
+        symbolRunScheduler.schedule(marketPrice.symbol);
+      }
+    },
+    env.BOT_TICK_INTERVAL_MS
+  );
   logger.info(
     { tickIntervalMs: env.BOT_TICK_INTERVAL_MS, symbolRunMinIntervalMs: env.SYMBOL_RUN_MIN_INTERVAL_MS },
     "Worker started"
   );
-  priceStream.start();
   await safeBackfillPortfolioSnapshots();
   await safeCreatePortfolioSnapshots();
   await runRuntimeMaintenance();
-  await runFullCycle("startup");
-  const interval = setInterval(async () => {
-    await runFullCycle("interval");
-  }, env.BOT_TICK_INTERVAL_MS);
+  pricePoller.start();
   const portfolioSnapshotInterval = setInterval(async () => {
     await safeCreatePortfolioSnapshots();
   }, getPortfolioSnapshotIntervalMs());
@@ -109,10 +87,9 @@ async function main() {
   }, getRuntimeMaintenanceIntervalMs());
 
   const shutdown = async () => {
-    clearInterval(interval);
     clearInterval(portfolioSnapshotInterval);
     clearInterval(maintenanceInterval);
-    await priceStream.stop();
+    pricePoller.stop();
     await prisma.$disconnect();
     process.exit(0);
   };

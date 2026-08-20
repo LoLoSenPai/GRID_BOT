@@ -33,8 +33,8 @@ services:
         RPC_WS_URL: ${RPC_WS_URL}
         EXECUTION_WALLET_SECRET_KEY_PATH: /run/secrets/execution-wallet.json
         JUPITER_API_KEY: ${JUPITER_API_KEY}
-        PYTH_HERMES_BASE_URL: ${PYTH_HERMES_BASE_URL}
-        PYTH_HISTORY_BASE_URL: ${PYTH_HISTORY_BASE_URL}
+        JUPITER_PRICE_BASE_URL: ${JUPITER_PRICE_BASE_URL:-https://api.jup.ag/price/v3}
+        GECKOTERMINAL_BASE_URL: ${GECKOTERMINAL_BASE_URL:-https://api.geckoterminal.com/api/v2}
         BOT_TICK_INTERVAL_MS: ${BOT_TICK_INTERVAL_MS}
         PRICE_STALE_AFTER_MS: ${PRICE_STALE_AFTER_MS}
     restart: "no"
@@ -68,8 +68,8 @@ services:
         RPC_WS_URL: ${RPC_WS_URL}
         EXECUTION_WALLET_SECRET_KEY_PATH: /run/secrets/execution-wallet.json
         JUPITER_API_KEY: ${JUPITER_API_KEY}
-        PYTH_HERMES_BASE_URL: ${PYTH_HERMES_BASE_URL}
-        PYTH_HISTORY_BASE_URL: ${PYTH_HISTORY_BASE_URL}
+        JUPITER_PRICE_BASE_URL: ${JUPITER_PRICE_BASE_URL:-https://api.jup.ag/price/v3}
+        GECKOTERMINAL_BASE_URL: ${GECKOTERMINAL_BASE_URL:-https://api.geckoterminal.com/api/v2}
         BOT_TICK_INTERVAL_MS: ${BOT_TICK_INTERVAL_MS}
         PRICE_STALE_AFTER_MS: ${PRICE_STALE_AFTER_MS}
     restart: unless-stopped

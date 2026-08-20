@@ -102,7 +102,7 @@ export function BotConfigPreview({
     error: string | null;
   }>({
     candles: [],
-    sourceLabel: "pyth-history",
+    sourceLabel: "gecko-terminal",
     loading: true,
     error: null
   });

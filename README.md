@@ -1,9 +1,10 @@
 # Grid Bot Platform
 
-Plateforme solo de grid trading spot sur Solana, orientee desktop et construite pour piloter deux bots autonomes en V1:
+Plateforme solo de grid trading spot sur Solana, orientee desktop et construite pour piloter des bots autonomes sur:
 
 - `SOL/USDC`
 - `BTC/USDC`
+- `HYPE/USDC`
 
 La V1 couvre:
 
@@ -62,7 +63,7 @@ Le monorepo est organise comme suit:
 - `BotEngineService`: orchestration des ticks, transitions d'etat, journalisation, execution
 - `GridStrategyService`: calcul des niveaux, detection des crossings, construction des intents d'ordre
 - `RiskManagerService`: cooldown, locks, drawdown, max orders/hour, failures, garde-fous infra
-- `MarketPriceService`: prix de reference Pyth pour les triggers et la surveillance
+- `MarketPriceService`: prix Jupiter Price V3 batches pour les triggers et la surveillance
 - `ExecutionService`: selection d'adapter selon `paper` vs `live`
 - `AlertService`: persistence des alertes et dispatch Discord
 
@@ -85,7 +86,8 @@ Le monorepo est organise comme suit:
 
 ## Source de prix et execution
 
-- Prix de reference: Pyth Hermes
+- Prix live et triggers: Jupiter Price API V3, une requete batch globale
+- Candles historiques: GeckoTerminal OHLCV sur des pools Solana verifies
 - Swaps spot: Jupiter REST API
 - Wallet hot: reserve au worker
 
@@ -94,6 +96,20 @@ Important:
 - `LIVE_TRADING_ENABLED=false` par defaut
 - le web ne signe rien
 - le worker est le seul process autorise a utiliser le wallet hot
+
+### Market data
+
+Le worker appelle Jupiter Price V3 une fois par tick avec les mints SOL, WBTC, HYPE et USDC dans le meme batch. Le nombre de bots ne multiplie donc pas les appels de prix. Les candles sont chargees a la demande depuis GeckoTerminal puis protegees par le cache memoire court et, en production, par le cache PostgreSQL. GeckoTerminal etant une API publique limitee, les erreurs temporaires sont retentees avec un backoff borne et une fenetre historique trop grande echoue explicitement au lieu d'etre tronquee silencieusement.
+
+Pools GeckoTerminal retenus:
+
+| Paire | Pool Solana |
+|---|---|
+| `SOL/USDC` | `Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE` |
+| `WBTC/USDC` | `3sehQcVywWcFJZ1ri3NmJ7MRkrXbViJMRNN5b6kz8Mqn` |
+| `HYPE/USDC` | `ANCx141SujgVdbKz9NTEH8F38qWsnyyXsVju64aU3qLB` |
+
+Ces adresses doivent etre reverifiees si un token change de mint ou si la liquidite migre vers un autre pool. Une paire sans historique valide echoue explicitement au lieu de fabriquer des candles.
 
 ## Schema de donnees
 
@@ -176,14 +192,15 @@ Variables principales:
 | `RPC_HTTP_URL` | RPC Solana HTTP |
 | `RPC_WS_URL` | RPC Solana WebSocket |
 | `JUPITER_API_KEY` | cle API Jupiter |
-| `JUPITER_PRICE_BASE_URL` | endpoint Jupiter Price API v3 utilise comme fallback quand Hermes Pyth est indisponible |
+| `JUPITER_PRICE_BASE_URL` | endpoint Jupiter Price API v3 utilise comme source live principale |
 | `JUPITER_PRIORITY_FEE_LAMPORTS` | plafond de priority fee Jupiter en lamports, `50000` recommande pour petits cycles |
 | `JUPITER_BROADCAST_FEE_TYPE` | mode de fee Jupiter, `maxCap` recommande pour plafonner sans forcer un montant fixe |
-| `PYTH_HERMES_BASE_URL` | endpoint Hermes Pyth |
+| `GECKOTERMINAL_BASE_URL` | endpoint public GeckoTerminal utilise pour les candles OHLCV |
+| `MARKET_CANDLE_DB_CACHE_ENABLED` | active le cache PostgreSQL des candles pour reduire les appels GeckoTerminal |
 | `EXECUTION_WALLET_SECRET_KEY_PATH` | chemin du fichier keypair du wallet hot |
 | `DISCORD_WEBHOOK_URL` | webhook alertes Discord |
 | `BOT_TICK_INTERVAL_MS` | cadence du worker, `2000` recommande en prod live sur petit VPS optimise |
-| `SYMBOL_RUN_MIN_INTERVAL_MS` | cadence minimale entre deux cycles Pyth du meme symbole, `750` garde la reactivite sans marteler le VPS |
+| `SYMBOL_RUN_MIN_INTERVAL_MS` | cadence minimale entre deux cycles du meme symbole, `750` garde la reactivite sans marteler le VPS |
 | `PRICE_STALE_AFTER_MS` | garde-fou sur fraicheur du prix |
 
 ## Execution locale

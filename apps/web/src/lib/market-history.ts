@@ -4,7 +4,7 @@ import type { CandleHistoryProvider } from "@grid-bot/core";
 
 import { type CandlePoint, type HistoryResolution } from "@/lib/charting";
 import { CachedCandleHistoryProvider } from "@/lib/market-data/cached-candle-history-provider";
-import { PythHistoryProvider } from "@/lib/market-data/pyth-history-provider";
+import { GeckoTerminalHistoryProvider } from "@/lib/market-data/gecko-terminal-history-provider";
 import { getHistoryWindow } from "@/lib/market-history-window";
 
 type SupportedSymbol = "SOL" | "BTC" | "HYPE";
@@ -35,7 +35,7 @@ type HistoryCacheEntry = {
 const historyCache = new Map<string, HistoryCacheEntry>();
 const inFlightHistoryRequests = new Map<string, Promise<MarketHistoryResult>>();
 
-const directCandleHistoryProvider = new PythHistoryProvider();
+const directCandleHistoryProvider = new GeckoTerminalHistoryProvider();
 let dbCachedCandleHistoryProviderPromise: Promise<CandleHistoryProvider> | null = null;
 
 function isDbCandleCacheEnabled() {

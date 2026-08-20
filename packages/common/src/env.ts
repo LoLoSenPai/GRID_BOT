@@ -43,8 +43,7 @@ export const envSchema = z.object({
   JUPITER_PRICE_BASE_URL: z.string().url().default("https://api.jup.ag/price/v3"),
   JUPITER_PRIORITY_FEE_LAMPORTS: z.coerce.number().int().nonnegative().default(50000),
   JUPITER_BROADCAST_FEE_TYPE: z.enum(["maxCap", "exactFee"]).default("maxCap"),
-  PYTH_HERMES_BASE_URL: z.string().url().default("https://hermes.pyth.network"),
-  PYTH_HISTORY_BASE_URL: z.string().url().default("https://pyth.dourolabs.app/v1"),
+  GECKOTERMINAL_BASE_URL: z.string().url().default("https://api.geckoterminal.com/api/v2"),
   BOT_TICK_INTERVAL_MS: z.coerce.number().int().positive().default(2000),
   SYMBOL_RUN_MIN_INTERVAL_MS: z.coerce.number().int().nonnegative().default(750),
   PRICE_STALE_AFTER_MS: z.coerce.number().int().positive().default(10000)

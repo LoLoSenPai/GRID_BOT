@@ -13,11 +13,11 @@ const request = {
 
 function candle(overrides: Partial<NormalizedCandle> = {}): NormalizedCandle {
   return {
-    provider: "pyth-history",
+    provider: "gecko-terminal",
     symbol: "SOL",
     quoteSymbol: "USDC",
     resolution: "5m",
-    sourceMarket: "Crypto.SOL/USD",
+    sourceMarket: "solana:pool-sol-usdc",
     openTime: new Date("2026-04-17T00:00:00.000Z"),
     closeTime: null,
     open: 100,
@@ -46,17 +46,17 @@ function repository(candles: NormalizedCandle[] = []): MarketCandleRepository {
 
 function upstream(candles: NormalizedCandle[] = []): CandleHistoryProvider {
   return {
-    provider: "pyth-history",
+    provider: "gecko-terminal",
     getHistory: vi.fn(async () => ({
       candles,
       meta: {
-        provider: "pyth-history",
+        provider: "gecko-terminal",
         symbol: "SOL",
         quoteSymbol: "USDC",
         resolution: "5m",
         from: request.from,
         to: request.to,
-        sourceMarket: "Crypto.SOL/USD",
+        sourceMarket: "solana:pool-sol-usdc",
         cacheHit: false,
         fetchedAt: new Date()
       }
@@ -137,7 +137,7 @@ describe("CachedCandleHistoryProvider", () => {
     const stale = candle({ fetchedAt: new Date("2026-04-16T00:00:00.000Z") });
     const repo = repository([stale]);
     const source: CandleHistoryProvider = {
-      provider: "pyth-history",
+      provider: "gecko-terminal",
       getHistory: vi.fn(async () => {
         throw new Error("provider unavailable");
       })

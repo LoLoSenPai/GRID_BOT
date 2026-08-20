@@ -267,7 +267,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 121,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       }
@@ -301,7 +301,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 121,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       }
@@ -335,12 +335,12 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 121,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       },
-      marketPriceError: new MarketDataUnavailableError("Pyth request failed with status 503", {
-        provider: "pyth",
+      marketPriceError: new MarketDataUnavailableError("Market data request failed with status 503", {
+        provider: "test-market",
         status: 503,
         symbol: "SOL"
       })
@@ -356,7 +356,7 @@ describe("BotEngineService", () => {
       expect.objectContaining({
         level: LogLevel.Warn,
         category: "market_data",
-        message: "Market data retry deferred: Pyth request failed with status 503"
+        message: "Market data retry deferred: Market data request failed with status 503"
       })
     );
   });
@@ -376,12 +376,12 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 121,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       },
-      marketPriceError: new MarketDataUnavailableError("Pyth request failed with status 503", {
-        provider: "pyth",
+      marketPriceError: new MarketDataUnavailableError("Market data request failed with status 503", {
+        provider: "test-market",
         status: 503,
         symbol: "SOL"
       })
@@ -403,7 +403,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 170,
         confidence: 0.2,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       }
@@ -443,7 +443,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 172,
         confidence: 0.2,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       }
@@ -471,7 +471,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 150,
         confidence: 0.2,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       }
@@ -546,7 +546,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 161,
         confidence: 0.2,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       },
@@ -646,7 +646,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 161,
         confidence: 0.2,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       },
@@ -717,7 +717,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 81.5,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       }
@@ -778,7 +778,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 81.5,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       }
@@ -852,7 +852,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 82,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol",
       },
@@ -907,7 +907,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 82,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol",
       },
@@ -967,7 +967,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 84.8,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       },
@@ -1083,7 +1083,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 88.25,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date("2026-05-07T23:06:00.000Z"),
         feedId: "feed-sol"
       },
@@ -1182,7 +1182,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 84.8,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       },
@@ -1280,7 +1280,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 88.2,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol",
       },
@@ -1377,7 +1377,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 84.2,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol",
       },
@@ -1471,7 +1471,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 85.91,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol",
       },
@@ -1556,7 +1556,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 85.91,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol",
       },
@@ -1670,7 +1670,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 87.5,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol",
       },
@@ -1770,7 +1770,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 118,
         confidence: 0.15,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       }
@@ -1838,7 +1838,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 117.5,
         confidence: 0.15,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       }
@@ -1901,7 +1901,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 141,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       },
@@ -1985,7 +1985,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 141,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       },
@@ -2056,7 +2056,7 @@ describe("BotEngineService", () => {
         pair: "SOL/USDC",
         price: 101,
         confidence: 0.1,
-        source: "pyth",
+        source: "test-market",
         timestamp: new Date(),
         feedId: "feed-sol"
       }
@@ -2127,7 +2127,7 @@ describe("BotEngineService", () => {
           pair: "SOL/USDC",
           price: 81.9,
           confidence: 0.1,
-          source: "pyth",
+          source: "test-market",
           timestamp: new Date("2026-04-09T12:00:00.000Z"),
           feedId: "feed-sol"
         })
@@ -2136,7 +2136,7 @@ describe("BotEngineService", () => {
           pair: "SOL/USDC",
           price: 81.85,
           confidence: 0.1,
-          source: "pyth",
+          source: "test-market",
           timestamp: new Date("2026-04-09T12:00:01.000Z"),
           feedId: "feed-sol"
         })

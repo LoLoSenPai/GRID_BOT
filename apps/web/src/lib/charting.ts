@@ -29,25 +29,6 @@ const RESOLUTION_SECONDS: Record<HistoryResolution, number> = {
   "1mo": 30 * 24 * 60 * 60
 };
 
-export function getResolutionParam(resolution: HistoryResolution) {
-  switch (resolution) {
-    case "5m":
-      return "5";
-    case "30m":
-      return "30";
-    case "1h":
-      return "60";
-    case "4h":
-      return "240";
-    case "1d":
-      return "1D";
-    case "1w":
-      return "1W";
-    case "1mo":
-      return "1M";
-  }
-}
-
 export function getResolutionSeconds(resolution: HistoryResolution) {
   return RESOLUTION_SECONDS[resolution];
 }

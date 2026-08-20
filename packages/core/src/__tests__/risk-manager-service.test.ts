@@ -99,7 +99,7 @@ const marketPrice: MarketPrice = {
   pair: "SOL/USDC",
   price: 117,
   confidence: 0.1,
-  source: "pyth",
+  source: "test-market",
   timestamp: new Date(),
   feedId: "feed"
 };

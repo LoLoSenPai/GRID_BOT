@@ -1904,7 +1904,7 @@ export function BacktestLabConsole({
                 onChange={(next) => setResolution(next as LabResolution)}
               />
               <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
-                {displayedReplay?.meta.historyWindow?.source ?? "pyth-history"} | {lookbackDays}d
+                {displayedReplay?.meta.historyWindow?.source ?? "gecko-terminal"} | {lookbackDays}d
               </div>
             </div>
 
@@ -1921,7 +1921,7 @@ export function BacktestLabConsole({
                 averageCost={null}
                 loading={isPending}
                 resolutionLabel={resolution.toUpperCase()}
-                sourceLabel={displayedReplay?.meta.historyWindow?.source ?? "pyth-history"}
+                sourceLabel={displayedReplay?.meta.historyWindow?.source ?? "gecko-terminal"}
                 cappedLabel={null}
               />
             </div>

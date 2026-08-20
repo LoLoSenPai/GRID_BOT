@@ -199,7 +199,7 @@ export function buildMarketPreviewBoard(symbol: PreviewSymbol, history: MarketPr
       value: candle.close
     })),
     initialCandles: candles,
-    initialHistorySourceLabel: history?.meta.source ?? "pyth-history",
+    initialHistorySourceLabel: history?.meta.source ?? "gecko-terminal",
     orders: [],
     executions: [],
     positionLots: [],

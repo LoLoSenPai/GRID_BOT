@@ -513,7 +513,7 @@ export function BotDetailView({
     return {
       symbol: bot.baseSymbol,
       candles: cached?.candles ?? [],
-      sourceLabel: cached?.sourceLabel ?? "pyth-history",
+      sourceLabel: cached?.sourceLabel ?? "gecko-terminal",
       cappedLabel: cached?.cappedLabel ?? null,
       error: null,
       loading: !cached
@@ -642,7 +642,7 @@ export function BotDetailView({
     setHistoryState((current) => ({
       symbol: bot.baseSymbol,
       candles: current.symbol === bot.baseSymbol ? current.candles : [],
-      sourceLabel: current.symbol === bot.baseSymbol ? current.sourceLabel : "pyth-history",
+      sourceLabel: current.symbol === bot.baseSymbol ? current.sourceLabel : "gecko-terminal",
       cappedLabel: current.symbol === bot.baseSymbol ? current.cappedLabel : null,
       error: null,
       loading: true
@@ -874,7 +874,7 @@ export function BotDetailView({
         : {
           symbol: bot.baseSymbol,
           candles: [],
-          sourceLabel: "pyth-history",
+          sourceLabel: "gecko-terminal",
           cappedLabel: null,
           error: null,
           loading: true
@@ -992,7 +992,7 @@ export function BotDetailView({
                 description={
                   embedded
                     ? "Market candles plus active grid rails."
-                    : "The chart now runs on Pyth historical market data, while the bot keeps projecting its own grid and order rails over the market."
+                    : "The chart uses GeckoTerminal pool candles while the bot projects its own grid and order rails over the market."
                 }
                 icon={Radar}
                 actions={
