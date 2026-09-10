@@ -5,9 +5,12 @@ import type { BacktestExecutionCostOverride, BacktestExecutionCostSource } from 
 import { prisma } from "@grid-bot/db";
 
 import type { LabLookbackDays, LabPair } from "@/lib/backtest-lab";
+import type { BacktestExecutionCostMode } from "@/lib/backtest-lab";
 
 const MAX_EXECUTION_SAMPLES = 500;
-const MIN_CALIBRATION_SAMPLES = 5;
+const MIN_CALIBRATION_SAMPLES = 20;
+const MIN_SIDE_SAMPLES = 5;
+const MIN_FEE_SAMPLES = 10;
 
 export type BacktestExecutionCostCalibration = BacktestExecutionCostOverride & {
   pair: LabPair;
@@ -16,13 +19,26 @@ export type BacktestExecutionCostCalibration = BacktestExecutionCostOverride & {
   buySampleSize: number;
   sellSampleSize: number;
   feeSampleSize: number;
-  averageAdverseSlippageBps: number;
-  p50AdverseSlippageBps: number;
-  p75AdverseSlippageBps: number;
-  p90AdverseSlippageBps: number;
-  maxAdverseSlippageBps: number;
-  averageFeeBps: number;
+  calibrationStatus: "calibrated" | "insufficient_filled_samples";
+  reasons: string[];
+  averageAdverseSlippageBps: number | null;
+  p50AdverseSlippageBps: number | null;
+  p75AdverseSlippageBps: number | null;
+  p90AdverseSlippageBps: number | null;
+  maxAdverseSlippageBps: number | null;
+  averageFeeBps: number | null;
   lookbackDays: LabLookbackDays;
+};
+
+export type BacktestExecutionCostResolution = {
+  requestedMode: BacktestExecutionCostMode;
+  calibratedBase: BacktestExecutionCostCalibration;
+  applied: {
+    mode: BacktestExecutionCostMode;
+    source: BacktestExecutionCostSource;
+    maxSlippageBps: number;
+    executionFeeBps: number;
+  };
 };
 
 export async function fetchExecutionCostCalibration(input: {
@@ -33,7 +49,7 @@ export async function fetchExecutionCostCalibration(input: {
   const rows = await prisma.execution.findMany({
     where: {
       mode: BotMode.Live as never,
-      status: { in: [ExecutionStatus.Submitted, ExecutionStatus.Filled] as never },
+      status: ExecutionStatus.Filled as never,
       createdAt: { gte: since }
     },
     orderBy: { createdAt: "desc" },
@@ -100,22 +116,36 @@ export async function fetchExecutionCostCalibration(input: {
 
     const quoteNotional = side === TradeSide.Buy ? inputAmount : outputAmount;
     const feeAmount = toNumber(row.executedFeeAmount);
-    if (feeAmount > 0 && quoteNotional > 0 && feeAmount <= quoteNotional * 0.02) {
+    if (feeAmount > 0 && quoteNotional > 0) {
       feeBps.push((feeAmount / quoteNotional) * 10_000);
     }
   }
 
+  const reasons: string[] = [];
   if (adverseSlippageBps.length < MIN_CALIBRATION_SAMPLES) {
-    return buildFixedFallback(input, adverseSlippageBps.length, buySampleSize, sellSampleSize);
+    reasons.push(`Need at least ${MIN_CALIBRATION_SAMPLES} resolved fills; found ${adverseSlippageBps.length}.`);
+  }
+  if (buySampleSize < MIN_SIDE_SAMPLES || sellSampleSize < MIN_SIDE_SAMPLES) {
+    reasons.push(`Need at least ${MIN_SIDE_SAMPLES} resolved fills on each side; found ${buySampleSize} buys and ${sellSampleSize} sells.`);
+  }
+  if (feeBps.length < MIN_FEE_SAMPLES) {
+    reasons.push(`Need at least ${MIN_FEE_SAMPLES} fills with measured quote fees; found ${feeBps.length}.`);
+  }
+
+  if (reasons.length) {
+    return buildFixedFallback(input, adverseSlippageBps, feeBps, buySampleSize, sellSampleSize, reasons);
   }
 
   const p75AdverseSlippageBps = percentile(adverseSlippageBps, 0.75);
-  const recommendedSlippageBps = clamp(roundUp(p75AdverseSlippageBps + 2, 1), 3, 50);
-  const recommendedFeeBps = feeBps.length ? clamp(roundUp(percentile(feeBps, 0.75), 1), 0, 10) : 0;
+  const p90AdverseSlippageBps = percentile(adverseSlippageBps, 0.9);
+  const recommendedSlippageBps = Math.max(3, roundUp(p90AdverseSlippageBps + 2, 1));
+  const recommendedFeeBps = roundUp(percentile(feeBps, 0.9), 1);
 
   return {
     pair: input.pair,
     source: "calibrated_live_fills",
+    calibrationStatus: "calibrated",
+    reasons: [],
     sampleSize: adverseSlippageBps.length,
     buySampleSize,
     sellSampleSize,
@@ -125,7 +155,7 @@ export async function fetchExecutionCostCalibration(input: {
     averageAdverseSlippageBps: round(average(adverseSlippageBps), 2),
     p50AdverseSlippageBps: round(percentile(adverseSlippageBps, 0.5), 2),
     p75AdverseSlippageBps: round(p75AdverseSlippageBps, 2),
-    p90AdverseSlippageBps: round(percentile(adverseSlippageBps, 0.9), 2),
+    p90AdverseSlippageBps: round(p90AdverseSlippageBps, 2),
     maxAdverseSlippageBps: round(Math.max(...adverseSlippageBps), 2),
     averageFeeBps: round(feeBps.length ? average(feeBps) : 0, 2),
     lookbackDays: input.lookbackDays
@@ -146,25 +176,29 @@ export function applyExecutionCostCalibration<T extends { maxSlippageBps: number
 
 function buildFixedFallback(
   input: { pair: LabPair; lookbackDays: LabLookbackDays },
-  sampleSize: number,
+  adverseSlippageBps: number[],
+  feeBps: number[],
   buySampleSize: number,
-  sellSampleSize: number
+  sellSampleSize: number,
+  reasons: string[]
 ): BacktestExecutionCostCalibration {
   return {
     pair: input.pair,
     source: "fixed_pessimistic",
-    sampleSize,
+    calibrationStatus: "insufficient_filled_samples",
+    reasons,
+    sampleSize: adverseSlippageBps.length,
     buySampleSize,
     sellSampleSize,
-    feeSampleSize: 0,
+    feeSampleSize: feeBps.length,
     maxSlippageBps: 50,
     executionFeeBps: 10,
-    averageAdverseSlippageBps: 0,
-    p50AdverseSlippageBps: 0,
-    p75AdverseSlippageBps: 0,
-    p90AdverseSlippageBps: 0,
-    maxAdverseSlippageBps: 0,
-    averageFeeBps: 0,
+    averageAdverseSlippageBps: adverseSlippageBps.length ? round(average(adverseSlippageBps), 2) : null,
+    p50AdverseSlippageBps: adverseSlippageBps.length ? round(percentile(adverseSlippageBps, 0.5), 2) : null,
+    p75AdverseSlippageBps: adverseSlippageBps.length ? round(percentile(adverseSlippageBps, 0.75), 2) : null,
+    p90AdverseSlippageBps: adverseSlippageBps.length ? round(percentile(adverseSlippageBps, 0.9), 2) : null,
+    maxAdverseSlippageBps: adverseSlippageBps.length ? round(Math.max(...adverseSlippageBps), 2) : null,
+    averageFeeBps: feeBps.length ? round(average(feeBps), 2) : null,
     lookbackDays: input.lookbackDays
   };
 }
@@ -206,10 +240,6 @@ function percentile(values: number[], ratio: number) {
   const sorted = [...values].sort((left, right) => left - right);
   const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1));
   return sorted[index] ?? 0;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, value));
 }
 
 function round(value: number, decimals: number) {

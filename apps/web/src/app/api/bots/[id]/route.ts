@@ -147,6 +147,24 @@ export async function PATCH(
       : null;
 
     await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM bots WHERE id = ${id} FOR UPDATE`;
+      const currentBot = await tx.bot.findUnique({ where: { id } });
+      const attempt = await tx.executionAttempt.findUnique({ where: { botId: id } });
+      const unresolved = await tx.execution.findFirst({ where: { botId: id, completedAt: null,
+        status: { in: ["pending", "submitted", "unknown"] } }, select: { id: true } });
+      if (attempt || unresolved) {
+        throw new BotManagementValidationError("An execution is awaiting reconciliation. Configuration changes are blocked until it is resolved.", 409);
+      }
+      if (!currentBot || currentBot.archivedAt || ["running", "cooldown"].includes(currentBot.status) ||
+        currentBot.updatedAt.getTime() !== bot.updatedAt.getTime()) {
+        throw new BotManagementValidationError("Bot state changed while preparing this edit. Refresh and retry.", 409);
+      }
+      if (budgetDeltaUsd > 0 || gridChanged) {
+        const currentSnapshot = await tx.botStateSnapshot.findFirst({ where: { botId: id }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
+        if ((currentSnapshot?.id ?? null) !== (latestStoredState?.id ?? null)) {
+          throw new BotManagementValidationError("Bot accounting changed while preparing this edit. Refresh and retry.", 409);
+        }
+      }
       await tx.bot.update({
         where: { id },
         data: {
@@ -163,6 +181,7 @@ export async function PATCH(
           totalBudgetUsd: parsed.totalBudgetUsd,
           maxDeployableUsd: parsed.maxDeployableUsd,
           reserveQuoteAmount: parsed.reserveQuoteAmount,
+          entryMode: parsed.entryMode as never,
           lowPrice: parsed.lowPrice,
           highPrice: parsed.highPrice,
           levelCount: parsed.levelCount,
@@ -211,6 +230,7 @@ export async function PATCH(
               data: migratedOpenState.openLots.map((lot) => ({
                 id: lot.id,
                 botId: id,
+                kind: lot.kind ?? "trading",
                 originalBaseAmount: lot.originalBaseAmount,
                 remainingBaseAmount: lot.remainingBaseAmount,
                 entryPrice: lot.entryPrice,
@@ -350,6 +370,7 @@ async function buildMigratedOpenState(
 }
 
 function mapPositionLot(lot: {
+  kind?: string;
   id: string;
   botId: string;
   originalBaseAmount: unknown;
@@ -364,6 +385,7 @@ function mapPositionLot(lot: {
   return {
     id: lot.id,
     botId: lot.botId,
+    kind: lot.kind === "retained" ? "retained" : "trading",
     originalBaseAmount: decimalLikeToNumber(lot.originalBaseAmount),
     remainingBaseAmount: decimalLikeToNumber(lot.remainingBaseAmount),
     entryPrice: decimalLikeToNumber(lot.entryPrice),
@@ -396,6 +418,7 @@ function normalizeRuntimeMetadata(metadata: unknown): BotRuntimeMetadata {
       : {};
 
   return {
+    ...record,
     levelLocks: isStringRecord(record.levelLocks) ? record.levelLocks : {},
     pendingSignal: record.pendingSignal ?? null,
     gridCycles: isObjectRecord(record.gridCycles) ? record.gridCycles : {},

@@ -126,3 +126,23 @@ describe("RangePlanService", () => {
     expect(plan.recommendedHighPrice).toBe(106);
   });
 });
+
+
+describe("RangePlan cost floor", () => {
+  it("reduces rails as round-trip costs increase and verifies every arithmetic interval", () => {
+    const cheap = service.plan(input({ maxSlippageBps: 0, executionFeeBps: 0 }));
+    const costly = service.plan(input({ maxSlippageBps: 100, executionFeeBps: 25 }));
+    expect(costly.recommendedLevelCount).toBeLessThan(cheap.recommendedLevelCount);
+    expect(costly.stepPct).toBeGreaterThanOrEqual(costly.minimumStepPct!);
+    expect(costly.estimatedRoundTripCostPct).toBeGreaterThan(2.5);
+    expect(costly.costFloorSatisfied).toBe(true);
+  });
+  it("refuses a range that cannot clear costs or fund one interval including fees", () => {
+    const impossible = service.plan(input({ maxSlippageBps: 1500 }));
+    expect(impossible.costFloorSatisfied).toBe(false);
+    expect(impossible.risk).toBe("high");
+    expect(impossible.operatorAction).toMatch(/do not launch/i);
+    const unfunded = service.plan(input({ budgetUsd: 12, minOrderQuoteAmount: 12, executionFeeBps: 10 }));
+    expect(unfunded.costFloorSatisfied).toBe(false);
+  });
+});

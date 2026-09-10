@@ -50,11 +50,12 @@ export class RangePlanService {
           minOrderQuoteAmount: input.minOrderQuoteAmount,
           currentLevelCount: input.currentLevelCount,
           risk: "high",
-          confidence: Math.max(0.25, regime.confidence * 0.6)
+          confidence: Math.max(0.25, regime.confidence * 0.6),
+          costInput: input
         }),
         operatorAction: "Do not auto-recenter in high volatility. Use this only as a watch range and keep new buys conservative.",
         reasons: [
-          `Regime is ${regime.regime} with ${Math.round(regime.confidence * 100)}% confidence.`,
+          `Regime is ${regime.regime} with ${Math.round(regime.confidence * 100)}% heuristic score.`,
           "High volatility can make an adaptive range chase price instead of farming it."
         ]
       };
@@ -73,13 +74,14 @@ export class RangePlanService {
       minOrderQuoteAmount: input.minOrderQuoteAmount,
       currentLevelCount: input.currentLevelCount,
       risk,
-      confidence
+      confidence,
+      costInput: input
     });
 
     return {
       ...plan,
       operatorAction:
-        regime?.regime === "RANGE"
+        !plan.costFloorSatisfied ? "Do not launch: this range and budget cannot support the volatility and round-trip cost floor." : regime?.regime === "RANGE"
           ? "Use this as a candidate range in Lab before recreating a bot."
           : "Treat this as a defensive candidate; trend or low confidence means the static grid can become fragile.",
       reasons: buildReasons(width, mid, regime?.regime ?? null, regime?.confidence ?? null, plan)
@@ -175,25 +177,40 @@ function buildPlan(input: {
   currentLevelCount: number;
   risk: RangePlanRisk;
   confidence: number;
+  costInput: RangePlanInput;
 }): RangePlanDecision {
   const widthPrice = input.midPrice * (input.widthPct / 100);
   const low = Math.max(input.midPrice - widthPrice * input.anchorRatio, input.midPrice * 0.01);
   const high = low + widthPrice;
-  const cycles = deriveCycleCount(input.budgetUsd, input.minOrderQuoteAmount, input.widthPct, input.currentLevelCount);
-  const stepPct = cycles > 0 ? input.widthPct / cycles : input.widthPct;
+  const slippage = Math.min(0.99, Math.max(0, input.costInput.maxSlippageBps ?? 50) / 10_000);
+  const fee = Math.min(0.99, Math.max(0, input.costInput.executionFeeBps ?? 10) / 10_000);
+  const roundTripCostPct = ((1 + slippage) * (1 + fee) / ((1 - slippage) * (1 - fee)) - 1) * 100;
+  const natr = Math.max(0, input.costInput.indicators?.atrPct14 ?? 0);
+  const minimumStepPct = Math.max(natr * (input.costInput.natrMultiplier ?? 0.5), roundTripCostPct + (input.costInput.netMarginPct ?? 0.25));
+  const gridType = input.widthPct >= 14 ? GridType.Geometric : GridType.Arithmetic;
+  const spacingLimit = gridType === GridType.Geometric
+    ? Math.floor(Math.log(high / low) / Math.log(1 + minimumStepPct / 100))
+    : Math.floor((high - low) / (high * minimumStepPct / 100));
+  const affordable = input.minOrderQuoteAmount > 0 ? Math.floor(input.budgetUsd / (input.minOrderQuoteAmount * (1 + fee))) : MAX_CYCLES;
+  const cycles = Math.max(1, Math.min(spacingLimit, affordable, deriveCycleCount(input.budgetUsd, input.minOrderQuoteAmount, input.widthPct, input.currentLevelCount)));
+  const stepPct = gridType === GridType.Geometric ? (Math.pow(high / low, 1 / cycles) - 1) * 100 : (high - low) / cycles / high * 100;
+  const costFloorSatisfied = spacingLimit >= 1 && affordable >= 1 && stepPct + 1e-8 >= minimumStepPct;
 
   return {
     recommendedLowPrice: round(low, 8),
     recommendedHighPrice: round(high, 8),
     recommendedLevelCount: cycles + 1,
-    recommendedGridType: input.widthPct >= 14 ? GridType.Geometric : GridType.Arithmetic,
+    recommendedGridType: gridType,
+    minimumStepPct: round(minimumStepPct, 4),
+    estimatedRoundTripCostPct: round(roundTripCostPct, 4),
+    costFloorSatisfied,
     midPrice: round(input.midPrice, 8),
     midBasis: input.midBasis,
     widthPct: round(input.widthPct, 4),
     stepPct: round(stepPct, 4),
     basis: input.basis,
     confidence: round(input.confidence, 2),
-    risk: input.risk,
+    risk: costFloorSatisfied ? input.risk : "high",
     operatorAction: "Use this as a Lab-only candidate.",
     reasons: []
   };
@@ -251,11 +268,13 @@ function buildReasons(
   reasons.push(`Center comes from ${mid.basis.replace(/_/g, " ")} at ${round(mid.price, 4)}.`);
 
   if (regime) {
-    reasons.push(`Market regime is ${regime}${regimeConfidence === null ? "" : ` with ${Math.round(regimeConfidence * 100)}% confidence`}.`);
+    reasons.push(`Market regime is ${regime}${regimeConfidence === null ? "" : ` with ${Math.round(regimeConfidence * 100)}% heuristic score`}.`);
   }
 
   reasons.push(`${plan.recommendedLevelCount} rails target roughly ${round(plan.stepPct, 2)}% per cycle.`);
   reasons.push(`Spacing recommendation is ${plan.recommendedGridType}.`);
+  reasons.push(`Minimum spacing is ${plan.minimumStepPct}%: max(NATR × multiplier, round-trip costs ${plan.estimatedRoundTripCostPct}% + net margin). These parameters are research assumptions.`);
+  if (!plan.costFloorSatisfied) reasons.push("No affordable interval clears the estimated cost floor; decline a new launch.");
   return reasons;
 }
 

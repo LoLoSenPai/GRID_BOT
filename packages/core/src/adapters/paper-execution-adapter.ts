@@ -2,9 +2,11 @@ import { ExecutionProvider, ExecutionStatus } from "../domain/enums";
 import type { ExecuteSwapParams, ExecutionEstimate, ExecutionQuote, ExecutionReport } from "../domain/types";
 import type { ExecutionAdapter } from "./execution-adapter";
 
+export const PAPER_EXECUTION_FEE_RATE = 0.001;
+
 export class PaperExecutionAdapter implements ExecutionAdapter {
   private readonly reports = new Map<string, ExecutionReport>();
-  private readonly feeRate = 0.001;
+  private readonly feeRate = PAPER_EXECUTION_FEE_RATE;
 
   async getQuote(inputMint: string, outputMint: string, amount: number, slippageBps: number): Promise<ExecutionQuote> {
     return {
@@ -20,14 +22,38 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
   }
 
   async estimateExecution(params: ExecuteSwapParams): Promise<ExecutionEstimate> {
-    const quote = await this.getQuote(params.inputMint, params.outputMint, params.amount, params.slippageBps);
+    const { outputAmount, feeAmount, effectivePrice } = this.calculateExecution(params);
     return {
-      ...quote,
-      expectedPrice: quote.expectedOutputAmount === 0 ? 0 : params.amount / quote.expectedOutputAmount
+      provider: ExecutionProvider.Paper,
+      inputMint: params.inputMint, outputMint: params.outputMint, inputAmount: params.amount,
+      expectedOutputAmount: outputAmount, estimatedFeeAmount: feeAmount,
+      expectedPrice: effectivePrice, priceImpactPct: params.slippageBps / 10_000,
+      rawQuote: { mode: "paper", referencePrice: params.referencePrice }
     };
   }
 
   async executeSwap(params: ExecuteSwapParams): Promise<ExecutionReport> {
+    const { outputAmount, feeAmount, effectivePrice } = this.calculateExecution(params);
+    const executionId = `paper-${params.clientOrderId}`;
+    const report: ExecutionReport = {
+      provider: ExecutionProvider.Paper,
+      status: ExecutionStatus.Simulated,
+      executionId,
+      txId: executionId,
+      inputAmount: params.amount,
+      outputAmount,
+      effectivePrice,
+      feeAmount,
+      rawReport: {
+        simulatedAt: new Date().toISOString(),
+        referencePrice: params.referencePrice
+      }
+    };
+    this.reports.set(executionId, report);
+    return report;
+  }
+
+  private calculateExecution(params: ExecuteSwapParams) {
     if (!params.referencePrice || params.referencePrice <= 0) {
       throw new Error("Paper execution requires a positive referencePrice.");
     }
@@ -42,26 +68,14 @@ export class PaperExecutionAdapter implements ExecutionAdapter {
       isBuy
         ? round(params.amount * this.feeRate, 8)
         : round(params.amount * params.referencePrice * this.feeRate, 8);
-    const executionId = `paper-${params.clientOrderId}`;
-    const report: ExecutionReport = {
-      provider: ExecutionProvider.Paper,
-      status: ExecutionStatus.Simulated,
-      executionId,
-      txId: executionId,
-      inputAmount: params.amount,
+    return {
       outputAmount,
       effectivePrice:
         isBuy
           ? round(params.amount / Math.max(outputAmount, Number.EPSILON), 8)
           : round(outputAmount / Math.max(params.amount, Number.EPSILON), 8),
-      feeAmount,
-      rawReport: {
-        simulatedAt: new Date().toISOString(),
-        referencePrice: params.referencePrice
-      }
+      feeAmount
     };
-    this.reports.set(executionId, report);
-    return report;
   }
 
   async getExecutionReport(id: string): Promise<ExecutionReport | null> {

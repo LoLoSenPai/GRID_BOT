@@ -8,6 +8,11 @@ function sortRecordEntries<T>(record: Record<string, T> | undefined) {
 
 function normalizeMetadata(metadata: BotRuntimeMetadata) {
   return {
+    equityHighWatermarkUsd: metadata.equityHighWatermarkUsd,
+    riskBuyPause: metadata.riskBuyPause,
+    outsideSince: metadata.outsideSince,
+    outsideSourceObservedAt: metadata.outsideSourceObservedAt,
+    outsideSide: metadata.outsideSide,
     levelLocks: sortRecordEntries(metadata.levelLocks).map(([key, value]) => [key, value]),
     pendingSignal: metadata.pendingSignal
       ? {

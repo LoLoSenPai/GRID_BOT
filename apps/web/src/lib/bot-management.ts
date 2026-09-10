@@ -1,5 +1,5 @@
 import { DEFAULTS, MINTS } from "@grid-bot/common/constants";
-import { BotMode, BotStatus, ExecutionProvider, GridType, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
+import { BotMode, BotStatus, EntryMode, ExecutionProvider, GridType, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
 
 interface BotRuntimeMetadataShape {
   levelLocks: Record<string, string>;
@@ -45,6 +45,7 @@ const DRAFT_FIELD_LABELS: Record<keyof BotFormDraft, string> = {
   name: "Bot name",
   strategyMode: "Goal",
   mode: "Mode",
+  entryMode: "Entry mode",
   gridType: "Rail spacing",
   totalBudgetUsd: "Bot budget",
   maxDeployableUsd: "Active capital",
@@ -70,6 +71,7 @@ const DRAFT_DIFF_FIELDS: Array<keyof BotFormDraft> = [
   "name",
   "strategyMode",
   "mode",
+  "entryMode",
   "gridType",
   "totalBudgetUsd",
   "lowPrice",
@@ -272,6 +274,7 @@ export interface BotFormDraft {
   name: string;
   strategyMode: StrategyMode;
   mode: BotMode;
+  entryMode: EntryMode;
   gridType: GridType;
   totalBudgetUsd: number;
   maxDeployableUsd: number;
@@ -344,6 +347,7 @@ export function createDraftFromPreset(
     name: preset.defaultName,
     strategyMode: preset.defaults.strategyMode,
     mode,
+    entryMode: EntryMode.Normal,
     gridType: preset.defaults.gridType,
     totalBudgetUsd: preset.defaults.totalBudgetUsd,
     maxDeployableUsd: preset.defaults.maxDeployableUsd,
@@ -464,8 +468,11 @@ export function getSuggestedMinOrderQuoteAmount(draft: Pick<BotFormDraft, "maxDe
 
 export function normalizeBotDraftCapital(draft: BotFormDraft): BotFormDraft {
   const totalBudgetUsd = Math.max(0, roundDraftNumber(draft.totalBudgetUsd, 2));
-  const reserveQuoteAmount = 0;
-  const maxDeployableUsd = totalBudgetUsd;
+  const reserveQuoteAmount = Math.min(totalBudgetUsd, Math.max(0, roundDraftNumber(draft.reserveQuoteAmount, 2)));
+  const maxDeployableUsd = Math.min(
+    totalBudgetUsd - reserveQuoteAmount,
+    Math.max(0, roundDraftNumber(draft.maxDeployableUsd, 2))
+  );
 
   return {
     ...draft,
@@ -845,6 +852,7 @@ export function parseUpdateBotPayload(payload: unknown, liveTradingEnabled: bool
 function parseBotDraft(record: Record<string, unknown>, liveTradingEnabled: boolean) {
   const name = readString(record, "name", 3, 80);
   const mode = readEnum(record, "mode", BOT_MODE_OPTIONS);
+  const entryMode = readOptionalEnum(record, "entryMode", Object.values(EntryMode)) ?? EntryMode.Normal;
   const strategyMode = readEnum(record, "strategyMode", STRATEGY_MODE_OPTIONS);
   const gridType = readEnum(record, "gridType", GRID_TYPE_OPTIONS);
   const recenterMode = readEnum(record, "recenterMode", RECENTER_MODE_OPTIONS);
@@ -889,6 +897,7 @@ function parseBotDraft(record: Record<string, unknown>, liveTradingEnabled: bool
   return {
     name,
     mode,
+    entryMode,
     strategyMode,
     gridType,
     totalBudgetUsd,

@@ -555,6 +555,14 @@ export function BotManagementConsole({
       baseAmount: execution.baseAmount,
       baseSymbol
     });
+    if (execution.status === "unknown") {
+      return {
+        tone: "info",
+        title: `${botName} ${execution.side === "buy" ? "buy" : "sell"} result uncertain`,
+        message: "Executed amounts are unavailable. New orders are held pending reconciliation."
+      } as const;
+    }
+
     const tone = execution.status === "failed" ? "error" : execution.side === "buy" ? "success" : "info";
     const verb =
       execution.status === "failed"

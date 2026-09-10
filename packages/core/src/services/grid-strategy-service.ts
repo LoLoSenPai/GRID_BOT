@@ -1,4 +1,5 @@
-import { EntryMode, OrderStatus, StrategyMode, TradeSide, type GridType } from "../domain/enums";
+import { BotMode, EntryMode, OrderStatus, StrategyMode, TradeSide, type GridType } from "../domain/enums";
+import { PAPER_EXECUTION_FEE_RATE } from "../adapters/paper-execution-adapter";
 import type { BotAggregate, GridCycle, GridLevel, OrderIntent, PositionLot, TriggerSignal } from "../domain/types";
 import { round } from "../utils/math";
 import { priceMoveTouchesLevel } from "../utils/price-trigger";
@@ -192,13 +193,18 @@ export class GridStrategyService {
       return null;
     }
 
-    const currentNotional = round(eligibleLot.remainingBaseAmount * executionPrice, 8);
+    const slippage = Math.min(0.99, Math.max(0, bot.config.maxSlippageBps) / 10_000);
+    // Paper charges its quote fee against gross notional, separately from slippage.
+    const netRatio = bot.bot.mode === BotMode.Paper ? 1 - slippage - PAPER_EXECUTION_FEE_RATE
+      : (1 - slippage) * (1 - Math.min(0.99, Math.max(0, bot.config.executionFeeBps ?? 0) / 10_000));
+    const recoveryPrice = bot.bot.strategyMode === StrategyMode.AccumulateUsdc ? executionPrice : executionPrice * netRatio;
+    const currentNotional = round(eligibleLot.remainingBaseAmount * recoveryPrice, 8);
     if (currentNotional <= eligibleLot.costQuote) {
       return null;
     }
 
     const targetQuoteAmount = this.getTargetQuoteAmount(bot.bot.strategyMode, eligibleLot.costQuote, currentNotional);
-    const requestedBaseAmount = round(Math.min(eligibleLot.remainingBaseAmount, targetQuoteAmount / executionPrice), 8);
+    const requestedBaseAmount = Math.min(eligibleLot.remainingBaseAmount, Math.ceil(targetQuoteAmount / recoveryPrice * 1e8) / 1e8);
     const requestedQuoteAmount = round(requestedBaseAmount * executionPrice, 2);
 
     // Existing lots must remain sellable even after a later budget increase raises
@@ -216,7 +222,7 @@ export class GridStrategyService {
   }
 
   private isOpenLotSellable(lot: PositionLot): boolean {
-    return lot.remainingBaseAmount > 0 && lot.costQuote > 0 && !lot.closedAt;
+    return lot.kind !== "retained" && lot.remainingBaseAmount > 0 && lot.costQuote > 0 && !lot.closedAt;
   }
 
   private getActiveGridCycles(bot: BotAggregate): Record<string, GridCycle> {

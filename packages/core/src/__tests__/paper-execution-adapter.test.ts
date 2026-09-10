@@ -4,6 +4,18 @@ import { ExecutionStatus, TradeSide } from "../domain/enums";
 import { PaperExecutionAdapter } from "../adapters/paper-execution-adapter";
 
 describe("PaperExecutionAdapter", () => {
+  it.each([TradeSide.Buy, TradeSide.Sell])("estimates the same quantities, price and quote fees as a %s fill", async (tradeSide) => {
+    const adapter = new PaperExecutionAdapter();
+    const params = { botId: "bot", inputMint: tradeSide === TradeSide.Buy ? "USDC" : "SOL",
+      outputMint: tradeSide === TradeSide.Buy ? "SOL" : "USDC", amount: tradeSide === TradeSide.Buy ? 200 : 1.8,
+      tradeSide, inputDecimals: 6, outputDecimals: 9, slippageBps: 50, clientOrderId: "quote-parity", referencePrice: 121 };
+    const estimate = await adapter.estimateExecution(params);
+    const report = await adapter.executeSwap(params);
+    expect(estimate.expectedOutputAmount).toBe(report.outputAmount);
+    expect(estimate.estimatedFeeAmount).toBe(report.feeAmount);
+    expect(estimate.expectedPrice).toBe(report.effectivePrice);
+    expect(estimate.estimatedFeeAmount).toBeCloseTo(tradeSide === TradeSide.Buy ? 0.2 : 0.2178, 8);
+  });
   it("simulates a buy execution report using the reference price", async () => {
     const adapter = new PaperExecutionAdapter();
     const report = await adapter.executeSwap({

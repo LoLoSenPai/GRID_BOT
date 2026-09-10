@@ -10,3 +10,10 @@ packages/db/src/generated
 *.log
 .vscode
 *.tsbuildinfo
+
+# Local research exports and observation histories may contain private account data.
+/audits/
+/output/
+/deploy/paper-pilot/*.env
+/deploy/paper-pilot/data/
+/deploy/paper-pilot/secrets/

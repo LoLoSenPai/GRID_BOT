@@ -3,7 +3,12 @@ import { BacktestLabService, type BacktestConfig } from "@grid-bot/core";
 import { RecenterMode } from "@grid-bot/core/enums";
 
 import { readSession } from "@/lib/auth";
-import { applyExecutionCostCalibration, fetchExecutionCostCalibration, type BacktestExecutionCostCalibration } from "@/lib/backtest-execution-cost";
+import { resolveExecutionCosts } from "@/lib/backtest-cost-resolution";
+import {
+  fetchExecutionCostCalibration,
+  type BacktestExecutionCostCalibration,
+  type BacktestExecutionCostResolution
+} from "@/lib/backtest-execution-cost";
 import { buildReplayConfig, parseBacktestCompareRequest } from "@/lib/backtest-lab";
 import { buildAdaptiveRangePlan, buildStrategySelection, fetchBacktestSeries } from "@/lib/backtest-lab-server";
 
@@ -14,11 +19,11 @@ function decorateReplay(input: {
   marketRegime: Awaited<ReturnType<typeof fetchBacktestSeries>>["marketRegime"];
   config: BacktestConfig;
   executionCostCalibration: BacktestExecutionCostCalibration;
+  executionCostResolution: BacktestExecutionCostResolution;
 }) {
   const replay = input.service.replay({
     series: input.series,
-    config: input.config,
-    marketRegime: input.marketRegime
+    config: input.config
   });
   const rangePlan = buildAdaptiveRangePlan({
     series: input.series,
@@ -40,7 +45,8 @@ function decorateReplay(input: {
     strategySelection,
     meta: {
       ...replay.meta,
-      executionCostCalibration: input.executionCostCalibration
+      executionCostCalibration: input.executionCostCalibration,
+      executionCostResolution: input.executionCostResolution
     }
   };
 }
@@ -70,13 +76,88 @@ export async function POST(request: Request) {
       pair: body.pair,
       lookbackDays: body.lookbackDays
     });
-    const currentConfig = applyExecutionCostCalibration(buildReplayConfig(body.config), executionCostCalibration);
-    const recommendationBase = service.recommend({
+    const resolvedCosts = resolveExecutionCosts(
+      buildReplayConfig(body.config),
+      executionCostCalibration,
+      body.executionCosts.mode
+    );
+    const currentConfig = resolvedCosts.config;
+    let recommendationBase: ReturnType<BacktestLabService["recommend"]> | null = null;
+    let recommendationError: string | null = null;
+    try {
+      recommendationBase = service.recommend({
+        series,
+        budgetUsd: body.budgetUsd,
+        maxDeployableUsd: body.config.maxDeployableUsd,
+        reserveQuoteAmount: body.config.reserveQuoteAmount,
+        entryMode: body.config.entryMode,
+        rangeMethod: body.rangeMethod,
+        strategyMode: body.strategyMode,
+        executionCost: executionCostCalibration
+      });
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith("No launch:")) {
+        throw error;
+      }
+      recommendationError = error.message;
+    }
+    const currentReplay = decorateReplay({
+      service,
       series,
-      budgetUsd: body.budgetUsd,
+      indicators,
       marketRegime,
-      executionCost: executionCostCalibration
+      config: currentConfig,
+      executionCostCalibration,
+      executionCostResolution: resolvedCosts.resolution
     });
+    const currentRecenterConfig = resolveExecutionCosts(buildReplayConfig({
+      ...body.config,
+      recenterMode: RecenterMode.Auto,
+      recenterModel: "worker_flat",
+      rangeControlMode: "static",
+      autoRecenterMinIntervalMs: 6 * 60 * 60 * 1000,
+      autoRecenterMaxPerDay: 2
+    }), executionCostCalibration, body.executionCosts.mode).config;
+    const currentRecenterReplay = decorateReplay({
+      service,
+      series,
+      indicators,
+      marketRegime,
+      config: currentRecenterConfig,
+      executionCostCalibration,
+      executionCostResolution: resolvedCosts.resolution
+    });
+
+    if (!recommendationBase) {
+      return NextResponse.json({
+        recommendation: null,
+        recommendationError,
+        rows: [
+          {
+            id: "current_setup",
+            label: "Current config — new start",
+            description: "Selected bot parameters restarted from cash with no carried inventory.",
+            config: currentConfig,
+            replay: currentReplay
+          },
+          {
+            id: "current_recenter",
+            label: "Worker auto-center",
+            description:
+              "Static range with confirmed outside >=30s, no open trading lots, 6h cooldown, and at most 2 recenters/day. Above a break, sales can follow; below a break, trading inventory holds lots for exits and waits instead of relocating trapped lots.",
+            config: currentRecenterConfig,
+            replay: currentRecenterReplay
+          }
+        ],
+        meta: {
+          historyWindow,
+          lookbackDays: body.lookbackDays,
+          executionCostCalibration,
+          executionCostResolution: resolvedCosts.resolution
+        }
+      });
+    }
+
     const bestRangePlan = buildAdaptiveRangePlan({
       series,
       config: recommendationBase.bestConfig,
@@ -96,7 +177,8 @@ export async function POST(request: Request) {
       strategySelection: bestStrategySelection,
       meta: {
         ...recommendationBase.bestReplay.meta,
-        executionCostCalibration
+        executionCostCalibration,
+        executionCostResolution: resolvedCosts.resolution
       }
     };
     const recommendation = {
@@ -110,61 +192,44 @@ export async function POST(request: Request) {
         ...recommendationBase.meta,
         historyWindow,
         lookbackDays: body.lookbackDays,
-        executionCostCalibration
+        executionCostCalibration,
+        executionCostResolution: resolvedCosts.resolution
       }
     };
-    const currentReplay = decorateReplay({
-      service,
-      series,
-      indicators,
-      marketRegime,
-      config: currentConfig,
-      executionCostCalibration
-    });
-    const currentRecenterConfig = applyExecutionCostCalibration(buildReplayConfig({
-      ...body.config,
-      recenterMode: RecenterMode.Auto
-    }), executionCostCalibration);
-    const currentRecenterReplay = decorateReplay({
-      service,
-      series,
-      indicators,
-      marketRegime,
-      config: currentRecenterConfig,
-      executionCostCalibration
-    });
-    const adaptiveConfig = applyExecutionCostCalibration(buildReplayConfig({
+    const adaptiveConfig = resolveExecutionCosts(buildReplayConfig({
       ...recommendationBase.bestConfig,
-      lowPrice: bestRangePlan.recommendedLowPrice,
-      highPrice: bestRangePlan.recommendedHighPrice,
-      levelCount: bestRangePlan.recommendedLevelCount,
-      gridType: bestRangePlan.recommendedGridType,
-      rangeControlMode: "adaptive"
-    }), executionCostCalibration);
+      maxDeployableUsd: recommendationBase.bestConfig.maxDeployableUsd ?? recommendationBase.bestConfig.budgetUsd,
+      reserveQuoteAmount: recommendationBase.bestConfig.reserveQuoteAmount ?? 0,
+      entryMode: recommendationBase.bestConfig.entryMode ?? body.config.entryMode,
+      rangeControlMode: "adaptive",
+      recenterModel: "candle_defense"
+    }), executionCostCalibration, body.executionCosts.mode).config;
     const adaptiveReplay = decorateReplay({
       service,
       series,
       indicators,
       marketRegime,
       config: adaptiveConfig,
-      executionCostCalibration
+      executionCostCalibration,
+      executionCostResolution: resolvedCosts.resolution
     });
-    const adaptiveRecenterConfig = applyExecutionCostCalibration(buildReplayConfig({
+    const adaptiveRecenterConfig = resolveExecutionCosts(buildReplayConfig({
       ...recommendationBase.bestConfig,
-      lowPrice: bestRangePlan.recommendedLowPrice,
-      highPrice: bestRangePlan.recommendedHighPrice,
-      levelCount: bestRangePlan.recommendedLevelCount,
-      gridType: bestRangePlan.recommendedGridType,
+      maxDeployableUsd: recommendationBase.bestConfig.maxDeployableUsd ?? recommendationBase.bestConfig.budgetUsd,
+      reserveQuoteAmount: recommendationBase.bestConfig.reserveQuoteAmount ?? 0,
+      entryMode: recommendationBase.bestConfig.entryMode ?? body.config.entryMode,
       recenterMode: RecenterMode.Auto,
-      rangeControlMode: "adaptive"
-    }), executionCostCalibration);
+      rangeControlMode: "adaptive",
+      recenterModel: "candle_defense"
+    }), executionCostCalibration, body.executionCosts.mode).config;
     const adaptiveRecenterReplay = decorateReplay({
       service,
       series,
       indicators,
       marketRegime,
       config: adaptiveRecenterConfig,
-      executionCostCalibration
+      executionCostCalibration,
+      executionCostResolution: resolvedCosts.resolution
     });
 
     return NextResponse.json({
@@ -172,36 +237,37 @@ export async function POST(request: Request) {
       rows: [
         {
           id: "current_setup",
-          label: "Current setup",
-          description: "Selected bot config as-is.",
+          label: "Current config — new start",
+          description: "Selected bot parameters restarted from cash with no carried inventory.",
           config: currentConfig,
           replay: currentReplay
         },
         {
           id: "current_recenter",
-          label: "Current + recenter",
-          description: "Selected setup with Lab-only recenter simulation.",
+          label: "Worker auto-center",
+          description:
+            "Static range with confirmed outside >=30s, no open trading lots, 6h cooldown, and at most 2 recenters/day. Above a break, sales can follow; below a break, trading inventory holds lots for exits and waits instead of relocating trapped lots.",
           config: currentRecenterConfig,
           replay: currentRecenterReplay
         },
         {
           id: "optimizer_best",
-          label: "Optimizer best",
-          description: "Best validation-ranked config from the search space.",
+          label: "Frozen candidate holdout",
+          description: "Candidate selected before the final holdout, then evaluated without reranking on it.",
           config: recommendationBase.bestConfig,
           replay: bestReplay
         },
         {
           id: "adaptive_plan",
           label: "Adaptive plan",
-          description: "Best config with Lab-only dynamic range shifts while flat.",
+          description: "Experimental adaptive range with causal candle-level shifts based on observations available at each step.",
           config: adaptiveConfig,
           replay: adaptiveReplay
         },
         {
           id: "adaptive_recenter",
-          label: "Adaptive + recenter",
-          description: "Adaptive Lab range plus Lab-only recenter defense.",
+          label: "Adaptive + recenter (experimental)",
+          description: "Experimental adaptive candle range plus legacy candle-defense recenter behavior.",
           config: adaptiveRecenterConfig,
           replay: adaptiveRecenterReplay
         }
@@ -209,7 +275,8 @@ export async function POST(request: Request) {
       meta: {
         historyWindow,
         lookbackDays: body.lookbackDays,
-        executionCostCalibration
+        executionCostCalibration,
+        executionCostResolution: resolvedCosts.resolution
       }
     });
   } catch (error) {

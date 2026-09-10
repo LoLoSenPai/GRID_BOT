@@ -127,3 +127,18 @@ describe("RiskManagerService", () => {
     expect(result.allowed).toBe(false);
   });
 });
+
+
+describe("mark-to-market drawdown", () => {
+  it("blocks a crash-tick buy before execution while keeping recovery sells possible", () => {
+    const invested = { ...bot, config: { ...bot.config, maxOrdersPerHour: 100, maxDrawdownPct: 18 },
+      latestState: { ...bot.latestState!, availableQuoteAmount: 500, availableBaseAmount: 15, totalEquityUsd: 2000,
+        metadata: { ...bot.latestState!.metadata, recentExecutions: [], equityHighWatermarkUsd: 2000 } } };
+    const crash = { ...marketPrice, price: 70 };
+    const denied = service.evaluate(invested, signal, order, crash);
+    expect(denied.allowed).toBe(false);
+    expect(denied.alertType).toBe(AlertType.DrawdownThreshold);
+    expect(denied.nextStatus).toBeUndefined();
+    expect(service.evaluate(invested, { ...signal, side: TradeSide.Sell }, { ...order, side: TradeSide.Sell }, crash).allowed).toBe(true);
+  });
+});

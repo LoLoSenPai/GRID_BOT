@@ -1,21 +1,25 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FlaskConical, Play, Plus, RotateCcw } from "lucide-react";
-import { BotMode, GridType, MinOrderMode, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
+import { BotMode, EntryMode, GridType, MinOrderMode, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
 import { useRouter } from "next/navigation";
 
 import { BacktestEquityChart } from "@/components/backtest-equity-chart";
 import { BotPriceChart } from "@/components/bot-price-chart";
 import { TimeRangeTabs } from "@/components/time-range-tabs";
 import {
-  LAB_LOOKBACK_OPTIONS,
   LAB_PAIR_OPTIONS,
   LAB_RESOLUTION_OPTIONS,
+  getLabLookbackOptions,
+  type BacktestExecutionCostMode,
+  type BacktestRecenterModel,
+  type BacktestRangeMethod,
   type BacktestReplayRequestBody,
   type LabLookbackDays,
   type LabPair,
-  type LabResolution
+  type LabResolution,
+  getLabDefaultStrategyMode
 } from "@/lib/backtest-lab";
 import {
   BOT_PAIR_PRESETS,
@@ -45,6 +49,7 @@ type LabPrefillBot = {
 
 type SerializedBacktestConfig = BacktestReplayRequestBody["config"] & {
   recenterMode?: string;
+  recenterModel?: BacktestRecenterModel;
   rangeControlMode?: "static" | "adaptive";
 };
 
@@ -226,6 +231,7 @@ type SerializedBacktestAssumptions = {
   executionFeeBps: number;
   trainValidationSplit: number;
   recenterMode: string;
+  recenterModel?: BacktestRecenterModel;
   recenterScope: "advisory_only" | "simulated_when_auto_recenter";
   rangeControlMode: "static" | "adaptive_lab_only";
   outOfRangeModel: "pause_new_entries_allow_recovery_sells";
@@ -241,16 +247,55 @@ type SerializedExecutionCostCalibration = {
   feeSampleSize: number;
   maxSlippageBps: number;
   executionFeeBps: number;
-  averageAdverseSlippageBps: number;
-  p50AdverseSlippageBps: number;
-  p75AdverseSlippageBps: number;
-  p90AdverseSlippageBps: number;
-  maxAdverseSlippageBps: number;
-  averageFeeBps: number;
+  calibrationStatus: "calibrated" | "insufficient_filled_samples";
+  reasons: string[];
+  averageAdverseSlippageBps: number | null;
+  p50AdverseSlippageBps: number | null;
+  p75AdverseSlippageBps: number | null;
+  p90AdverseSlippageBps: number | null;
+  maxAdverseSlippageBps: number | null;
+  averageFeeBps: number | null;
   lookbackDays: number;
 };
 
+type SerializedExecutionCostResolution = {
+  requestedMode: BacktestExecutionCostMode;
+  calibratedBase: SerializedExecutionCostCalibration;
+  applied: {
+    mode: BacktestExecutionCostMode;
+    source: "fixed_pessimistic" | "calibrated_live_fills";
+    maxSlippageBps: number;
+    executionFeeBps: number;
+  };
+};
+
+type SerializedHistoryWindow = {
+  from: string;
+  to: string;
+  source: string;
+  coverage: {
+    requestedFrom: string;
+    requestedTo: string;
+    actualFrom: string;
+    actualTo: string;
+    closedCandleCount: number;
+    expectedCandleCount: number | null;
+    coveragePct: number | null;
+    internalGapCount: number;
+    complete: boolean;
+  };
+  pricing: {
+    requestedPair: string;
+    providerDenomination: "USD";
+    quoteTreatment: string;
+  };
+};
+
 type SerializedBacktestRunResult = {
+  benchmarks?: {
+    cash: { endingEquityUsd: number; returnPct: number };
+    buyAndHold: { endingEquityUsd: number; returnPct: number };
+  };
   config: SerializedBacktestConfig;
   replayPoints: SerializedBacktestReplayPoint[];
   executions: SerializedBacktestReplayExecution[];
@@ -259,6 +304,14 @@ type SerializedBacktestRunResult = {
   recenterAdvice: SerializedRecenterAdvice;
   rangePlan?: SerializedRangePlan;
   strategySelection?: SerializedStrategySelection;
+  accumulation?: {
+    baseSymbol: string;
+    heldBaseAmount: number;
+    retainedBaseAmount: number;
+    baseEquivalent: number;
+    buyAndHoldBaseEquivalent: number;
+    excessBaseEquivalent: number;
+  };
   indicators?: SerializedIndicatorSummary;
   marketRegime?: SerializedMarketRegime;
   trainMetrics: SerializedBacktestMetrics;
@@ -270,12 +323,9 @@ type SerializedBacktestRunResult = {
     pair: string;
     resolution?: string;
     trainEndAt: string;
-    historyWindow?: {
-      from: string;
-      to: string;
-      source: string;
-    };
+    historyWindow?: SerializedHistoryWindow;
     executionCostCalibration?: SerializedExecutionCostCalibration;
+    executionCostResolution?: SerializedExecutionCostResolution;
   };
   series: {
     symbol: string;
@@ -297,11 +347,39 @@ type SerializedBacktestRecommendation = {
   marketRegime?: SerializedMarketRegime;
   rangePlan?: SerializedRangePlan;
   strategySelection?: SerializedStrategySelection;
+  rangeEvidence?: {
+    method: BacktestRangeMethod;
+    fittingFrom: string;
+    fittingTo: string;
+    selected?: {
+      lowPrice: number;
+      highPrice: number;
+      supportTouches: number;
+      resistanceTouches: number;
+      lastSupportAt: string;
+      lastResistanceAt: string;
+      firstObservedAt: string;
+      widthPct: number;
+      zoneTolerancePct: number;
+      score: number;
+      reasons: string[];
+    };
+    reasons: string[];
+  };
+  costStress?: {
+    maxSlippageBps: number;
+    executionFeeBps: number;
+    validationMetrics: SerializedBacktestMetrics;
+    overallMetrics: SerializedBacktestMetrics;
+    passed: boolean;
+    reasons: string[];
+  };
   leaderboard: Array<{
     rank: number;
     config: SerializedBacktestConfig;
     trainMetrics: SerializedBacktestMetrics;
     validationMetrics: SerializedBacktestMetrics;
+    selectionMetrics?: SerializedBacktestMetrics;
   }>;
   bestReplay: SerializedBacktestRunResult;
   recenterAdvice: SerializedRecenterAdvice;
@@ -316,17 +394,18 @@ type SerializedBacktestRecommendation = {
     maxOccupancyPct: number;
   };
   assumptions: SerializedBacktestAssumptions;
+  eligibility?: {
+    status: "paper_candidate" | "no_launch" | "insufficient_evidence";
+    reasons: string[];
+  };
   meta: {
     symbol: string;
     pair: string;
     resolution?: string;
     trainEndAt: string;
-    historyWindow?: {
-      from: string;
-      to: string;
-      source: string;
-    };
+    historyWindow?: SerializedHistoryWindow;
     executionCostCalibration?: SerializedExecutionCostCalibration;
+    executionCostResolution?: SerializedExecutionCostResolution;
   };
 };
 
@@ -341,7 +420,8 @@ type ScenarioComparisonRow = {
 };
 
 type SerializedBacktestCompareResponse = {
-  recommendation: SerializedBacktestRecommendation;
+  recommendation: SerializedBacktestRecommendation | null;
+  recommendationError?: string | null;
   rows: ScenarioComparisonRow[];
 };
 
@@ -422,6 +502,9 @@ function buildReplayConfigFromDraft(draft: BotFormDraft): SerializedBacktestConf
   const normalizedDraft = normalizeBotDraftCapital({ ...draft });
   return {
     budgetUsd: normalizedDraft.totalBudgetUsd,
+    maxDeployableUsd: normalizedDraft.maxDeployableUsd,
+    reserveQuoteAmount: normalizedDraft.reserveQuoteAmount,
+    entryMode: normalizedDraft.entryMode,
     lowPrice: normalizedDraft.lowPrice,
     highPrice: normalizedDraft.highPrice,
     levelCount: normalizedDraft.levelCount,
@@ -437,7 +520,10 @@ function buildReplayConfigFromDraft(draft: BotFormDraft): SerializedBacktestConf
     maxConsecutiveFailures: normalizedDraft.maxConsecutiveFailures,
     levelLockMs: normalizedDraft.levelLockMs,
     priceConfirmationWindowMs: normalizedDraft.priceConfirmationWindowMs,
-    recenterMode: RecenterMode.Manual,
+    recenterMode: normalizedDraft.recenterMode,
+    recenterModel: normalizedDraft.recenterMode === RecenterMode.Auto ? "worker_flat" : "candle_defense",
+    autoRecenterMinIntervalMs: normalizedDraft.autoRecenterMinIntervalMs,
+    autoRecenterMaxPerDay: normalizedDraft.autoRecenterMaxPerDay,
     rangeControlMode: "static",
     outOfRangePause: normalizedDraft.outOfRangePause
   };
@@ -450,7 +536,8 @@ function buildAdaptiveReplayConfig(baseConfig: SerializedBacktestConfig, rangePl
     highPrice: rangePlan.recommendedHighPrice,
     levelCount: rangePlan.recommendedLevelCount,
     gridType: rangePlan.recommendedGridType,
-    rangeControlMode: "adaptive"
+    rangeControlMode: "adaptive",
+    recenterModel: "candle_defense"
   };
 }
 
@@ -501,6 +588,7 @@ function getConfigSignature(config: SerializedBacktestConfig) {
     config.maxSlippageBps,
     config.executionFeeBps ?? 10,
     config.recenterMode ?? RecenterMode.Manual,
+    config.recenterModel ?? "candle_defense",
     config.rangeControlMode ?? "static"
   ].join(":");
 }
@@ -533,7 +621,10 @@ function formatSignedNumber(value: number, digits = 0) {
   return `${value >= 0 ? "+" : ""}${formatNumber(value, digits)}`;
 }
 
-function formatBps(value: number) {
+function formatBps(value: number | null) {
+  if (value === null) {
+    return "unavailable";
+  }
   return `${formatNumber(value, value % 1 === 0 ? 0 : 1)} bps`;
 }
 
@@ -558,6 +649,17 @@ function formatOptionalNumber(value: number | null | undefined, digits = 2) {
 
 function formatOptionalPercent(value: number | null | undefined, digits = 1) {
   return typeof value === "number" && Number.isFinite(value) ? formatPercent(value, digits) : "--";
+}
+
+function formatLabDate(value: string | null | undefined) {
+  if (!value) {
+    return "--";
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "--"
+    : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
 function formatIndicatorPrice(value: number | null | undefined, pair: LabPair) {
@@ -633,6 +735,10 @@ function formatAssumptionRecenterMode(mode: string) {
   }
 
   return mode.replaceAll("_", " ");
+}
+
+function formatRecenterModel(model: BacktestRecenterModel | undefined) {
+  return model === "worker_flat" ? "Worker auto-center" : "Candle defense (legacy)";
 }
 
 function formatRecenterTone(risk: SerializedRecenterAdvice["risk"]) {
@@ -746,7 +852,7 @@ function buildReplayDefenseTimeline(replay: SerializedBacktestRunResult | null):
     range: `${formatTimelineRange(event.previousLowPrice, event.previousHighPrice)} -> ${formatTimelineRange(event.nextLowPrice, event.nextHighPrice)}`,
     details: [
       `Rails ${event.previousLevelCount} -> ${event.nextLevelCount}`,
-      `Confidence ${formatPercent(event.confidence * 100, 0)}`,
+      `Heuristic score ${formatPercent(event.confidence * 100, 0)}`,
       event.reason
     ]
   }));
@@ -836,19 +942,19 @@ function formatStrategyLiveActionTone(action: SerializedStrategySelection["liveA
 }
 
 function formatScenarioDescription(row: ScenarioComparisonRow) {
-  const recenterSuffix = row.config.recenterMode === RecenterMode.Auto ? " | recenter" : "";
-  const adaptiveSuffix = row.config.rangeControlMode === "adaptive" ? " | adaptive" : "";
+  const recenterSuffix = row.config.recenterMode === RecenterMode.Auto ? ` | ${formatRecenterModel(row.config.recenterModel)}` : "";
+  const adaptiveSuffix = row.config.rangeControlMode === "adaptive" ? " | adaptive experimental" : "";
   return `${formatGoalLabel(row.config.strategyMode)} | ${formatSpacingLabel(row.config.gridType)} | ${row.config.levelCount} rails${recenterSuffix}${adaptiveSuffix}`;
 }
 
 function formatScenarioLabel(id: ScenarioComparisonId) {
   switch (id) {
     case "current_setup":
-      return "Current setup";
+      return "Current config — new start";
     case "current_recenter":
-      return "Current + recenter";
+      return "Worker auto-center";
     case "optimizer_best":
-      return "Optimizer best";
+      return "Frozen candidate holdout";
     case "adaptive_plan":
       return "Adaptive plan";
     case "adaptive_recenter":
@@ -859,11 +965,11 @@ function formatScenarioLabel(id: ScenarioComparisonId) {
 function getScenarioSummaryAction(id: ScenarioComparisonId) {
   switch (id) {
     case "current_setup":
-      return "Keep the current bot for now.";
+      return "Compare as a fresh launch; current inventory is not carried into this row.";
     case "current_recenter":
-      return "Keep the current config, but treat recenter as the next paper-only test.";
+      return "Paper-test worker auto-center with confirmed outside >=30s, no open trading lots, a 6h cooldown, and at most 2 recenters/day.";
     case "optimizer_best":
-      return "Consider recreating the bot with the optimizer config.";
+      return "Treat the final holdout as evidence for paper testing, never as a reranking input.";
     case "adaptive_plan":
       return "Consider recreating with the adaptive range candidate, preferably in paper first.";
     case "adaptive_recenter":
@@ -991,12 +1097,12 @@ function buildLabConclusion({
     const isCurrentGoodEnough = best.id === "current_setup" || currentGap <= materialGap;
     const defenseEvents = getDefenseEventCount(best.replay.overallMetrics);
     const details = [
-      `Best validation result: ${bestLabel} at ${formatCurrency(bestNet)} net.`,
-      currentNet === null ? null : `Current setup gap: ${formatCurrency(currentGap)} versus the best scenario.`,
+      `Highest observed holdout result: ${bestLabel} at ${formatCurrency(bestNet)} net.`,
+      currentNet === null ? null : `Fresh-start current-config gap: ${formatCurrency(currentGap)} versus that observed result.`,
       `Risk check: ${formatPercent(best.replay.validationMetrics.maxDrawdownPct, 1)} max drawdown, ${formatPercent(best.replay.validationMetrics.timeInRangePct, 0)} in range.`,
       defenseEvents > 0
         ? `${defenseEvents} defense event(s): ${best.replay.overallMetrics.recenterCount} recenter, ${best.replay.overallMetrics.rangeAdjustmentCount} adaptive shift.`
-        : "No defensive recenter/adaptive event on the selected winner."
+        : "No defensive recenter/adaptive event in the highest-return row."
     ].filter((detail): detail is string => Boolean(detail));
 
     if (isCurrentGoodEnough) {
@@ -1014,8 +1120,8 @@ function buildLabConclusion({
       return {
         tone: riskTone,
         eyebrow: "Decision",
-        title: "Current config is close, recenter helps",
-        body: "The Lab says the same setup performs better when recenter defense is simulated. This is a paper/Lab signal, not a live auto-recenter recommendation yet.",
+        title: "Current config is close, worker auto-center helps",
+        body: "The Lab says the same setup performs better with worker auto-center guards. Keep this paper-only until the worker behavior is validated for the selected pair.",
         primaryAction: getScenarioSummaryAction(best.id),
         details
       };
@@ -1024,8 +1130,11 @@ function buildLabConclusion({
     return {
       tone: riskTone,
       eyebrow: "Decision",
-      title: `${bestLabel} is the best candidate`,
-      body: "The best validation result comes from a different configuration. Treat it as a recreate candidate, not a silent edit to the running bot.",
+      title: `${bestLabel} returned more in this holdout`,
+      body:
+        recommendation?.eligibility?.status === "paper_candidate"
+          ? "This frozen configuration returned more on the final holdout and meets the minimum gate for paper testing."
+          : "This frozen configuration returned more on the final holdout, but it does not meet the launch gate. Keep it in research.",
       primaryAction: getScenarioSummaryAction(best.id),
       details
     };
@@ -1035,10 +1144,10 @@ function buildLabConclusion({
     const net = getValidationNet(recommendation.validationMetrics);
     return {
       tone: recommendation.operatorGuidance.status === "Healthy" ? "positive" : recommendation.operatorGuidance.status === "Fragile" ? "danger" : "caution",
-      eyebrow: "Optimizer result",
-      title: `Optimizer found ${formatGoalLabel(recommendation.bestConfig.strategyMode)}`,
-      body: "This is only the search winner. Run Compare scenarios before deciding whether it is better than the selected bot.",
-      primaryAction: `Validation net ${formatCurrency(net)}. Next: Compare scenarios.`,
+      eyebrow: "Frozen candidate result",
+      title: `Optimizer selected ${formatGoalLabel(recommendation.bestConfig.strategyMode)}`,
+      body: "The optimizer selected this candidate before the final holdout. Use the holdout and benchmarks to decide whether it merits paper testing.",
+      primaryAction: `Final holdout net ${formatCurrency(net)}. Next: Compare scenarios.`,
       details: [
         `${formatSpacingLabel(recommendation.bestConfig.gridType)}, ${recommendation.bestConfig.levelCount} rails.`,
         `Range ${formatNumber(recommendation.bestConfig.lowPrice, recommendation.bestConfig.lowPrice >= 1000 ? 0 : 2)} -> ${formatNumber(recommendation.bestConfig.highPrice, recommendation.bestConfig.highPrice >= 1000 ? 0 : 2)}.`,
@@ -1055,7 +1164,7 @@ function buildLabConclusion({
       eyebrow: "Single replay",
       title: "One setup replayed",
       body: "A single replay is useful for inspection, but it does not tell you whether this setup is better than the alternatives.",
-      primaryAction: "Run Compare scenarios to get a real decision.",
+      primaryAction: "Run Find candidate ranges, then optionally compare an existing bot.",
       details: [
         `Validation net ${formatCurrency(net)}.`,
         `${formatPercent(displayedReplay.validationMetrics.maxDrawdownPct, 1)} max drawdown, ${formatPercent(displayedReplay.validationMetrics.timeInRangePct, 0)} in range.`,
@@ -1069,10 +1178,10 @@ function buildLabConclusion({
   return {
     tone: "neutral",
     eyebrow: "Start here",
-    title: "Run Compare scenarios first",
-    body: "The Lab is useful only after it compares your selected bot against recenter, optimizer, and adaptive alternatives on the same window.",
-    primaryAction: "Pick the bot, budget, window, then click Compare scenarios.",
-    details: ["Nothing here touches live trading.", "Use diagnostics only after the conclusion looks surprising."]
+    title: "Find a candidate range",
+    body: "Choose a pair, objective, allocation and fitting method, then inspect the holdout and frozen cost stress before deciding what to paper test.",
+    primaryAction: "Run Find candidate ranges. Compare an existing bot optionally afterward.",
+    details: ["Nothing here touches live trading.", "A range refusal explains which evidence or cost requirement was missing."]
   };
 }
 
@@ -1104,9 +1213,9 @@ function ScenarioComparisonBoard({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">Lab workflow</div>
-            <div className="mt-1 text-base font-semibold text-white">Start with Compare scenarios</div>
+            <div className="mt-1 text-base font-semibold text-white">Start with a candidate range</div>
             <div className="mt-1 max-w-3xl text-sm leading-5 text-[var(--muted)]">
-              This is the main decision mode. It compares the selected bot against recenter, optimizer, adaptive, and adaptive+recenter candidates on the same history window.
+              Choose a pair, objective, allocation and fitting method, then inspect range evidence, holdout performance and frozen cost stress. Compare an existing bot when you want a separate exploratory baseline.
             </div>
           </div>
           <div className="rounded-md border border-[var(--accent-line)] bg-[var(--accent-soft)] px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--accent)]">
@@ -1116,13 +1225,13 @@ function ScenarioComparisonBoard({
         <div className="mt-3 grid gap-2 md:grid-cols-3">
           <div className="border border-[rgba(255,255,255,0.07)] bg-[rgba(0,0,0,0.14)] px-3 py-2">
             <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--accent)]">1. Compare</div>
-            <div className="mt-1 text-sm text-white">Run the scenario board first.</div>
-            <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">Current bot, recenter, optimizer winner, adaptive range, and the combo.</div>
+            <div className="mt-1 text-sm text-white">Fit a range candidate first.</div>
+            <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">Use repeat rebounds by default or choose the distribution baseline.</div>
           </div>
           <div className="border border-[rgba(255,255,255,0.07)] bg-[rgba(0,0,0,0.14)] px-3 py-2">
             <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--accent)]">2. Decide</div>
-            <div className="mt-1 text-sm text-white">Read the top decision panel.</div>
-            <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">It should tell you keep, recreate, or paper-test recenter.</div>
+            <div className="mt-1 text-sm text-white">Inspect the holdout and stress.</div>
+            <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">The candidate can be refused when evidence, volatility or costs fail.</div>
           </div>
           <div className="border border-[rgba(255,255,255,0.07)] bg-[rgba(0,0,0,0.14)] px-3 py-2">
             <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--accent)]">3. Inspect</div>
@@ -1144,12 +1253,12 @@ function ScenarioComparisonBoard({
           <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">Decision board</div>
           <div className="mt-1 text-base font-semibold text-white">Same window, multiple ways to run the bot</div>
           <div className="mt-1 max-w-3xl text-sm leading-5 text-[var(--muted)]">
-            Ranking uses validation first. Click a scenario to inspect its chart, equity curve, defense events, and assumptions.
+            Scenarios share one final window for comparison. Optimizer parameters were frozen before this holdout and are not reranked on it.
           </div>
         </div>
         {winner ? (
           <div className="rounded-md border border-[var(--accent-line)] bg-[var(--accent-soft)] px-3 py-2 text-right">
-            <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--muted)]">Current winner</div>
+            <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-[var(--muted)]">Top observed row</div>
             <div className="mt-0.5 text-sm font-medium text-white">{formatScenarioLabel(winner.id)}</div>
           </div>
         ) : null}
@@ -1182,7 +1291,7 @@ function ScenarioComparisonBoard({
                 <div className="flex shrink-0 flex-col items-end gap-1">
                   {winnerRow ? (
                     <span className="rounded border border-[var(--accent-line)] bg-[var(--accent-soft)] px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em] text-[var(--accent)]">
-                      Winner
+                      Observed
                     </span>
                   ) : null}
                   {fragile ? (
@@ -1242,12 +1351,12 @@ function ScenarioAuditPanel({ audit }: { audit: ScenarioAudit | null }) {
     <section className="mb-3 border border-[var(--line)] bg-[rgba(5,12,22,0.46)] px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">Why this won</div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">Observed comparison</div>
           <div className="mt-1 text-base font-semibold text-white">
             {formatScenarioLabel(winner.id)} vs {current ? "current setup" : "Lab candidates"}
           </div>
           <div className="mt-1 max-w-3xl text-sm leading-5 text-[var(--muted)]">
-            Winner selection is validation-first. These deltas explain whether the result is really better or just different.
+            This board compares observed holdout outcomes. It does not feed the final holdout back into optimizer selection.
           </div>
         </div>
         <div className="rounded-md border border-[var(--accent-line)] bg-[var(--accent-soft)] px-3 py-2 text-right">
@@ -1482,7 +1591,7 @@ function LabDraftPreviewCard({ preview }: { preview: LabDraftPreview }) {
       </div>
       {preview.forcedManualRecenter ? (
         <div className="mt-2 text-[10px] leading-4 text-[var(--muted)]">
-          Recenter/adaptive simulation will be converted to manual review before creating the bot.
+          This historical candle-defense or adaptive recipe cannot transfer as worker auto-center; the draft is set to manual review.
         </div>
       ) : null}
       {topIssues.length ? (
@@ -1518,8 +1627,11 @@ export function BacktestLabConsole({
   const router = useRouter();
   const [isPending, setIsPending] = useState(false);
   const [pair, setPair] = useState<LabPair>("SOL");
-  const [budgetUsd, setBudgetUsd] = useState<number>(100);
-  const [lookbackDays, setLookbackDays] = useState<LabLookbackDays>(90);
+  const [budgetUsd, setBudgetUsd] = useState<number>(600);
+  const [reserveQuoteAmount, setReserveQuoteAmount] = useState<number>(120);
+  const [strategyMode, setStrategyMode] = useState<StrategyMode>(getLabDefaultStrategyMode("SOL"));
+  const [rangeMethod, setRangeMethod] = useState<BacktestRangeMethod>("rebounds");
+  const [lookbackDays, setLookbackDays] = useState<LabLookbackDays>(30);
   const [resolution, setResolution] = useState<LabResolution>("1h");
   const [feedback, setFeedback] = useState<{ tone: "error" | "info"; message: string } | null>(null);
   const [recommendation, setRecommendation] = useState<SerializedBacktestRecommendation | null>(null);
@@ -1527,6 +1639,7 @@ export function BacktestLabConsole({
   const [activeConfigKey, setActiveConfigKey] = useState<string | null>(null);
   const [scenarioComparison, setScenarioComparison] = useState<ScenarioComparisonRow[]>([]);
   const [stressRows, setStressRows] = useState<StressScenarioRow[]>([]);
+  const requestGenerationRef = useRef(0);
   const [localSelectedBotId, setLocalSelectedBotId] = useState<string | null>(selectedBotId ?? bots[0]?.id ?? null);
   const effectiveSelectedBotId = onSelectBotId ? selectedBotId ?? null : localSelectedBotId;
   const selectBotId = onSelectBotId ?? setLocalSelectedBotId;
@@ -1536,10 +1649,28 @@ export function BacktestLabConsole({
     () => (selectedBot ? buildReplayConfigFromDraft(selectedBot.config) : null),
     [selectedBot]
   );
+  const selectedBotPair = useMemo(() => (selectedBot ? inferPairFromDraft(selectedBot.config) : null), [selectedBot]);
+  const preservesSelectedAllocation = Boolean(
+    selectedBotReplayConfig &&
+    selectedBotPair === pair &&
+    Math.abs(selectedBotReplayConfig.budgetUsd - budgetUsd) < 0.000001
+  );
   const selectedBotRecenterReplayConfig = useMemo(
-    () => (selectedBotReplayConfig ? { ...selectedBotReplayConfig, recenterMode: RecenterMode.Auto } : null),
+    () =>
+      selectedBotReplayConfig
+        ? {
+            ...selectedBotReplayConfig,
+            recenterMode: RecenterMode.Auto,
+            recenterModel: "worker_flat" as const,
+            rangeControlMode: "static" as const,
+            priceConfirmationWindowMs: Math.max(selectedBotReplayConfig.priceConfirmationWindowMs, 30_000),
+            autoRecenterMinIntervalMs: 6 * 60 * 60 * 1000,
+            autoRecenterMaxPerDay: 2
+          }
+        : null,
     [selectedBotReplayConfig]
   );
+  const availableLookbackOptions = useMemo(() => getLabLookbackOptions(resolution), [resolution]);
 
   useEffect(() => {
     if (!selectedBot) {
@@ -1548,16 +1679,26 @@ export function BacktestLabConsole({
 
     setPair(inferPairFromDraft(selectedBot.config));
     setBudgetUsd(selectedBot.config.totalBudgetUsd);
+    setReserveQuoteAmount(selectedBot.config.reserveQuoteAmount);
+    setStrategyMode(selectedBot.config.strategyMode as StrategyMode);
   }, [selectedBot]);
 
   useEffect(() => {
+    if (!availableLookbackOptions.includes(lookbackDays)) {
+      setLookbackDays(availableLookbackOptions.at(-1) ?? 7);
+    }
+  }, [availableLookbackOptions, lookbackDays]);
+
+  useEffect(() => {
+    requestGenerationRef.current += 1;
+    setIsPending(false);
     setFeedback(null);
     setRecommendation(null);
     setActiveReplay(null);
     setActiveConfigKey(null);
     setScenarioComparison([]);
     setStressRows([]);
-  }, [pair, budgetUsd, lookbackDays, resolution, selectedBot?.id]);
+  }, [pair, budgetUsd, lookbackDays, rangeMethod, resolution, reserveQuoteAmount, selectedBot?.id, strategyMode]);
 
   const displayedReplay = activeReplay ?? recommendation?.bestReplay ?? null;
   const displayedGuidance = recommendation?.operatorGuidance ?? null;
@@ -1567,6 +1708,7 @@ export function BacktestLabConsole({
   const displayedBaseConfig = displayedReplay?.config ?? recommendation?.bestConfig ?? null;
   const displayedAssumptions = displayedReplay?.assumptions ?? recommendation?.assumptions ?? null;
   const displayedCostCalibration = displayedReplay?.meta.executionCostCalibration ?? recommendation?.meta.executionCostCalibration ?? null;
+  const displayedCostResolution = displayedReplay?.meta.executionCostResolution ?? recommendation?.meta.executionCostResolution ?? null;
   const draftPreview = useMemo<LabDraftPreview | null>(() => {
     if (!displayedBaseConfig) {
       return null;
@@ -1664,32 +1806,60 @@ export function BacktestLabConsole({
     return payload;
   }
 
+  function clearLabResults() {
+    setRecommendation(null);
+    setActiveReplay(null);
+    setActiveConfigKey(null);
+    setScenarioComparison([]);
+    setStressRows([]);
+  }
+
+  function invalidateLabRequests() {
+    requestGenerationRef.current += 1;
+    setIsPending(false);
+  }
+
   function requestRecommendation() {
+    const allocation = preservesSelectedAllocation ? selectedBotReplayConfig! : {
+      budgetUsd,
+      maxDeployableUsd: Math.max(0, budgetUsd - reserveQuoteAmount),
+      reserveQuoteAmount,
+      entryMode: EntryMode.Normal
+    };
     return postJson<SerializedBacktestRecommendation>("/api/backtest/lab/recommend", {
       pair,
       budgetUsd,
+      maxDeployableUsd: allocation.maxDeployableUsd,
+      reserveQuoteAmount: allocation.reserveQuoteAmount,
+      entryMode: allocation.entryMode,
+      rangeMethod,
+      strategyMode,
       lookbackDays,
       resolution
     });
   }
 
-  function requestReplay(config: SerializedBacktestConfig) {
+  function requestReplay(config: SerializedBacktestConfig, costMode: BacktestExecutionCostMode = "calibrated") {
     return postJson<SerializedBacktestRunResult>("/api/backtest/lab/replay", {
       pair,
       budgetUsd,
       lookbackDays,
       resolution,
-      config
+      config,
+      executionCosts: { mode: costMode }
     });
   }
 
   function requestScenarioComparison(config: SerializedBacktestConfig) {
     return postJson<SerializedBacktestCompareResponse>("/api/backtest/lab/compare", {
       pair,
-      budgetUsd,
+      budgetUsd: config.budgetUsd,
       lookbackDays,
       resolution,
-      config
+      config,
+      rangeMethod,
+      strategyMode,
+      executionCosts: { mode: "calibrated" }
     });
   }
 
@@ -1733,40 +1903,59 @@ export function BacktestLabConsole({
   }
 
   async function runRecommendation() {
+    const requestGeneration = requestGenerationRef.current;
     setFeedback(null);
     setIsPending(true);
     try {
       const payload = await requestRecommendation();
+      if (requestGeneration !== requestGenerationRef.current) {
+        return;
+      }
       setRecommendation(payload);
       setActiveReplay(payload.bestReplay);
       setActiveConfigKey(getConfigSignature(payload.bestConfig));
       setScenarioComparison([]);
       setStressRows([]);
     } catch (error) {
+      if (requestGeneration !== requestGenerationRef.current) {
+        return;
+      }
+      clearLabResults();
       setFeedback({
         tone: "error",
         message: error instanceof Error ? error.message : "Unable to run the lab recommendation."
       });
     } finally {
-      setIsPending(false);
+      if (requestGeneration === requestGenerationRef.current) {
+        setIsPending(false);
+      }
     }
   }
 
   async function replayConfig(config: SerializedBacktestConfig) {
+    const requestGeneration = requestGenerationRef.current;
     setFeedback(null);
     setIsPending(true);
     try {
       const payload = await requestReplay(config);
+      if (requestGeneration !== requestGenerationRef.current) {
+        return;
+      }
       setActiveReplay(payload);
       setActiveConfigKey(getConfigSignature(config));
       setStressRows([]);
     } catch (error) {
+      if (requestGeneration !== requestGenerationRef.current) {
+        return;
+      }
       setFeedback({
         tone: "error",
         message: error instanceof Error ? error.message : "Unable to replay this config."
       });
     } finally {
-      setIsPending(false);
+      if (requestGeneration === requestGenerationRef.current) {
+        setIsPending(false);
+      }
     }
   }
 
@@ -1781,59 +1970,82 @@ export function BacktestLabConsole({
 
     setFeedback(null);
     setIsPending(true);
+    const requestGeneration = requestGenerationRef.current;
     try {
       const definitions = buildStressScenarioDefinitions(displayedBaseConfig);
       const nextRows: StressScenarioRow[] = [];
 
       for (const definition of definitions) {
+        if (requestGeneration !== requestGenerationRef.current) {
+          return;
+        }
         if (definition.id === "base" && getConfigSignature(displayedReplay.config) === getConfigSignature(displayedBaseConfig)) {
           nextRows.push({ ...definition, replay: displayedReplay });
           continue;
         }
 
-        const replay = await requestReplay(definition.config);
+        const replay = await requestReplay(definition.config, definition.id === "higher_costs" ? "stress" : "fixed");
         nextRows.push({ ...definition, replay });
       }
 
       setStressRows(nextRows);
     } catch (error) {
+      if (requestGeneration !== requestGenerationRef.current) {
+        return;
+      }
+      clearLabResults();
       setFeedback({
         tone: "error",
         message: error instanceof Error ? error.message : "Unable to run stress checks."
       });
     } finally {
-      setIsPending(false);
+      if (requestGeneration === requestGenerationRef.current) {
+        setIsPending(false);
+      }
     }
   }
 
   async function runScenarioComparison() {
-    if (!selectedBotReplayConfig) {
+    if (!selectedBotReplayConfig || selectedBotPair !== pair) {
       setFeedback({
         tone: "error",
-        message: "Select an existing bot before comparing scenarios."
+        message: "Select an existing bot whose pair matches the Lab pair before comparing scenarios."
       });
       return;
     }
 
     setFeedback(null);
     setIsPending(true);
+    const requestGeneration = requestGenerationRef.current;
     try {
       const payload = await requestScenarioComparison(selectedBotReplayConfig);
+      if (requestGeneration !== requestGenerationRef.current) {
+        return;
+      }
       setRecommendation(payload.recommendation);
       setScenarioComparison(payload.rows);
       setStressRows([]);
+      if (payload.recommendationError) {
+        setFeedback({ tone: "info", message: payload.recommendationError });
+      }
       const winner = rankScenarioRows(payload.rows)[0] ?? payload.rows[0] ?? null;
       if (winner) {
         setActiveReplay(winner.replay);
         setActiveConfigKey(getConfigSignature(winner.config));
       }
     } catch (error) {
+      if (requestGeneration !== requestGenerationRef.current) {
+        return;
+      }
+      clearLabResults();
       setFeedback({
         tone: "error",
         message: error instanceof Error ? error.message : "Unable to compare lab scenarios."
       });
     } finally {
-      setIsPending(false);
+      if (requestGeneration === requestGenerationRef.current) {
+        setIsPending(false);
+      }
     }
   }
 
@@ -1843,6 +2055,14 @@ export function BacktestLabConsole({
     [displayedReplay, recommendation, scenarioComparison]
   );
   const scenarioAudit = useMemo(() => buildScenarioAudit(scenarioComparison), [scenarioComparison]);
+  const comparisonHasNoCandidate = scenarioComparison.length > 0 && !recommendation;
+  const promotionRefused = Boolean(
+    comparisonHasNoCandidate ||
+      (recommendation?.eligibility &&
+        recommendation.eligibility.status !== "paper_candidate" &&
+        displayedBaseConfig &&
+        getConfigSignature(displayedBaseConfig) === getConfigSignature(recommendation.bestConfig))
+  );
 
   return (
     <section className="space-y-0">
@@ -1877,7 +2097,7 @@ export function BacktestLabConsole({
               <div>
                 <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">Backtest lab</div>
                 <div className="mt-1 text-sm text-white">
-                  Compare your current grid against recenter and optimizer scenarios before changing a live bot.
+                  Find a candidate range, inspect the evidence and holdout, then optionally compare an existing bot.
                 </div>
               </div>
               {displayedGuidance ? (
@@ -1888,10 +2108,10 @@ export function BacktestLabConsole({
             </div>
 
             <div className="mt-3 grid gap-2 sm:grid-cols-4">
-              <LabMetric label="Validation net" value={bestValidationNet === null ? "--" : formatCurrency(bestValidationNet)} hint="Validation-first ranking" />
-              <LabMetric label="Max drawdown" value={recommendation ? formatPercent(recommendation.validationMetrics.maxDrawdownPct, 2) : "--"} hint="Validation window" />
-              <LabMetric label="Time in range" value={recommendation ? formatPercent(recommendation.validationMetrics.timeInRangePct, 1) : "--"} hint="Validation window" />
-              <LabMetric label="Closed cycles" value={recommendation ? formatNumber(recommendation.validationMetrics.closedCycleCount, 0) : "--"} hint="Validation window" />
+              <LabMetric label="Final holdout net" value={bestValidationNet === null ? "--" : formatCurrency(bestValidationNet)} hint="Never used to rerank" />
+              <LabMetric label="Max drawdown" value={recommendation ? formatPercent(recommendation.validationMetrics.maxDrawdownPct, 2) : "--"} hint="Final holdout" />
+              <LabMetric label="Time in range" value={recommendation ? formatPercent(recommendation.validationMetrics.timeInRangePct, 1) : "--"} hint="Final holdout" />
+              <LabMetric label="Closed cycles" value={recommendation ? formatNumber(recommendation.validationMetrics.closedCycleCount, 0) : "--"} hint="Final holdout" />
             </div>
           </div>
 
@@ -1901,10 +2121,13 @@ export function BacktestLabConsole({
                 options={LAB_RESOLUTION_OPTIONS.map((value) => ({ label: value.toUpperCase(), value }))}
                 value={resolution}
                 pending={isPending}
-                onChange={(next) => setResolution(next as LabResolution)}
+                onChange={(next) => {
+                  invalidateLabRequests();
+                  setResolution(next as LabResolution);
+                }}
               />
               <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
-                {displayedReplay?.meta.historyWindow?.source ?? "gecko-terminal"} | {lookbackDays}d
+                {displayedReplay?.meta.historyWindow?.source ?? "gecko-terminal"} | {lookbackDays}d | closed candles
               </div>
             </div>
 
@@ -1942,7 +2165,7 @@ export function BacktestLabConsole({
         <aside className="flex max-h-[calc(100vh-160px)] min-w-0 flex-col overflow-hidden bg-[var(--panel-soft)]/60">
           <div className="border-b border-[var(--line)] px-4 py-3">
             <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-[var(--muted)]">Lab scope</div>
-            <div className="mt-1 text-sm text-white">Start with a bot, run Compare scenarios, then read the winner and the risk flags.</div>
+            <div className="mt-1 text-sm text-white">Choose a pair, objective and virtual allocation, then inspect evidence, holdout and cost stress.</div>
           </div>
 
           <div className="flex-1 overflow-y-auto px-4 py-3">
@@ -1952,7 +2175,10 @@ export function BacktestLabConsole({
                   <LabField label="Prefill from">
                     <select
                       value={selectedBot?.id ?? ""}
-                      onChange={(event) => selectBotId(event.currentTarget.value || null)}
+                      onChange={(event) => {
+                        invalidateLabRequests();
+                        selectBotId(event.currentTarget.value || null);
+                      }}
                       className="h-9 w-full min-w-0 rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white"
                     >
                       {!bots.length ? <option value="">Custom</option> : null}
@@ -1971,7 +2197,16 @@ export function BacktestLabConsole({
                           <button
                             key={option}
                             type="button"
-                            onClick={() => setPair(option)}
+                            onClick={() => {
+                              invalidateLabRequests();
+                              setPair(option);
+                              if (selectedBotPair !== option) {
+                                setReserveQuoteAmount(Math.max(0, Math.round(budgetUsd * 0.2 * 100) / 100));
+                              }
+                              if (!effectiveSelectedBotId) {
+                                setStrategyMode(getLabDefaultStrategyMode(option));
+                              }
+                            }}
                             className={cn(
                               "min-w-0 rounded-md border px-2.5 py-2 text-[11px] font-medium transition",
                               pair === option
@@ -1990,24 +2225,112 @@ export function BacktestLabConsole({
                         min={1}
                         step={10}
                         value={budgetUsd}
-                        onChange={(event) => setBudgetUsd(Number(event.currentTarget.value) || 0)}
+                        onChange={(event) => {
+                          invalidateLabRequests();
+                          const nextBudget = Number(event.currentTarget.value) || 0;
+                          setBudgetUsd(nextBudget);
+                          if (!selectedBotReplayConfig || selectedBotPair !== pair || Math.abs(selectedBotReplayConfig.budgetUsd - nextBudget) >= 0.000001) {
+                            setReserveQuoteAmount(Math.max(0, Math.round(nextBudget * 0.2 * 100) / 100));
+                          }
+                        }}
                         className="h-9 w-full min-w-0 rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white"
                       />
                     </LabField>
                   </div>
 
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <LabField label="Goal">
+                      <select
+                        value={strategyMode}
+                        onChange={(event) => {
+                          invalidateLabRequests();
+                          setStrategyMode(event.currentTarget.value as StrategyMode);
+                        }}
+                        className="h-9 w-full min-w-0 rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white"
+                      >
+                        <option value={StrategyMode.AccumulateUsdc}>Accumulate USDC</option>
+                        <option value={StrategyMode.Balanced}>Balanced</option>
+                        <option value={StrategyMode.AccumulateBase}>Accumulate token</option>
+                      </select>
+                    </LabField>
+                    <LabField label="Range fitting">
+                      <select
+                        value={rangeMethod}
+                        onChange={(event) => {
+                          invalidateLabRequests();
+                          setRangeMethod(event.currentTarget.value as BacktestRangeMethod);
+                        }}
+                        className="h-9 w-full min-w-0 rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[13px] text-white"
+                      >
+                        <option value="rebounds">Repeat rebounds</option>
+                        <option value="distribution">Distribution baseline</option>
+                      </select>
+                    </LabField>
+                  </div>
+
+                  <LabField label="USDC reserve for new allocation">
+                    <input
+                      type="number"
+                      min={0}
+                      step={10}
+                      value={preservesSelectedAllocation
+                        ? selectedBotReplayConfig!.reserveQuoteAmount
+                        : reserveQuoteAmount}
+                      disabled={preservesSelectedAllocation}
+                      onChange={(event) => {
+                        invalidateLabRequests();
+                        setReserveQuoteAmount(Math.max(0, Number(event.currentTarget.value) || 0));
+                      }}
+                      className="h-9 w-full min-w-0 rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 text-[13px] text-white disabled:cursor-not-allowed disabled:opacity-60"
+                    />
+                    <div className="mt-1 text-[10px] leading-4 text-[var(--muted)]">
+                      Defaults to 20% for a new allocation. An existing bot keeps its saved reserve.
+                    </div>
+                  </LabField>
+
+                  <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
+                    <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">Virtual budget scenarios</div>
+                    <div className="mt-2 grid grid-cols-4 gap-1.5">
+                      {[600, 1000, 2000, 3000].map((value) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => {
+                            invalidateLabRequests();
+                            setBudgetUsd(value);
+                            if (!selectedBotReplayConfig || selectedBotPair !== pair || Math.abs(selectedBotReplayConfig.budgetUsd - value) >= 0.000001) {
+                              setReserveQuoteAmount(value * 0.2);
+                            }
+                          }}
+                          className={cn(
+                            "rounded border px-1.5 py-1.5 font-mono text-[10px] transition",
+                            budgetUsd === value
+                              ? "border-[var(--accent-line)] bg-[var(--accent-soft)] text-[var(--accent)]"
+                              : "border-[var(--line)] text-[var(--muted)] hover:bg-white/[0.04] hover:text-white"
+                          )}
+                        >
+                          ${value}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mt-1.5 text-[10px] leading-4 text-[var(--muted)]">Scenario sizes are virtual inputs; size alone is never a recommendation.</div>
+                  </div>
+
                   <div className="grid grid-cols-1 gap-3">
                     <LabField label="Lookback">
                       <TimeRangeTabs
-                        options={LAB_LOOKBACK_OPTIONS.map((value) => ({ label: `${value}D`, value: String(value) }))}
+                        options={availableLookbackOptions.map((value) => ({ label: `${value}D`, value: String(value) }))}
                         value={String(lookbackDays)}
                         pending={isPending}
-                        onChange={(next) => setLookbackDays(Number(next) as LabLookbackDays)}
+                        onChange={(next) => {
+                          invalidateLabRequests();
+                          setLookbackDays(Number(next) as LabLookbackDays);
+                        }}
                       />
                     </LabField>
                     <LabField label="Optimization mode">
                       <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
-                        Tests the current strategies and both spacing modes, then ranks on validation. No live execution tweaks in v1.
+                        Selects on earlier history, freezes the candidates, then reports a final holdout that cannot change their rank.
                       </div>
                     </LabField>
                   </div>
@@ -2016,14 +2339,14 @@ export function BacktestLabConsole({
                     <button
                       type="button"
                       onClick={runScenarioComparison}
-                      disabled={isPending || budgetUsd <= 0}
+                      disabled={isPending || budgetUsd <= 0 || selectedBotPair !== pair}
                       className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--accent-line)] bg-[linear-gradient(180deg,rgba(121,184,255,0.18),rgba(121,184,255,0.1))] px-3.5 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--accent)] shadow-[0_10px_24px_rgba(58,120,255,0.16),inset_0_1px_0_rgba(255,255,255,0.06)] transition hover:border-[rgba(121,184,255,0.45)] hover:bg-[linear-gradient(180deg,rgba(121,184,255,0.24),rgba(121,184,255,0.14))] hover:text-white disabled:pointer-events-none disabled:opacity-50"
                     >
                       <RotateCcw className="h-3.5 w-3.5 shrink-0" />
                       {isPending ? "Running..." : "Compare scenarios"}
                     </button>
                     <div className="text-[11px] leading-4 text-[var(--muted)]">
-                      Best first step: current setup, recenter, optimizer best, adaptive plan, and adaptive+recenter on the same window.
+                      Compare fresh-start current parameters, a frozen optimizer candidate, and causal adaptive variants on the same holdout.
                     </div>
                     {selectedBotReplayConfig ? (
                       <button
@@ -2059,24 +2382,28 @@ export function BacktestLabConsole({
                       className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] px-3 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-[var(--accent-line)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent)] disabled:pointer-events-none disabled:opacity-50"
                     >
                       <FlaskConical className="h-3.5 w-3.5 shrink-0" />
-                      Find optimizer best
+                      Find candidate ranges
                     </button>
                     <div className="text-[11px] leading-4 text-[var(--muted)]">
-                      Optional: search the parameter space without comparing against the selected bot.
+                      Finds repeat-rebound ranges by default, freezes the candidate before holdout, and can refuse when evidence or costs are insufficient.
                     </div>
                     {displayedBaseConfig ? (
                       <>
                         <button
                           type="button"
                           onClick={() => openConfigAsBotDraft(displayedBaseConfig)}
-                          disabled={isPending || Boolean(draftPreview?.analysis.blockingIssues.length)}
+                          disabled={isPending || promotionRefused || Boolean(draftPreview?.analysis.blockingIssues.length)}
                           className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--accent-line)] bg-[linear-gradient(180deg,rgba(121,184,255,0.16),rgba(121,184,255,0.08))] px-3 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--accent)] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition hover:border-[rgba(121,184,255,0.45)] hover:bg-[rgba(121,184,255,0.14)] hover:text-white disabled:pointer-events-none disabled:opacity-50"
                         >
                           <Plus className="h-3.5 w-3.5 shrink-0" />
                           Open as bot draft
                         </button>
                         <div className="text-[11px] leading-4 text-[var(--muted)]">
-                          Opens a new `/bots` draft only. Adaptive/recenter simulation stays advisory; review before creating.
+                          {promotionRefused
+                            ? comparisonHasNoCandidate
+                              ? "No candidate range was fit, so current and worker auto-center rows remain exploratory and cannot be promoted."
+                              : "The final holdout does not meet the paper-candidate gate, so this optimizer result cannot be promoted."
+                            : "Opens a new `/bots` draft only. Review the allocation, costs, and entry policy before creating."}
                         </div>
                         {draftPreview ? <LabDraftPreviewCard preview={draftPreview} /> : null}
                       </>
@@ -2085,9 +2412,26 @@ export function BacktestLabConsole({
                 </div>
               </LabSection>
 
-              <LabSection title="Best setup found">
+              <LabSection title="Selected candidate">
                 {recommendation ? (
                   <div className="space-y-3">
+                    {recommendation.eligibility ? (
+                      <div className={cn(
+                        "rounded-md border px-3 py-2",
+                        recommendation.eligibility.status === "paper_candidate"
+                          ? "border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)]"
+                          : "border-[color:rgba(248,200,108,0.22)] bg-[color:rgba(248,200,108,0.07)]"
+                      )}>
+                        <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-white">
+                          {recommendation.eligibility.status === "paper_candidate" ? "Paper candidate" : "No launch recommendation"}
+                        </div>
+                        <div className="mt-1 space-y-1">
+                          {recommendation.eligibility.reasons.map((reason) => (
+                            <div key={reason} className="text-[11px] leading-4 text-[var(--muted)]">{reason}</div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="grid grid-cols-1 gap-2">
                       <LabMetric label="Goal" value={formatGoalLabel(recommendation.bestConfig.strategyMode)} hint="Current live strategy family" />
                       <LabMetric label="Spacing" value={formatSpacingLabel(recommendation.bestConfig.gridType)} hint={`${recommendation.bestConfig.levelCount} rails`} />
@@ -2100,9 +2444,54 @@ export function BacktestLabConsole({
                       <div className="mt-2 text-[11px] leading-4 text-[var(--muted)]">{recommendation.operatorGuidance.stopRule}</div>
                       <div className="mt-2 text-[11px] leading-4 text-[var(--muted)]">{recommendation.operatorGuidance.recenterAction}</div>
                     </div>
+                    {recommendation.rangeEvidence ? (
+                      <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
+                        <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">Range evidence</div>
+                        <div className="mt-1 text-[11px] text-white">
+                          {recommendation.rangeEvidence.method === "rebounds" ? "Repeat rebound zones" : "Distribution baseline"}
+                        </div>
+                        <div className="mt-1 text-[10px] leading-4 text-[var(--muted)]">
+                          Fitted {formatLabDate(recommendation.rangeEvidence.fittingFrom)} to {formatLabDate(recommendation.rangeEvidence.fittingTo)}.
+                        </div>
+                        {recommendation.rangeEvidence.selected ? (
+                          <div className="mt-2 grid grid-cols-2 gap-2">
+                            <LabMetric label="Support touches" value={formatNumber(recommendation.rangeEvidence.selected.supportTouches, 0)} hint={`Last ${formatLabDate(recommendation.rangeEvidence.selected.lastSupportAt)}`} />
+                            <LabMetric label="Resistance touches" value={formatNumber(recommendation.rangeEvidence.selected.resistanceTouches, 0)} hint={`Last ${formatLabDate(recommendation.rangeEvidence.selected.lastResistanceAt)}`} />
+                            <LabMetric label="Zone width" value={formatPercent(recommendation.rangeEvidence.selected.widthPct, 1)} hint={`${formatPercent(recommendation.rangeEvidence.selected.zoneTolerancePct, 2)} tolerance`} />
+                            <LabMetric label="First observed" value={formatLabDate(recommendation.rangeEvidence.selected.firstObservedAt)} hint="Zone evidence" />
+                          </div>
+                        ) : null}
+                        <div className="mt-2 space-y-1">
+                          {recommendation.rangeEvidence.reasons.map((reason) => (
+                            <div key={reason} className="text-[10px] leading-4 text-[var(--muted)]">{reason}</div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {recommendation.costStress ? (
+                      <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--muted)]">Frozen cost stress</div>
+                          <div className={cn("font-mono text-[9px] uppercase tracking-[0.12em]", recommendation.costStress.passed ? "text-[var(--green)]" : "text-[var(--amber)]")}>
+                            {recommendation.costStress.passed ? "Passed" : "Caution"}
+                          </div>
+                        </div>
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                          <LabMetric label="Slippage" value={formatBps(recommendation.costStress.maxSlippageBps)} hint="Stress assumption" />
+                          <LabMetric label="Execution fee" value={formatBps(recommendation.costStress.executionFeeBps)} hint="Stress assumption" />
+                          <LabMetric label="Validation net" value={formatSignedCurrency(getValidationNet(recommendation.costStress.validationMetrics))} hint="Frozen stress replay" />
+                          <LabMetric label="Overall net" value={formatSignedCurrency(getValidationNet(recommendation.costStress.overallMetrics))} hint="Frozen stress replay" />
+                        </div>
+                        <div className="mt-2 space-y-1">
+                          {recommendation.costStress.reasons.map((reason) => (
+                            <div key={reason} className="text-[10px] leading-4 text-[var(--muted)]">{reason}</div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ) : (
-                  <div className="text-sm text-[var(--muted)]">Use Compare scenarios first, or Find optimizer best if you only want the search winner.</div>
+                  <div className="text-sm text-[var(--muted)]">Run Find candidate ranges to fit a range, inspect its evidence, and evaluate the locked holdout.</div>
                 )}
               </LabSection>
 
@@ -2126,6 +2515,41 @@ export function BacktestLabConsole({
                         value={formatNumber(displayedReplay.overallMetrics.openCycleCount, 0)}
                         hint={`${formatNumber(displayedReplay.overallMetrics.closedCycleCount, 0)} closed cycles`}
                       />
+                      {displayedReplay.benchmarks ? (
+                        <>
+                          <LabMetric label="Cash benchmark" value={formatCurrency(displayedReplay.benchmarks.cash.endingEquityUsd)} hint={formatPercent(displayedReplay.benchmarks.cash.returnPct, 2)} />
+                          <LabMetric label="Buy & hold benchmark" value={formatCurrency(displayedReplay.benchmarks.buyAndHold.endingEquityUsd)} hint={formatPercent(displayedReplay.benchmarks.buyAndHold.returnPct, 2)} />
+                        </>
+                      ) : null}
+                      {displayedReplay.accumulation ? (
+                        <>
+                          <LabMetric
+                            label={`${displayedReplay.accumulation.baseSymbol} retained`}
+                            value={formatNumber(displayedReplay.accumulation.retainedBaseAmount, 8)}
+                            hint="Retained lots only"
+                          />
+                          <LabMetric
+                            label={`${displayedReplay.accumulation.baseSymbol} held`}
+                            value={formatNumber(displayedReplay.accumulation.heldBaseAmount, 8)}
+                            hint="Actual replay inventory"
+                          />
+                          <LabMetric
+                            label="Whole equity in base"
+                            value={formatNumber(displayedReplay.accumulation.baseEquivalent, 8)}
+                            hint="Includes cash at the final price"
+                          />
+                          <LabMetric
+                            label="Buy & hold in base"
+                            value={formatNumber(displayedReplay.accumulation.buyAndHoldBaseEquivalent, 8)}
+                            hint="Theoretical whole equity"
+                          />
+                          <LabMetric
+                            label="Excess base"
+                            value={formatSignedNumber(displayedReplay.accumulation.excessBaseEquivalent, 8)}
+                            hint="Replay whole-equity comparison"
+                          />
+                        </>
+                      ) : null}
                     </div>
 
                     <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2">
@@ -2189,9 +2613,11 @@ export function BacktestLabConsole({
                         label="Cost model"
                         value={`${formatBps(displayedAssumptions.maxSlippageBps)} slip + ${formatBps(displayedAssumptions.executionFeeBps)} fee`}
                         hint={
-                          displayedAssumptions.executionCostSource === "calibrated_live_fills" && displayedCostCalibration
-                            ? `${displayedCostCalibration.sampleSize} live fills, p75 ${formatBps(displayedCostCalibration.p75AdverseSlippageBps)}`
-                            : "Fixed pessimistic default"
+                          displayedCostResolution
+                            ? `${displayedCostResolution.applied.mode} request; server applied ${formatBps(displayedCostResolution.applied.maxSlippageBps)} + ${formatBps(displayedCostResolution.applied.executionFeeBps)}`
+                            : displayedAssumptions.executionCostSource === "calibrated_live_fills" && displayedCostCalibration
+                              ? `${displayedCostCalibration.sampleSize} resolved live fills, p90 ${formatBps(displayedCostCalibration.p90AdverseSlippageBps)}`
+                              : "Fixed pessimistic default"
                         }
                       />
                       <LabMetric
@@ -2201,8 +2627,16 @@ export function BacktestLabConsole({
                       />
                       <LabMetric
                         label="Recenter"
-                        value={formatAssumptionRecenterMode(displayedAssumptions.recenterMode)}
-                        hint={displayedAssumptions.recenterScope === "simulated_when_auto_recenter" ? "Lab simulation" : "Advisory only"}
+                        value={
+                          displayedAssumptions.recenterMode === RecenterMode.Auto
+                            ? formatRecenterModel(displayedAssumptions.recenterModel)
+                            : formatAssumptionRecenterMode(displayedAssumptions.recenterMode)
+                        }
+                        hint={
+                          displayedAssumptions.recenterScope === "simulated_when_auto_recenter"
+                            ? "Confirmed outside >=30s; no open trading lots; 6h cooldown; max 2/day"
+                            : "Advisory only"
+                        }
                       />
                       <LabMetric
                         label="Range control"
@@ -2215,8 +2649,17 @@ export function BacktestLabConsole({
                     </div>
                     {displayedCostCalibration ? (
                       <div className="rounded-md border border-[var(--line)] bg-[rgba(121,184,255,0.04)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
-                        Live calibration: {displayedCostCalibration.buySampleSize} buys / {displayedCostCalibration.sellSampleSize} sells, p90 adverse{" "}
+                        Resolved-fill calibration: {displayedCostCalibration.buySampleSize} buys / {displayedCostCalibration.sellSampleSize} sells, p90 adverse{" "}
                         {formatBps(displayedCostCalibration.p90AdverseSlippageBps)}, max observed {formatBps(displayedCostCalibration.maxAdverseSlippageBps)}.
+                        {displayedCostCalibration.reasons.length ? ` ${displayedCostCalibration.reasons.join(" ")}` : ""}
+                      </div>
+                    ) : null}
+                    {displayedReplay?.meta.historyWindow ? (
+                      <div className="rounded-md border border-[var(--line)] bg-[var(--bg)] px-2.5 py-2 text-[11px] leading-4 text-[var(--muted)]">
+                        Data coverage: {displayedReplay.meta.historyWindow.coverage.closedCandleCount} closed candles,
+                        {displayedReplay.meta.historyWindow.coverage.complete ? " complete requested window" : " partial requested window"},
+                        {` ${displayedReplay.meta.historyWindow.coverage.internalGapCount} internal gaps. `}
+                        Prices are provider-denominated USD used as a USDC proxy; no USD/USDC conversion is fabricated.
                       </div>
                     ) : null}
                     <div className="space-y-1.5">
@@ -2253,7 +2696,16 @@ export function BacktestLabConsole({
                       <LabMetric label="Spacing" value={formatSpacingLabel(displayedRangePlan.recommendedGridType)} hint={`${formatPercent(displayedRangePlan.widthPct, 1)} width`} />
                       <LabMetric label="Basis" value={formatRangePlanBasis(displayedRangePlan.basis)} hint="Indicator source" />
                       <LabMetric label="Center" value={formatNumber(displayedRangePlan.midPrice, displayedRangePlan.midPrice >= 1000 ? 0 : 2)} hint={formatRangePlanMidBasis(displayedRangePlan.midBasis)} />
-                      <LabMetric label="Confidence" value={formatPercent(displayedRangePlan.confidence * 100, 0)} hint="Heuristic score" />
+                      <LabMetric label="Plan score" value={formatPercent(displayedRangePlan.confidence * 100, 0)} hint="Heuristic, not a probability" />
+                      <LabMetric
+                        label="Net spacing"
+                        value={formatPercent(
+                          displayedRangePlan.stepPct -
+                            ((displayedAssumptions?.maxSlippageBps ?? 0) + (displayedAssumptions?.executionFeeBps ?? 0)) * 2 / 100,
+                          2
+                        )}
+                        hint="Step minus estimated round-trip costs"
+                      />
                     </div>
                     {adaptiveReplayConfig ? (
                       <button
@@ -2303,7 +2755,7 @@ export function BacktestLabConsole({
                       <div className="mt-1 text-[11px] leading-4 text-[var(--muted)]">Read-only guidance. The worker will not auto-switch strategy in this phase.</div>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
-                      <LabMetric label="Selector confidence" value={formatPercent(displayedStrategySelection.confidence * 100, 0)} hint="Heuristic score" />
+                      <LabMetric label="Selector score" value={formatPercent(displayedStrategySelection.confidence * 100, 0)} hint="Heuristic, not a probability" />
                       <LabMetric
                         label="Live engine today"
                         value={formatStrategyFamilyLabel(displayedStrategySelection.activeLiveFamily)}
@@ -2414,7 +2866,7 @@ export function BacktestLabConsole({
                     <div className={cn("rounded-md border px-3 py-2", formatRegimeTone(displayedRegime.regime))}>
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <div className="font-mono text-[10px] uppercase tracking-[0.16em]">Detected regime</div>
+                          <div className="font-mono text-[10px] uppercase tracking-[0.16em]">Detected regime score</div>
                           <div className="mt-1 text-base font-medium text-white">{formatRegimeLabel(displayedRegime.regime)}</div>
                         </div>
                         <div className="text-right font-mono text-[11px] uppercase tracking-[0.12em]">
@@ -2504,22 +2956,24 @@ export function BacktestLabConsole({
                 setActiveReplay(recommendation.bestReplay);
                 setActiveConfigKey(getConfigSignature(recommendation.bestConfig));
               }}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] px-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--muted)] transition hover:border-white/12 hover:bg-white/[0.05] hover:text-white"
+              style={{ fontSize: 10, lineHeight: "14px" }}
+              className="inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-[var(--line)] bg-[rgba(255,255,255,0.015)] px-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--muted)] transition hover:border-white/12 hover:bg-white/[0.05] hover:text-white"
             >
               <RotateCcw className="h-3 w-3" />
-              Reset to best
+              Reset candidate
             </button>
           ) : null}
         </div>
 
         {recommendation ? (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[920px] text-left text-sm">
+            <table className="w-full min-w-[1020px] text-left text-sm">
               <thead className="border-b border-[var(--line)] bg-[var(--panel-soft)]/70 text-[var(--muted)]">
                 <tr className="font-mono text-[10px] uppercase tracking-[0.14em]">
                   <th className="px-4 py-3">Rank</th>
                   <th className="px-4 py-3">Config</th>
-                  <th className="px-4 py-3">Validation net</th>
+                  <th className="px-4 py-3">Selection net</th>
+                  <th className="px-4 py-3">Final holdout net</th>
                   <th className="px-4 py-3">Drawdown</th>
                   <th className="px-4 py-3">In range</th>
                   <th className="px-4 py-3">Closed cycles</th>
@@ -2530,6 +2984,8 @@ export function BacktestLabConsole({
                 {recommendation.leaderboard.map((entry) => {
                   const key = getConfigSignature(entry.config);
                   const active = key === activeConfigKey;
+                  const selectionMetrics = entry.selectionMetrics ?? entry.trainMetrics;
+                  const selectionNet = selectionMetrics.endingEquityUsd - selectionMetrics.startingBudgetUsd;
                   const validationNet = entry.validationMetrics.endingEquityUsd - entry.validationMetrics.startingBudgetUsd;
                   return (
                     <tr
@@ -2546,6 +3002,9 @@ export function BacktestLabConsole({
                           {formatSpacingLabel(entry.config.gridType)} | {entry.config.levelCount} rails | {formatNumber(entry.config.lowPrice, entry.config.lowPrice >= 1000 ? 0 : 2)}{" -> "}
                           {formatNumber(entry.config.highPrice, entry.config.highPrice >= 1000 ? 0 : 2)}
                         </div>
+                      </td>
+                      <td className={cn("px-4 py-3 font-medium", selectionNet >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
+                        {formatCurrency(selectionNet)}
                       </td>
                       <td className={cn("px-4 py-3 font-medium", validationNet >= 0 ? "text-[var(--green)]" : "text-[var(--red)]")}>
                         {formatCurrency(validationNet)}

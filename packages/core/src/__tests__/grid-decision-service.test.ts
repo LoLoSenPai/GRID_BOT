@@ -21,7 +21,7 @@ function signal(input: Partial<TriggerSignal> & Pick<TriggerSignal, "levelIndex"
 }
 
 describe("GridDecisionService", () => {
-  it("materializes an actionable crossed signal immediately even when confirmation is configured", () => {
+  it("materializes a crossed buy immediately when confirmation is disabled", () => {
     const now = new Date("2026-04-17T10:00:00.000Z");
     const service = new GridDecisionService();
 
@@ -34,7 +34,7 @@ describe("GridDecisionService", () => {
       now,
       levels,
       crossedSignals: [signal({ levelIndex: 1, side: TradeSide.Buy, levelPrice: 82 })],
-      priceConfirmationWindowMs: 10_000,
+      priceConfirmationWindowMs: 0,
       canBuildOrder: () => true
     });
 
@@ -54,16 +54,16 @@ describe("GridDecisionService", () => {
       latestStatus: BotStatus.Running,
       pendingSignal: {
         levelIndex: 2,
-        side: TradeSide.Sell,
+        side: TradeSide.Buy,
         firstObservedAt: "2026-04-17T10:00:00.000Z",
-        lastObservedPrice: 84.1
+        lastObservedPrice: 83.9
       },
-      currentPrice: 84.2,
+      currentPrice: 83.8,
       now: new Date("2026-04-17T10:00:05.000Z"),
       levels,
       crossedSignals: [],
       priceConfirmationWindowMs: 10_000,
-      canBuildOrder: () => false
+      canBuildOrder: (candidate) => candidate.side === TradeSide.Buy
     });
 
     expect(result).toBeNull();
@@ -77,21 +77,21 @@ describe("GridDecisionService", () => {
       latestStatus: BotStatus.Running,
       pendingSignal: {
         levelIndex: 2,
-        side: TradeSide.Sell,
+        side: TradeSide.Buy,
         firstObservedAt: "2026-04-17T10:00:00.000Z",
-        lastObservedPrice: 84.1
+        lastObservedPrice: 83.9
       },
-      currentPrice: 84.2,
+      currentPrice: 83.8,
       now: new Date("2026-04-17T10:00:11.000Z"),
       levels,
       crossedSignals: [],
       priceConfirmationWindowMs: 10_000,
-      canBuildOrder: () => false
+      canBuildOrder: (candidate) => candidate.side === TradeSide.Buy
     });
 
     expect(result).toMatchObject({
       levelIndex: 2,
-      side: TradeSide.Sell,
+      side: TradeSide.Buy,
       levelPrice: 84
     });
   });
@@ -216,5 +216,38 @@ describe("GridDecisionService", () => {
     });
 
     expect(result).toBeNull();
+  });
+});
+
+
+describe("buy confirmation causality", () => {
+  const service = new GridDecisionService();
+  const now = new Date("2026-04-17T10:00:00Z");
+  const buy = signal({ levelIndex: 1, levelPrice: 82, side: TradeSide.Buy });
+  const input = { botId: "bot", botStatus: BotStatus.Running, currentPrice: 81.9, now, levels,
+    crossedSignals: [buy], priceConfirmationWindowMs: 60_000,
+    canBuildOrder: (candidate: TriggerSignal) => candidate.side === TradeSide.Buy };
+  it("starts a timer on the first crossing, waits the full window, and cancels a reversal", () => {
+    expect(service.getConfirmedSignal(input)).toBeNull();
+    const pendingSignal = service.resolvePendingSignal(input);
+    expect(pendingSignal?.firstObservedAt).toBe(now.toISOString());
+    expect(service.getConfirmedSignal({ ...input, pendingSignal, now: new Date(now.getTime() + 59_999) })).toBeNull();
+    expect(service.getConfirmedSignal({ ...input, pendingSignal, crossedSignals: [], now: new Date(now.getTime() + 60_000) })?.side).toBe(TradeSide.Buy);
+    expect(service.resolvePendingSignal({ ...input, pendingSignal, crossedSignals: [], currentPrice: 82.2 })).toBeNull();
+    expect(service.getConfirmedSignal({ ...input, pendingSignal, crossedSignals: [], currentPrice: 82.2, now: new Date(now.getTime() + 60_000) })).toBeNull();
+  });
+  it("starts lower boundary confirmation without a fresh crossing", () => {
+    const outside = { ...input, currentPrice: 79, crossedSignals: [] };
+    expect(service.getOutOfRangeBoundaryBuySignal(outside)).toBeNull();
+    const pendingSignal = service.resolvePendingSignal(outside);
+    expect(pendingSignal).toMatchObject({ levelIndex: 0, side: TradeSide.Buy, firstObservedAt: now.toISOString() });
+    expect(service.getOutOfRangeBoundaryBuySignal({ ...outside, pendingSignal, now: new Date(now.getTime() + 59_999) })).toBeNull();
+    expect(service.getOutOfRangeBoundaryBuySignal({ ...outside, pendingSignal, now: new Date(now.getTime() + 60_000) })?.levelIndex).toBe(0);
+  });
+  it("does not delay recovery sells and refuses stale unbuildable pending buys", () => {
+    const sell = service.getConfirmedSignal({ ...input, currentPrice: 85, crossedSignals: [], canBuildOrder: (candidate) => candidate.side === TradeSide.Sell && candidate.levelIndex === 2 });
+    expect(sell?.side).toBe(TradeSide.Sell);
+    const pendingSignal = service.resolvePendingSignal(input);
+    expect(service.getConfirmedSignal({ ...input, pendingSignal, crossedSignals: [], now: new Date(now.getTime() + 60_000), canBuildOrder: () => false })).toBeNull();
   });
 });

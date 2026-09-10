@@ -14,4 +14,11 @@ web-dev.err.log
 pnpm-debug.log
 .env
 .env.production
+.env.local
+**/*.env
+audits
+output
+AGENTS.md
+deploy/paper-pilot/data
+deploy/paper-pilot/secrets
 postgres_data

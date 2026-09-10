@@ -50,6 +50,7 @@ enum ExecutionProvider {
 enum ExecutionStatus {
   pending
   submitted
+  unknown
   filled
   failed
   simulated
@@ -119,6 +120,7 @@ model Bot {
   alerts            Alert[]
   systemLogs        SystemLog[]
   priceSnapshots    PriceSnapshot[]
+  executionAttempt  ExecutionAttempt?
 
   @@index([clonedFromBotId])
   @@index([mode, archivedAt])
@@ -194,6 +196,7 @@ model Order {
   updatedAt           DateTime    @updatedAt
   bot                 Bot         @relation(fields: [botId], references: [id], onDelete: Cascade)
   executions          Execution[]
+  executionAttempts   ExecutionAttempt[]
 
   @@index([botId, createdAt(sort: Desc)])
   @@map("orders")
@@ -222,6 +225,8 @@ model Execution {
   order                Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
   bot                  Bot               @relation(fields: [botId], references: [id], onDelete: Cascade)
 
+  attempt              ExecutionAttempt?
+
   @@index([botId, createdAt(sort: Desc)])
   @@map("executions")
 }
@@ -242,6 +247,7 @@ model Position {
 }
 
 model PositionLot {
+  kind               String    @default("trading")
   id                 String    @id
   botId              String
   originalBaseAmount Decimal   @db.Decimal(30, 10)
@@ -256,6 +262,23 @@ model PositionLot {
 
   @@index([botId, openedAt(sort: Asc)])
   @@map("position_lots")
+}
+
+model ExecutionAttempt {
+  botId       String   @id
+  executionId String   @unique
+  orderId     String
+  payload     Json
+  result      Json?
+  uncertain   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  bot         Bot       @relation(fields: [botId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  execution   Execution @relation(fields: [executionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  order       Order     @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@map("execution_attempts")
 }
 
 model InventorySnapshot {

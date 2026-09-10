@@ -1,359 +1,236 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Keypair, TransactionMessage, VersionedTransaction, TransactionInstruction, SystemProgram } from "@solana/web3.js";
+import { MINTS } from "@grid-bot/common";
 
-const loadExecutionWalletMock = vi.hoisted(() =>
-  vi.fn((): unknown => {
-    throw new Error("wallet should not be loaded in this test");
-  })
-);
-
-vi.mock("@grid-bot/common", () => ({
-  getEnv: () => ({
-    JUPITER_API_KEY: "test-key",
-    EXECUTION_WALLET_SECRET_KEY_PATH: "ignored"
-  })
+const loadExecutionWalletMock = vi.hoisted(() => vi.fn());
+vi.mock("@grid-bot/common", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@grid-bot/common")>(),
+  getEnv: () => ({ JUPITER_API_KEY: "test-key", EXECUTION_WALLET_SECRET_KEY_PATH: "ignored", RPC_HTTP_URL: "https://rpc.invalid" })
 }));
+vi.mock("../services/wallet-service", () => ({ loadExecutionWallet: loadExecutionWalletMock }));
 
-vi.mock("../services/wallet-service", () => ({
-  loadExecutionWallet: loadExecutionWalletMock
-}));
+import { JupiterExecutionAdapter, type PreparedJupiterExecution } from "../adapters/jupiter-execution-adapter";
+import { ExecutionStatus, TradeSide } from "../domain/enums";
+import type { ExecuteSwapParams } from "../domain/types";
 
-vi.mock("@solana/web3.js", () => ({
-  VersionedTransaction: {
-    deserialize: vi.fn(() => ({
-      sign: vi.fn(),
-      serialize: vi.fn(() => Buffer.from("signed-transaction"))
-    }))
-  },
-  Keypair: class Keypair {}
-}));
-
-import { JupiterExecutionAdapter } from "../adapters/jupiter-execution-adapter";
-import { TradeSide } from "../domain/enums";
+const params: ExecuteSwapParams = { botId: "bot-1", clientOrderId: "client-1", inputMint: MINTS.USDC,
+  outputMint: MINTS.SOL, amount: 100, inputDecimals: 6, outputDecimals: 9, tradeSide: TradeSide.Buy, slippageBps: 50 };
+const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200 });
 
 describe("JupiterExecutionAdapter", () => {
-  const originalFetch = globalThis.fetch;
-
+  let wallet: Keypair;
+  let order: Record<string, unknown>;
   beforeEach(() => {
-    loadExecutionWalletMock.mockImplementation(() => {
-      throw new Error("wallet should not be loaded in this test");
-    });
-    globalThis.fetch = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          inputMint: "USDC",
-          outputMint: "SOL",
-          inAmount: "10000000",
-          outAmount: "119000000",
-          signatureFeeLamports: 5000,
-          prioritizationFeeLamports: 20000,
-          rentFeeLamports: 2039280
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" }
-        }
-      )
-    ) as typeof fetch;
+    wallet = Keypair.generate(); // Ephemeral test signer; never sent to a network.
+    loadExecutionWalletMock.mockReturnValue({ keypair: wallet });
+    const transaction = new VersionedTransaction(new TransactionMessage({ payerKey: wallet.publicKey,
+      recentBlockhash: Keypair.generate().publicKey.toBase58(), instructions: [] }).compileToV0Message());
+    order = { inputMint: params.inputMint, outputMint: params.outputMint, inAmount: "100000000", outAmount: "1000000000",
+      transaction: Buffer.from(transaction.serialize()).toString("base64"), requestId: "request-1",
+      signatureFeeLamports: 5000, prioritizationFeeLamports: 20000, rentFeeLamports: 2039280 };
+  });
+  afterEach(() => { vi.restoreAllMocks(); loadExecutionWalletMock.mockReset(); });
+
+  async function prepare(overrides: Partial<ExecuteSwapParams> = {}) {
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(json(order));
+    const adapter = new JupiterExecutionAdapter({ fetchFn });
+    const input = { ...params, ...overrides };
+    const estimate = await adapter.prepareExecution(input);
+    return { fetchFn, adapter, input, estimate, prepared: estimate.rawQuote as PreparedJupiterExecution };
+  }
+
+  function confirmedTransaction(prepared: PreparedJupiterExecution, fee = 12000, err: unknown = null) {
+    const tx = VersionedTransaction.deserialize(Buffer.from(prepared.signedTransaction, "base64"));
+    const keys = tx.message.staticAccountKeys.map((key) => key.toBase58());
+    return { result: { meta: { fee, err }, transaction: {
+      signatures: keys.slice(0, tx.message.header.numRequiredSignatures).map((key) => key === prepared.walletPublicKey ? prepared.signerSignature : prepared.txId),
+      message: { accountKeys: keys }
+    } } };
+  }
+
+  it("signs and serializes the exact durable authorization before execute, without posting", async () => {
+    const { fetchFn, estimate, prepared } = await prepare();
+    expect(fetchFn).toHaveBeenCalledOnce();
+    expect(String(fetchFn.mock.calls[0]?.[0])).toContain("priorityFeeLamports=50000");
+    expect(String(fetchFn.mock.calls[0]?.[0])).toContain("broadcastFeeType=maxCap");
+    expect(prepared.kind).toBe("jupiter-prepared-v1");
+    expect(prepared.txId).toMatch(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/);
+    expect(prepared.signerSignature).toBe(prepared.txId);
+    expect(JSON.parse(JSON.stringify(estimate))).toEqual(estimate);
+    expect(VersionedTransaction.deserialize(Buffer.from(prepared.signedTransaction, "base64")).signatures[0]?.some(Boolean)).toBe(true);
   });
 
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-    loadExecutionWalletMock.mockReset();
-    vi.restoreAllMocks();
+  it("uses actual wallet totals including swap fees once, with network fees and rent separate", async () => {
+    const { fetchFn, adapter, estimate, prepared } = await prepare();
+    fetchFn.mockResolvedValueOnce(json({ status: "Success", code: 0, signature: prepared.txId,
+      totalInputAmount: "100100000", totalOutputAmount: "995000000", inputAmountResult: "100000000", outputAmountResult: "1000000000" }));
+    fetchFn.mockResolvedValueOnce(json(confirmedTransaction(prepared)));
+    const result = await adapter.executePreparedSwap(params, estimate);
+    expect(result.status).toBe(ExecutionStatus.Filled);
+    expect(result.inputAmount).toBe(100.1);
+    expect(result.outputAmount).toBe(0.995);
+    expect(result.effectivePrice).toBeCloseTo(100.1 / 0.995);
+    expect(result.feeAmount).toBe(0);
+    expect(result.nativeFeeAmount).toBe(0.000012);
+    expect(result.rawReport).toMatchObject({ nativeFeeBasis: "confirmed-transaction-meta", rentFeeEstimateLamports: 2039280 });
+    expect(JSON.stringify(result.rawReport)).not.toContain(prepared.signedTransaction);
   });
 
-  it("does not treat lamport network fees as quote-denominated fees in estimates", async () => {
-    const adapter = new JupiterExecutionAdapter();
-
-    const quote = await adapter.getQuote("USDC", "SOL", 10, 50);
-    const estimate = await adapter.estimateExecution({
-      botId: "bot-1",
-      inputMint: "USDC",
-      outputMint: "SOL",
-      amount: 10,
-      tradeSide: TradeSide.Buy,
-      inputDecimals: 6,
-      outputDecimals: 9,
-      slippageBps: 50,
-      clientOrderId: "client-1",
-      referencePrice: 84
-    });
-
-    expect(quote.estimatedFeeAmount).toBe(0);
-    expect(estimate.estimatedFeeAmount).toBe(0);
-    expect(estimate.nativeFeeAmount).toBe(0.000025);
+  it("converts sell totals with each mint's decimals and reports quote per base", async () => {
+    order = { ...order, inputMint: MINTS.SOL, outputMint: MINTS.USDC, inAmount: "150000000", outAmount: "12810000" };
+    const { fetchFn, adapter, estimate, prepared, input } = await prepare({ inputMint: MINTS.SOL, outputMint: MINTS.USDC,
+      amount: 0.15, inputDecimals: 9, outputDecimals: 6, tradeSide: TradeSide.Sell });
+    expect(estimate.inputAmount).toBe(0.15);
+    expect(estimate.expectedPrice).toBeCloseTo(85.4);
+    fetchFn.mockResolvedValueOnce(json({ status: "Success", code: 0, signature: prepared.txId,
+      totalInputAmount: "150000000", totalOutputAmount: "12800000" }));
+    fetchFn.mockResolvedValueOnce(json(confirmedTransaction(prepared)));
+    const result = await adapter.executePreparedSwap(input, estimate);
+    expect(result.inputAmount).toBe(0.15);
+    expect(result.outputAmount).toBe(12.8);
+    expect(result.effectivePrice).toBeCloseTo(12.8 / 0.15);
   });
 
-  it("reports sell effective price as quote per base", async () => {
-    globalThis.fetch = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          inputMint: "SOL",
-          outputMint: "USDC",
-          inAmount: "150000000",
-          outAmount: "12810000",
-          signatureFeeLamports: 5000,
-          prioritizationFeeLamports: 20000,
-          rentFeeLamports: 0
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" }
-        }
-      )
-    ) as typeof fetch;
-
-    const adapter = new JupiterExecutionAdapter();
-    const estimate = await adapter.estimateExecution({
-      botId: "bot-1",
-      inputMint: "SOL",
-      outputMint: "USDC",
-      amount: 0.15,
-      tradeSide: TradeSide.Sell,
-      inputDecimals: 9,
-      outputDecimals: 6,
-      slippageBps: 50,
-      clientOrderId: "client-1",
-      referencePrice: 85.36
-    });
-
-    expect(estimate.expectedOutputAmount).toBe(12.81);
-    expect(estimate.expectedPrice).toBeCloseTo(85.4, 6);
+  it.each([
+    [{ status: "Failed", code: -1000 }, ExecutionStatus.Unknown],
+    [{ status: "Failed", code: -2003 }, ExecutionStatus.Unknown],
+    [{ status: "Failed", code: -2 }, ExecutionStatus.Failed],
+    [{ status: "Failed", code: -1 }, ExecutionStatus.Unknown],
+    [{ status: "Failed", code: -1001 }, ExecutionStatus.Unknown],
+    [{ status: "Failed", code: -2001 }, ExecutionStatus.Unknown],
+    [{ status: "Failed" }, ExecutionStatus.Unknown],
+    [{ status: "Success", code: -1000 }, ExecutionStatus.Unknown],
+    [{ status: "Success", code: 0 }, ExecutionStatus.Unknown],
+    [{}, ExecutionStatus.Unknown],
+    [null, ExecutionStatus.Unknown],
+  ])("classifies incomplete or failed execution %j as %s without booking amounts", async (response, status) => {
+    const { fetchFn, adapter, estimate } = await prepare();
+    fetchFn.mockResolvedValueOnce(json(response));
+    const report = await adapter.executePreparedSwap(params, estimate);
+    expect(report.status).toBe(status);
+    expect(report.inputAmount).toBe(0);
+    expect(report.outputAmount).toBe(0);
   });
 
-  it("prepares one executable order that can be reused after quote validation", async () => {
-    loadExecutionWalletMock.mockReturnValue({
-      keypair: {
-        publicKey: {
-          toBase58: () => "wallet-public-key"
-        }
-      }
-    });
-    globalThis.fetch = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          inputMint: "USDC",
-          outputMint: "SOL",
-          inAmount: "12730000",
-          outAmount: "150000000",
-          transaction: "prepared-transaction",
-          requestId: "prepared-order",
-          signatureFeeLamports: 5000,
-          prioritizationFeeLamports: 20000,
-          rentFeeLamports: 0
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" }
-        }
-      )
-    ) as typeof fetch;
-
-    const adapter = new JupiterExecutionAdapter();
-    const estimate = await adapter.prepareExecution({
-      botId: "bot-1",
-      inputMint: "USDC",
-      outputMint: "SOL",
-      amount: 12.73,
-      tradeSide: TradeSide.Buy,
-      inputDecimals: 6,
-      outputDecimals: 9,
-      slippageBps: 50,
-      clientOrderId: "client-1",
-      referencePrice: 84.82
-    });
-
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("taker=wallet-public-key"),
-      expect.any(Object)
-    );
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("priorityFeeLamports=50000"),
-      expect.any(Object)
-    );
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("broadcastFeeType=maxCap"),
-      expect.any(Object)
-    );
-    expect(estimate.requestId).toBe("prepared-order");
-    expect(estimate.expectedOutputAmount).toBe(0.15);
-    expect(estimate.expectedPrice).toBeCloseTo(84.86666667, 6);
-    expect(estimate.rawQuote).toEqual(expect.objectContaining({
-      transaction: "prepared-transaction",
-      requestId: "prepared-order"
-    }));
+  it.each([undefined, "0", "-1", "1.1", "NaN", 100])("does not substitute the quote for an invalid actual total %s", async (total) => {
+    const { fetchFn, adapter, estimate, prepared } = await prepare();
+    fetchFn.mockResolvedValueOnce(json({ status: "Success", code: 0, signature: prepared.txId,
+      totalInputAmount: "100000000", totalOutputAmount: total }));
+    expect((await adapter.executePreparedSwap(params, estimate)).status).toBe(ExecutionStatus.Unknown);
   });
 
-  it("does not subtract a fixed native SOL reserve from sell amount", async () => {
-    loadExecutionWalletMock.mockReturnValue({
-      keypair: {
-        publicKey: {
-          toBase58: () => "wallet-public-key"
-        }
-      }
-    });
-    globalThis.fetch = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          inputMint: "So11111111111111111111111111111111111111112",
-          outputMint: "USDC",
-          inAmount: "345700000",
-          outAmount: "30000000",
-          transaction: "prepared-transaction",
-          requestId: "prepared-sell",
-          signatureFeeLamports: 5000,
-          prioritizationFeeLamports: 20000,
-          rentFeeLamports: 0
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" }
-        }
-      )
-    ) as typeof fetch;
-
-    const adapter = new JupiterExecutionAdapter();
-    const estimate = await adapter.prepareExecution({
-      botId: "bot-1",
-      inputMint: "So11111111111111111111111111111111111111112",
-      outputMint: "USDC",
-      amount: 0.3457,
-      tradeSide: TradeSide.Sell,
-      inputDecimals: 9,
-      outputDecimals: 6,
-      slippageBps: 50,
-      clientOrderId: "client-1",
-      referencePrice: 87
-    });
-
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("amount=345700000"),
-      expect.any(Object)
-    );
-    expect(estimate.inputAmount).toBe(0.3457);
-    expect(estimate.expectedOutputAmount).toBe(30);
+  it("reuses the same signed bytes and request ID after lost response and simulated process restart", async () => {
+    const { fetchFn, adapter, estimate, prepared } = await prepare();
+    fetchFn.mockRejectedValueOnce(new Error("fetch failed"));
+    expect((await adapter.executePreparedSwap(params, estimate)).status).toBe(ExecutionStatus.Unknown);
+    loadExecutionWalletMock.mockImplementation(() => { throw new Error("must not reload wallet"); });
+    const retryFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(json({ status: "Success", code: 0, signature: prepared.txId,
+      totalInputAmount: "100000000", totalOutputAmount: "995000000" })).mockResolvedValueOnce(json(confirmedTransaction(prepared)));
+    const restarted = new JupiterExecutionAdapter({ fetchFn: retryFetch });
+    expect((await restarted.executePreparedSwap(params, JSON.parse(JSON.stringify(estimate)))).status).toBe(ExecutionStatus.Filled);
+    expect(retryFetch.mock.calls[0]?.[1]?.body).toBe(fetchFn.mock.calls[1]?.[1]?.body);
+    expect(retryFetch).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects executable orders when Jupiter returns a priority fee above the configured cap", async () => {
-    loadExecutionWalletMock.mockReturnValue({
-      keypair: {
-        publicKey: {
-          toBase58: () => "wallet-public-key"
-        }
-      }
-    });
-    globalThis.fetch = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          inputMint: "So11111111111111111111111111111111111111112",
-          outputMint: "USDC",
-          inAmount: "652700000",
-          outAmount: "62500000",
-          transaction: "prepared-transaction",
-          requestId: "expensive-sell",
-          signatureFeeLamports: 5000,
-          prioritizationFeeLamports: 2_000_000,
-          rentFeeLamports: 0
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" }
-        }
-      )
-    ) as typeof fetch;
-
-    const adapter = new JupiterExecutionAdapter();
-
-    await expect(
-      adapter.prepareExecution({
-        botId: "bot-1",
-        inputMint: "So11111111111111111111111111111111111111112",
-        outputMint: "USDC",
-        amount: 0.6527,
-        tradeSide: TradeSide.Sell,
-        inputDecimals: 9,
-        outputDecimals: 6,
-        slippageBps: 50,
-        clientOrderId: "client-1",
-        referencePrice: 96
-      })
-    ).rejects.toThrow("exceeds configured cap");
+  it("bounds response body reads and treats timeout after send as unknown", async () => {
+    const { estimate } = await prepare();
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue({ ok: true, json: () => new Promise(() => {}) } as Response);
+    const adapter = new JupiterExecutionAdapter({ fetchFn, executeTimeoutMs: 5 });
+    expect((await adapter.executePreparedSwap(params, estimate)).status).toBe(ExecutionStatus.Unknown);
   });
 
-  it("reports native Solana network fees separately from quote fees", async () => {
-    loadExecutionWalletMock.mockReturnValue({
-      keypair: {
-        publicKey: {
-          toBase58: () => "wallet-public-key"
-        }
-      }
-    });
-    globalThis.fetch = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            inputMint: "USDC",
-            outputMint: "SOL",
-            inAmount: "30000000",
-            outAmount: "345000000",
-            transaction: "prepared-transaction",
-            requestId: "prepared-buy",
-            signatureFeeLamports: 5000,
-            prioritizationFeeLamports: 20000,
-            rentFeeLamports: 0
-          }),
-          {
-            status: 200,
-            headers: { "Content-Type": "application/json" }
-          }
-        )
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            signature: "tx-signature"
-          }),
-          {
-            status: 200,
-            headers: { "Content-Type": "application/json" }
-          }
-        )
-      ) as typeof fetch;
-
-    const adapter = new JupiterExecutionAdapter();
-    const estimate = await adapter.prepareExecution({
-      botId: "bot-1",
-      inputMint: "USDC",
-      outputMint: "SOL",
-      amount: 30,
-      tradeSide: TradeSide.Buy,
-      inputDecimals: 6,
-      outputDecimals: 9,
-      slippageBps: 50,
-      clientOrderId: "client-1",
-      referencePrice: 87
-    });
-    const report = await adapter.executePreparedSwap(
-      {
-        botId: "bot-1",
-        inputMint: "USDC",
-        outputMint: "SOL",
-        amount: 30,
-        tradeSide: TradeSide.Buy,
-        inputDecimals: 6,
-        outputDecimals: 9,
-        slippageBps: 50,
-        clientOrderId: "client-1",
-        referencePrice: 87
-      },
-      estimate
-    );
-
-    expect(report.feeAmount).toBe(0);
-    expect(estimate.nativeFeeAmount).toBe(0.000025);
-    expect(estimate.nativeFeeSymbol).toBe("SOL");
-    expect(report.nativeFeeAmount).toBe(0.000025);
-    expect(report.nativeFeeSymbol).toBe("SOL");
+  it("does not invent a new order if a durable preparation is missing or belongs to another trade", async () => {
+    const { fetchFn, adapter, estimate } = await prepare();
+    await expect(adapter.executePreparedSwap(params, { ...estimate, rawQuote: order })).rejects.toThrow("refusing");
+    await expect(adapter.executePreparedSwap({ ...params, amount: 101 }, estimate)).rejects.toThrow("refusing");
+    await expect(adapter.executeSwap(params)).rejects.toThrow("durable persistence");
+    expect(fetchFn).toHaveBeenCalledOnce();
   });
+
+  it("rejects priority fees over the cap before signing", async () => {
+    order.prioritizationFeeLamports = 2_000_000;
+    await expect(prepare()).rejects.toThrow("exceeds configured cap");
+  });
+
+  it("does not charge sponsored fees to the taker", async () => {
+    const sponsor = Keypair.generate();
+    const tx = new VersionedTransaction(new TransactionMessage({ payerKey: sponsor.publicKey,
+      recentBlockhash: Keypair.generate().publicKey.toBase58(),
+      instructions: [new TransactionInstruction({ programId: SystemProgram.programId,
+        keys: [{ pubkey: wallet.publicKey, isSigner: true, isWritable: true }], data: Buffer.alloc(0) })]
+    }).compileToV0Message());
+    tx.sign([sponsor]);
+    order.transaction = Buffer.from(tx.serialize()).toString("base64");
+    order.signatureFeePayer = sponsor.publicKey.toBase58();
+    order.prioritizationFeePayer = order.signatureFeePayer;
+    const { fetchFn, adapter, estimate, prepared } = await prepare();
+    fetchFn.mockResolvedValueOnce(json({ status: "Success", code: 0, signature: prepared.txId,
+      totalInputAmount: "100000000", totalOutputAmount: "995000000" }));
+    fetchFn.mockResolvedValueOnce(json(confirmedTransaction(prepared)));
+    expect((await adapter.executePreparedSwap(params, estimate)).nativeFeeAmount).toBe(0);
+  });
+
+  it("uses token units consistently for legacy quotes", async () => {
+    const adapter = new JupiterExecutionAdapter({ fetchFn: vi.fn<typeof fetch>().mockResolvedValue(json(order)) });
+    expect((await adapter.getQuote(MINTS.USDC, MINTS.SOL, 100, 50)).expectedOutputAmount).toBe(1);
+  });
+
+  it("returns only independently confirmed RPC failures, never a fictitious submitted/fill report", async () => {
+    const { prepared, estimate } = await prepare();
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ result: { value: [null] } }))
+      .mockResolvedValueOnce(json({ result: { value: [{ err: null, confirmationStatus: "confirmed" }] } }))
+      .mockResolvedValueOnce(json({ result: { value: [{ err: { InstructionError: [1, "error"] }, confirmationStatus: "finalized" }] } }))
+      .mockResolvedValueOnce(json(confirmedTransaction(prepared, 7000, { InstructionError: [1, "error"] })));
+    const adapter = new JupiterExecutionAdapter({ fetchFn });
+    expect(await adapter.getExecutionReport("request-id")).toBeNull();
+    expect(await adapter.getExecutionReport(prepared.txId!, estimate)).toBeNull();
+    expect(await adapter.getExecutionReport(prepared.txId!, estimate)).toBeNull();
+    expect((await adapter.getExecutionReport(prepared.txId!, estimate))?.status).toBe(ExecutionStatus.Failed);
+  });
+  it("retains a successful execute response until actual fees arrive and never resubmits it on restart", async () => {
+    const { fetchFn, adapter, estimate, prepared } = await prepare();
+    const response = { status: "Success", code: 0, signature: prepared.txId, totalInputAmount: "100000000", totalOutputAmount: "995000000" };
+    fetchFn.mockResolvedValueOnce(json(response)).mockResolvedValueOnce(json({ result: null }));
+    const unresolved = await adapter.executePreparedSwap(params, estimate);
+    expect(unresolved.status).toBe(ExecutionStatus.Unknown);
+    expect(unresolved.rawReport).toMatchObject({ executeResponse: response });
+    loadExecutionWalletMock.mockImplementation(() => { throw new Error("No signer reload during recovery"); });
+    const retryFetch = vi.fn<typeof fetch>().mockResolvedValueOnce(json(confirmedTransaction(prepared, 17000)));
+    const restarted = new JupiterExecutionAdapter({ fetchFn: retryFetch });
+    const recovered = await restarted.executePreparedSwap(params, JSON.parse(JSON.stringify(estimate)), JSON.parse(JSON.stringify(unresolved)));
+    expect(recovered.status).toBe(ExecutionStatus.Filled);
+    expect(recovered.nativeFeeAmount).toBe(0.000017);
+    expect(retryFetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(retryFetch.mock.calls[0]?.[1]?.body)).method).toBe("getTransaction");
+  });
+
+  it("refuses fee metadata for another transaction or missing/invalid chain fees", async () => {
+    for (const fee of [-1, 1.5, undefined]) {
+      const { fetchFn, adapter, estimate, prepared } = await prepare();
+      const rpc = confirmedTransaction(prepared);
+      (rpc.result.meta as { fee?: number }).fee = fee;
+      fetchFn.mockResolvedValueOnce(json({ status: "Success", code: 0, signature: prepared.txId,
+        totalInputAmount: "100000000", totalOutputAmount: "995000000" })).mockResolvedValueOnce(json(rpc));
+      expect((await adapter.executePreparedSwap(params, estimate)).status).toBe(ExecutionStatus.Unknown);
+    }
+    const { fetchFn, adapter, estimate, prepared } = await prepare();
+    const rpc = confirmedTransaction(prepared);
+    rpc.result.transaction.signatures[0] = "another";
+    fetchFn.mockResolvedValueOnce(json({ status: "Success", code: 0, signature: prepared.txId,
+      totalInputAmount: "100000000", totalOutputAmount: "995000000" })).mockResolvedValueOnce(json(rpc));
+    expect((await adapter.executePreparedSwap(params, estimate)).status).toBe(ExecutionStatus.Unknown);
+  });
+
+  it("requires independent confirmed failure and actual paid fee for an execute failure", async () => {
+    const { fetchFn, adapter, estimate, prepared } = await prepare();
+    fetchFn.mockResolvedValueOnce(json({ status: "Failed", code: -1000, signature: prepared.txId }))
+      .mockResolvedValueOnce(json({ result: { value: [{ err: { InstructionError: [0, "failure"] }, confirmationStatus: "confirmed" }] } }))
+      .mockResolvedValueOnce(json(confirmedTransaction(prepared, 9000, { InstructionError: [0, "failure"] })));
+    const report = await adapter.executePreparedSwap(params, estimate);
+    expect(report.status).toBe(ExecutionStatus.Failed);
+    expect(report.nativeFeeAmount).toBe(0.000009);
+    expect(report.inputAmount).toBe(0);
+  });
+
 });

@@ -28,7 +28,7 @@ export async function findLatestBotStateSnapshots(botIds: string[]) {
       "createdAt"
     FROM "bot_state_snapshots"
     WHERE "botId" IN (${Prisma.join(botIds)})
-    ORDER BY "botId", "createdAt" DESC
+    ORDER BY "botId", "createdAt" DESC, "id" DESC
   `);
 
   return new Map(rows.map((row) => [row.botId, row]));

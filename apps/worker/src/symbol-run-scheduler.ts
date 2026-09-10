@@ -4,6 +4,8 @@ export class SymbolRunScheduler {
   private readonly runningSymbols = new Set<string>();
   private readonly queuedSymbols = new Set<string>();
   private readonly lastRunStartedAt = new Map<string, number>();
+  private readonly drains = new Set<Promise<void>>();
+  private stopped = false;
 
   constructor(
     private readonly runSymbol: (symbol: string) => Promise<void>,
@@ -11,6 +13,7 @@ export class SymbolRunScheduler {
   ) {}
 
   schedule(symbol: string) {
+    if (this.stopped) return;
     const normalizedSymbol = symbol.toUpperCase();
     this.queuedSymbols.add(normalizedSymbol);
 
@@ -19,7 +22,18 @@ export class SymbolRunScheduler {
     }
 
     this.runningSymbols.add(normalizedSymbol);
-    void this.drain(normalizedSymbol);
+    this.launchDrain(normalizedSymbol);
+  }
+
+  async stop() {
+    this.stopped = true;
+    this.queuedSymbols.clear();
+    await Promise.all(this.drains);
+  }
+
+  private launchDrain(symbol: string) {
+    const promise = this.drain(symbol).finally(() => this.drains.delete(promise));
+    this.drains.add(promise);
   }
 
   private async drain(symbol: string) {
@@ -29,6 +43,7 @@ export class SymbolRunScheduler {
         if (waitMs > 0) {
           await sleep(waitMs);
         }
+        if (this.stopped) break;
 
         this.queuedSymbols.delete(symbol);
         this.lastRunStartedAt.set(symbol, Date.now());
@@ -38,9 +53,9 @@ export class SymbolRunScheduler {
       logger.error({ error, symbol }, "Symbol run scheduler failed");
     } finally {
       this.runningSymbols.delete(symbol);
-      if (this.queuedSymbols.has(symbol)) {
+      if (!this.stopped && this.queuedSymbols.has(symbol)) {
         this.runningSymbols.add(symbol);
-        void this.drain(symbol);
+        this.launchDrain(symbol);
       }
     }
   }

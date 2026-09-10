@@ -15,6 +15,8 @@ import type {
 } from "./enums";
 
 export interface BotConfig {
+  /** Optional execution-cost estimate used for recovery sizing; quotes still require net validation. */
+  executionFeeBps?: number;
   id: string;
   botId: string;
   totalBudgetUsd: number;
@@ -54,6 +56,13 @@ export interface GridCycle {
 }
 
 export interface BotRuntimeMetadata {
+  /** Attributed gas expense paid by the wallet's native SOL reserve, outside the bot's swap balances. */
+  externalNativeFeesQuote?: number;
+  equityHighWatermarkUsd?: number;
+  riskBuyPause?: string | null;
+  outsideSince?: string | null;
+  outsideSourceObservedAt?: string | null;
+  outsideSide?: "above" | "below" | null;
   levelLocks: Record<string, string>;
   pendingSignal?: PendingSignal | null;
   gridCycles?: Record<string, GridCycle>;
@@ -92,6 +101,7 @@ export interface Position {
 }
 
 export interface PositionLot {
+  kind?: "trading" | "retained";
   id: string;
   botId: string;
   originalBaseAmount: number;
@@ -135,6 +145,11 @@ export interface GridLevel {
 }
 
 export interface MarketPrice {
+  receivedAt?: Date;
+  sourceBlockId?: number;
+  quoteSourceBlockId?: number;
+  sourceObservedAt?: Date;
+  freshnessBasis?: "block-observed";
   symbol: string;
   pair: string;
   price: number;
@@ -296,6 +311,10 @@ export type RangePlanBasis = "atr" | "donchian" | "bollinger" | "current_range";
 export type RangePlanMidBasis = "current_price" | "donchian_mid" | "ema_cluster" | "current_range_mid";
 
 export interface RangePlanInput {
+  maxSlippageBps?: number;
+  executionFeeBps?: number;
+  netMarginPct?: number;
+  natrMultiplier?: number;
   currentPrice: number;
   currentLowPrice: number;
   currentHighPrice: number;
@@ -307,6 +326,9 @@ export interface RangePlanInput {
 }
 
 export interface RangePlanDecision {
+  minimumStepPct?: number;
+  estimatedRoundTripCostPct?: number;
+  costFloorSatisfied?: boolean;
   recommendedLowPrice: number;
   recommendedHighPrice: number;
   recommendedLevelCount: number;
@@ -366,6 +388,11 @@ export interface StrategySelectionDecision {
 
 export interface BacktestConfig {
   budgetUsd: number;
+  maxDeployableUsd?: number;
+  reserveQuoteAmount?: number;
+  entryMode?: EntryMode;
+  autoRecenterMinIntervalMs?: number;
+  autoRecenterMaxPerDay?: number;
   lowPrice: number;
   highPrice: number;
   levelCount: number;
@@ -377,6 +404,7 @@ export interface BacktestConfig {
   maxSlippageBps: number;
   executionFeeBps?: number;
   executionCostSource?: BacktestExecutionCostSource;
+  recenterModel?: "worker_flat" | "candle_defense";
   cooldownMs: number;
   maxOrdersPerHour: number;
   maxDrawdownPct: number;
@@ -406,9 +434,11 @@ export interface ExecutionCostModelReport {
   feeAmount: number;
   maxSlippageBps: number;
   executionFeeBps: number;
+  recenterModel?: "worker_flat" | "candle_defense";
 }
 
 export interface BacktestReplayExecution {
+  observedPrice?: number;
   id: string;
   orderKey: string;
   phase: "train" | "validation";
@@ -471,6 +501,7 @@ export interface BacktestReplayPoint {
   activeHighPrice: number;
   availableQuoteAmount: number;
   availableBaseAmount: number;
+  retainedBaseAmount?: number;
   deployedQuoteAmount: number;
   realizedPnlUsd: number;
   unrealizedPnlUsd: number;
@@ -524,6 +555,7 @@ export interface BacktestAssumptions {
   executionCostSource: BacktestExecutionCostSource;
   maxSlippageBps: number;
   executionFeeBps: number;
+  recenterModel?: "worker_flat" | "candle_defense";
   trainValidationSplit: number;
   recenterMode: RecenterMode;
   recenterScope: "advisory_only" | "simulated_when_auto_recenter";
@@ -533,7 +565,22 @@ export interface BacktestAssumptions {
   notes: string[];
 }
 
+export interface BacktestBenchmarks {
+  cash: { endingEquityUsd: number; returnPct: number };
+  buyAndHold: { endingEquityUsd: number; returnPct: number };
+}
+
 export interface BacktestRunResult {
+  benchmarks?: BacktestBenchmarks;
+  validationBenchmarks?: BacktestBenchmarks;
+  accumulation?: {
+    baseSymbol: string;
+    heldBaseAmount: number;
+    retainedBaseAmount: number;
+    baseEquivalent: number;
+    buyAndHoldBaseEquivalent: number;
+    excessBaseEquivalent: number;
+  };
   series: BacktestMarketSeries;
   config: BacktestConfig;
   replayPoints: BacktestReplayPoint[];
@@ -549,6 +596,7 @@ export interface BacktestRunResult {
 }
 
 export interface BacktestLeaderboardEntry {
+  selectionMetrics?: BacktestMetrics;
   rank: number;
   config: BacktestConfig;
   trainMetrics: BacktestMetrics;
@@ -565,6 +613,22 @@ export interface BacktestOperatorGuidance {
 }
 
 export interface BacktestRecommendation {
+  rangeEvidence?: {
+    method: "rebounds" | "distribution";
+    fittingFrom: Date;
+    fittingTo: Date;
+    selected?: import("../services/rebound-zone-service").ReboundRangeCandidate;
+    reasons: string[];
+  };
+  costStress?: {
+    maxSlippageBps: number;
+    executionFeeBps: number;
+    validationMetrics: BacktestMetrics;
+    overallMetrics: BacktestMetrics;
+    passed: boolean;
+    reasons: string[];
+  };
+  eligibility?: { status: "paper_candidate" | "no_launch" | "insufficient_evidence"; reasons: string[] };
   bestConfig: BacktestConfig;
   leaderboard: BacktestLeaderboardEntry[];
   bestReplay: BacktestRunResult;

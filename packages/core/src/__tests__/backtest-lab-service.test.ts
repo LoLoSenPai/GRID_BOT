@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { BotStatus, GridType, MinOrderMode, OrderStatus, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
+import { BotStatus, EntryMode, GridType, MinOrderMode, OrderStatus, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
 import { BacktestLabService, compareBacktestLeaderboardEntries, generateBacktestCandidates } from "../services/backtest-lab-service";
 import type { BacktestConfig, BacktestLeaderboardEntry, BacktestMarketSeries } from "../domain/types";
 import { MarketRegimeService } from "../services/market-regime-service";
@@ -87,8 +87,10 @@ describe("BacktestLabService", () => {
     expect(result.assumptions.recenterScope).toBe("advisory_only");
     expect(result.trainMetrics.executedBuyCount).toBe(1);
     expect(result.trainMetrics.closedCycleCount).toBe(0);
-    expect(result.validationMetrics.executedSellCount).toBe(0);
-    expect(result.validationMetrics.closedCycleCount).toBe(0);
+    expect(result.validationMetrics.executedSellCount).toBe(1);
+    expect(result.validationMetrics.closedCycleCount).toBe(1);
+    expect(result.validationMetrics.startingBudgetUsd).toBe(result.trainMetrics.endingEquityUsd);
+    expect(result.validationMetrics.totalPnlUsd).toBeCloseTo(result.overallMetrics.endingEquityUsd - result.trainMetrics.endingEquityUsd, 7);
     expect(result.overallMetrics.endingEquityUsd).toBeGreaterThan(result.overallMetrics.startingBudgetUsd);
     expect(result.recenterAdvice.mode).toBe("none");
     expect(result.executions.map((execution) => execution.status)).toEqual([OrderStatus.Simulated, OrderStatus.Simulated]);
@@ -104,8 +106,8 @@ describe("BacktestLabService", () => {
     expect(balanced.overallMetrics.realizedPnlUsd).not.toBe(accumulateBase.overallMetrics.realizedPnlUsd);
 
     expect(accumulateUsdc.overallMetrics.openCycleCount).toBe(0);
-    expect(balanced.overallMetrics.openCycleCount).toBe(1);
-    expect(accumulateBase.overallMetrics.openCycleCount).toBe(1);
+    expect(balanced.overallMetrics.openCycleCount).toBe(0);
+    expect(accumulateBase.overallMetrics.openCycleCount).toBe(0);
 
     expect(accumulateUsdc.replayPoints.at(-1)?.availableBaseAmount ?? 0).toBe(0);
     expect(balanced.replayPoints.at(-1)?.availableBaseAmount ?? 0).toBeGreaterThan(0);
@@ -212,7 +214,8 @@ describe("BacktestLabService", () => {
         ...buildBacktestConfig(StrategyMode.AccumulateUsdc),
         highPrice: 120,
         levelCount: 3,
-        recenterMode: RecenterMode.Auto
+        recenterMode: RecenterMode.Auto,
+        recenterModel: "candle_defense"
       },
       marketRegime: {
         regime: "TREND_DOWN",
@@ -249,7 +252,8 @@ describe("BacktestLabService", () => {
         ...buildBacktestConfig(StrategyMode.AccumulateUsdc),
         highPrice: 110,
         levelCount: 3,
-        recenterMode: RecenterMode.Auto
+        recenterMode: RecenterMode.Auto,
+        recenterModel: "candle_defense"
       },
       marketRegime: {
         regime: "RANGE",
@@ -264,6 +268,79 @@ describe("BacktestLabService", () => {
     expect(result.recenterEvents[0]?.mode).toBe("hybrid");
     expect(result.recenterEvents[0]?.applied).toBe(true);
     expect(result.replayPoints.at(-1)?.activeLowPrice).toBeGreaterThan(100);
+  });
+
+  it("uses the worker-flat model for static auto replay with synthetic OHLC timing", () => {
+    const result = service.replay({
+      series: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        resolution: "1h",
+        candles: [
+          candle("2026-04-01T00:00:00Z", 105, 106, 104, 105),
+          candle("2026-04-01T01:00:00Z", 105, 120, 104, 118),
+          candle("2026-04-01T02:00:00Z", 118, 119, 115, 117)
+        ]
+      },
+      config: {
+        ...buildBacktestConfig(StrategyMode.AccumulateUsdc),
+        highPrice: 110,
+        recenterMode: RecenterMode.Auto
+      }
+    });
+
+    expect(result.config.recenterModel).toBe("worker_flat");
+    expect(result.assumptions.recenterModel).toBe("worker_flat");
+    expect(result.assumptions.outOfRangeModel).toBe("pause_new_entries_allow_recovery_sells");
+    expect(result.recenterEvents.some((event) => event.applied && event.side === "above")).toBe(true);
+    expect(result.recenterEvents.every((event) => event.mode === "hybrid")).toBe(true);
+    expect(result.replayPoints.some((point) => point.activeLowPrice > 100)).toBe(true);
+  });
+
+  it("does not buy below the range in worker-flat auto mode", () => {
+    const result = service.replay({
+      series: {
+        symbol: "SOL",
+        pair: "SOL/USDC",
+        resolution: "1h",
+        candles: [
+          candle("2026-04-01T00:00:00Z", 105, 106, 90, 95),
+          candle("2026-04-01T01:00:00Z", 95, 96, 89, 94),
+          candle("2026-04-01T02:00:00Z", 94, 96, 90, 95)
+        ]
+      },
+      config: {
+        ...buildBacktestConfig(StrategyMode.AccumulateUsdc),
+        lowPrice: 100,
+        highPrice: 110,
+        recenterMode: RecenterMode.Auto
+      }
+    });
+
+    expect(result.config.recenterModel).toBe("worker_flat");
+    expect(result.executions.some((execution) => execution.side === TradeSide.Buy)).toBe(false);
+  });
+
+  it("keeps adaptive replay on candle-defense semantics even if worker-flat is requested", () => {
+    const result = service.replay({
+      series: baseConfig({
+        candles: [
+          candle("2026-04-01T00:00:00Z", 105, 106, 104, 105),
+          candle("2026-04-01T01:00:00Z", 105, 112, 104, 112),
+          candle("2026-04-01T02:00:00Z", 112, 114, 111, 113)
+        ]
+      }),
+      config: {
+        ...buildBacktestConfig(StrategyMode.AccumulateUsdc),
+        highPrice: 110,
+        rangeControlMode: "adaptive",
+        recenterMode: RecenterMode.Auto,
+        recenterModel: "worker_flat"
+      }
+    });
+
+    expect(result.config.recenterModel).toBe("candle_defense");
+    expect(result.assumptions.recenterModel).toBe("candle_defense");
   });
 
   it("simulates adaptive range shifts in Lab while the replay is flat", () => {
@@ -439,7 +516,7 @@ describe("BacktestLabService", () => {
     }
   });
 
-  it("ranks leaderboard entries by validation first", () => {
+  it("never uses final holdout performance to rank leaderboard entries", () => {
     const base: BacktestLeaderboardEntry = {
       rank: 0,
       config: buildBacktestConfig(StrategyMode.AccumulateUsdc),
@@ -509,8 +586,92 @@ describe("BacktestLabService", () => {
     };
 
     const sorted = [base, sameGainLowerDrawdown, betterValidationGain].sort(compareBacktestLeaderboardEntries);
-    expect(sorted[0]).toBe(sameGainLowerDrawdown);
-    expect(sorted[1]).toBe(betterValidationGain);
-    expect(sorted[2]).toBe(base);
+    expect(sorted).toEqual([base, sameGainLowerDrawdown, betterValidationGain]);
+    const selected = { ...betterValidationGain, selectionMetrics: { ...base.trainMetrics, returnPct: 10 } };
+    expect([base, selected].sort(compareBacktestLeaderboardEntries)[0]).toBe(selected);
+  });
+});
+
+
+describe("Lab audit regressions", () => {
+  const series = (count = 100): BacktestMarketSeries => ({ symbol: "SOL", pair: "SOL/USDC", resolution: "1h",
+    candles: Array.from({ length: count }, (_, index) => {
+      // Smooth oscillations leave room for several rails above the NATR floor.
+      const price = 110 + Math.sin(index * 0.4) * 8;
+      return candle(new Date(Date.UTC(2026, 0, 1, index)).toISOString(), price, price + 2, price - 2, price + 0.5);
+    }) });
+
+  it("keeps candidate selection unchanged when the locked future is replaced", () => {
+    const original = series();
+    const changed = { ...original, candles: original.candles.map((c, index) => index < 70 ? c :
+      { ...c, open: c.open * 0.2, high: c.high * 0.2, low: c.low * 0.2, close: c.close * 0.2 }) };
+    const first = service.recommend({ series: original, budgetUsd: 100 });
+    const second = service.recommend({ series: changed, budgetUsd: 100 });
+    expect(first.bestConfig).toEqual(second.bestConfig);
+    expect(first.leaderboard.map((entry) => [entry.config, entry.selectionMetrics])).toEqual(
+      second.leaderboard.map((entry) => [entry.config, entry.selectionMetrics]));
+    expect(first.validationMetrics).not.toEqual(second.validationMetrics);
+    expect(second.eligibility?.status).not.toBe("paper_candidate");
+  });
+
+  it("preserves budget allocation through recommendation and cash benchmark", () => {
+    const result = service.recommend({ series: series(), budgetUsd: 200, maxDeployableUsd: 100,
+      reserveQuoteAmount: 80, entryMode: EntryMode.SellOnly });
+    expect(result.bestConfig).toMatchObject({ budgetUsd: 200, maxDeployableUsd: 100, reserveQuoteAmount: 80, entryMode: EntryMode.SellOnly });
+    expect(result.bestReplay.executions).toEqual([]);
+    expect(result.bestReplay.benchmarks?.cash.endingEquityUsd).toBe(200);
+    expect(result.eligibility?.status).toBe("no_launch");
+  });
+
+  it("does not let a supplied end-window regime or future candle alter earlier decisions", () => {
+    const original = series();
+    const altered = { ...original, candles: original.candles.map((c, i) => i < 70 ? c :
+      { ...c, open: c.open * 2, high: c.high * 2, low: c.low * 2, close: c.close * 2 }) };
+    const config = { ...buildBacktestConfig(StrategyMode.AccumulateUsdc), rangeControlMode: "adaptive" as const, recenterMode: RecenterMode.Auto };
+    const first = service.replay({ series: original, config });
+    const second = service.replay({ series: altered, config, marketRegime: { regime: "CHAOTIC_HIGH_VOL", confidence: 1,
+      scores: { range: 0, trendUp: 0, trendDown: 0, chaoticHighVol: 10 }, reasons: [], evaluatedAt: altered.candles.at(-1)!.timestamp } });
+    expect(first.replayPoints.filter((p) => p.phase === "train")).toEqual(second.replayPoints.filter((p) => p.phase === "train"));
+    expect(first.executions.filter((p) => p.phase === "train")).toEqual(second.executions.filter((p) => p.phase === "train"));
+  });
+
+  it("keeps regime defense through ticks inside range and carries indicator warmup into holdout", () => {
+    const seen: number[] = [];
+    class Trend extends MarketRegimeService {
+      override assess(candles: BacktestMarketSeries["candles"]) {
+        seen.push(candles.length);
+        return { regime: "TREND_DOWN" as const, confidence: 0.9,
+          scores: { range: 0, trendUp: 0, trendDown: 4, chaoticHighVol: 0 }, reasons: [], evaluatedAt: candles.at(-1)!.timestamp };
+      }
+    }
+    const defended = new BacktestLabService(undefined, undefined, undefined, undefined, undefined, undefined, undefined, new Trend());
+    const input = series(60);
+    input.candles = input.candles.map((c, i) => i < 30 ? { ...c, open: 140, high: 141, low: 139, close: 140 } :
+      { ...c, open: 115, high: 116, low: 104, close: 105 });
+    const result = defended.replay({ series: input, config: { ...buildBacktestConfig(StrategyMode.AccumulateUsdc), rangeControlMode: "adaptive" } });
+    expect(result.executions.filter((e) => e.side === TradeSide.Buy && e.status === OrderStatus.Simulated)).toEqual([]);
+    expect(seen).toContain(43);
+    expect(seen).toContain(60);
+  });
+
+  it("reserves fees before spending the final available quote", () => {
+    const result = runConfig(StrategyMode.AccumulateUsdc, { budgetUsd: 10, maxDeployableUsd: 8, reserveQuoteAmount: 2,
+      levelCount: 2, lowPrice: 110, highPrice: 130, executionFeeBps: 100 });
+    expect(result.executions.some((e) => e.status === OrderStatus.Simulated)).toBe(true);
+    for (const point of result.replayPoints) {
+      expect(point.availableQuoteAmount).toBeGreaterThanOrEqual(2);
+      expect(point.deployedQuoteAmount).toBeLessThanOrEqual(8);
+    }
+  });
+
+  it("fills at the observed wick price and accounts for retained tokens in total PnL", () => {
+    for (const mode of Object.values(StrategyMode)) {
+      const result = runConfig(mode);
+      const buy = result.executions.find((e) => e.side === TradeSide.Buy && e.status === OrderStatus.Simulated)!;
+      expect(buy.targetPrice).toBe(110);
+      expect(buy.fillPrice).toBe(104);
+      expect(result.overallMetrics.realizedPnlUsd + result.overallMetrics.unrealizedPnlUsd).toBeCloseTo(
+        result.overallMetrics.endingEquityUsd - result.overallMetrics.startingBudgetUsd, 6);
+    }
   });
 });

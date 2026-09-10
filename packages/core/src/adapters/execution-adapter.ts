@@ -5,6 +5,6 @@ export interface ExecutionAdapter {
   estimateExecution(params: ExecuteSwapParams): Promise<ExecutionEstimate>;
   prepareExecution?(params: ExecuteSwapParams): Promise<ExecutionEstimate>;
   executeSwap(params: ExecuteSwapParams): Promise<ExecutionReport>;
-  executePreparedSwap?(params: ExecuteSwapParams, preparedExecution: ExecutionEstimate): Promise<ExecutionReport>;
-  getExecutionReport(id: string): Promise<ExecutionReport | null>;
+  executePreparedSwap?(params: ExecuteSwapParams, preparedExecution: ExecutionEstimate, previousReport?: ExecutionReport): Promise<ExecutionReport>;
+  getExecutionReport(id: string, preparedExecution?: ExecutionEstimate): Promise<ExecutionReport | null>;
 }

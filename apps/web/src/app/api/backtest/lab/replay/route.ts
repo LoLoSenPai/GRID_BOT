@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { BacktestLabService } from "@grid-bot/core";
 
 import { readSession } from "@/lib/auth";
-import { applyExecutionCostCalibration, fetchExecutionCostCalibration } from "@/lib/backtest-execution-cost";
+import { resolveExecutionCosts } from "@/lib/backtest-cost-resolution";
+import { fetchExecutionCostCalibration } from "@/lib/backtest-execution-cost";
 import { buildReplayConfig, parseBacktestReplayRequest } from "@/lib/backtest-lab";
 import { buildAdaptiveRangePlan, buildStrategySelection, fetchBacktestSeries } from "@/lib/backtest-lab-server";
 
@@ -32,11 +33,15 @@ export async function POST(request: Request) {
       pair: body.pair,
       lookbackDays: body.lookbackDays
     });
-    const config = applyExecutionCostCalibration(buildReplayConfig(body.config), executionCostCalibration);
+    const executionCosts = resolveExecutionCosts(
+      buildReplayConfig(body.config),
+      executionCostCalibration,
+      body.executionCosts.mode
+    );
+    const config = executionCosts.config;
     const result = service.replay({
       series,
-      config,
-      marketRegime
+      config
     });
     const rangePlan = buildAdaptiveRangePlan({
       series,
@@ -60,7 +65,8 @@ export async function POST(request: Request) {
         ...result.meta,
         historyWindow,
         lookbackDays: body.lookbackDays,
-        executionCostCalibration
+        executionCostCalibration,
+        executionCostResolution: executionCosts.resolution
       }
     });
   } catch (error) {

@@ -6,6 +6,9 @@ import type {
   CandleHistoryResult,
   ExecutionRecord,
   ExecutionReport,
+  ExecutionEstimate,
+  ExecuteSwapParams,
+  TriggerSignal,
   MarketPrice,
   NormalizedCandle,
   OrderIntent,
@@ -22,9 +25,37 @@ export interface BotStateRepository {
   setBotHeartbeat(botId: string, currentPrice: number | null): Promise<void>;
   createStateSnapshot(snapshot: Omit<BotStateSnapshot, "id">): Promise<void>;
   withBotLock<T>(botId: string, callback: () => Promise<T>): Promise<T | null>;
+  updateRange?(botId: string, range: { lowPrice: number; highPrice: number }, snapshot: Omit<BotStateSnapshot, "id">): Promise<void>;
+}
+
+export interface PendingExecutionAttempt {
+  expectedSnapshotId?: string | null;
+  executionId: string;
+  orderId: string;
+  botId: string;
+  signal: TriggerSignal;
+  orderIntent: OrderIntent;
+  executionParams: ExecuteSwapParams;
+  preparedExecution?: ExecutionEstimate;
+  result?: ExecutionReport | null;
+  wasUncertain?: boolean;
+}
+
+export interface ExecutionCommit {
+  executionId: string;
+  orderId: string;
+  botId: string;
+  report: ExecutionReport;
+  lots: PositionLot[];
+  position: Omit<Position, "id">;
+  snapshot: Omit<BotStateSnapshot, "id">;
 }
 
 export interface TradeRepository {
+  getPendingExecution?(botId: string): Promise<PendingExecutionAttempt | null>;
+  prepareExecutionAttempt?(input: Omit<PendingExecutionAttempt, "executionId" | "orderId">): Promise<PendingExecutionAttempt>;
+  saveExecutionResult?(attempt: PendingExecutionAttempt, report: ExecutionReport, uncertain: boolean): Promise<void>;
+  commitExecution?(input: ExecutionCommit): Promise<boolean>;
   createOrder(order: OrderIntent): Promise<{ id: string }>;
   markOrderStatus(orderId: string, status: string, reason?: string | null): Promise<void>;
   createExecution(record: Omit<ExecutionRecord, "id" | "createdAt">): Promise<{ id: string }>;

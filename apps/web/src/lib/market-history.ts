@@ -10,6 +10,14 @@ import { getHistoryWindow } from "@/lib/market-history-window";
 type SupportedSymbol = "SOL" | "BTC" | "HYPE";
 
 const HISTORY_CACHE_TTL_MS = 60_000;
+const RESOLUTION_MS: Partial<Record<HistoryResolution, number>> = {
+  "5m": 5 * 60_000,
+  "30m": 30 * 60_000,
+  "1h": 60 * 60_000,
+  "4h": 4 * 60 * 60_000,
+  "1d": 24 * 60 * 60_000,
+  "1w": 7 * 24 * 60 * 60_000
+};
 
 type MarketHistoryResult = {
   candles: CandlePoint[];
@@ -24,6 +32,22 @@ type MarketHistoryResult = {
     sourceMarket: string | null;
     cacheHit: boolean;
     stale?: boolean;
+    coverage: {
+      requestedFrom: string;
+      requestedTo: string;
+      actualFrom: string;
+      actualTo: string;
+      closedCandleCount: number;
+      expectedCandleCount: number | null;
+      coveragePct: number | null;
+      internalGapCount: number;
+      complete: boolean;
+    };
+    pricing: {
+      requestedPair: string;
+      providerDenomination: "USD";
+      quoteTreatment: "USD proxy for USDC; no FX conversion applied";
+    };
   };
 };
 
@@ -168,8 +192,22 @@ async function fetchHistoryWindow(
     from: new Date(input.from * 1000),
     to: new Date(input.to * 1000)
   });
+  const intervalMs = RESOLUTION_MS[resolution] ?? null;
+  const closedThroughMs = Math.min(input.to * 1000, Date.now());
+  const closedCandles = history.candles.filter((candle) => {
+    const closeTimeMs = candle.closeTime?.getTime() ?? (intervalMs ? candle.openTime.getTime() + intervalMs : Number.POSITIVE_INFINITY);
+    return closeTimeMs <= closedThroughMs;
+  });
+  const internalGapCount = intervalMs ? countInternalGaps(closedCandles, intervalMs) : 0;
+  if (internalGapCount > 0) {
+    throw new Error(`Historical series contains ${internalGapCount} internal candle gap(s).`);
+  }
 
-  const candles: CandlePoint[] = history.candles.map((candle) => ({
+  if (!closedCandles.length) {
+    throw new Error(`Historical series contains no closed ${resolution} candles.`);
+  }
+
+  const candles: CandlePoint[] = closedCandles.map((candle) => ({
     time: candle.openTime.toISOString(),
     open: candle.open,
     high: candle.high,
@@ -177,6 +215,17 @@ async function fetchHistoryWindow(
     close: candle.close,
     volume: candle.volume ?? undefined
   }));
+  const actualFrom = closedCandles[0]!.openTime;
+  const actualTo = closedCandles.at(-1)!.closeTime ?? new Date(closedCandles.at(-1)!.openTime.getTime() + (intervalMs ?? 0));
+  const expectedCandleCount = intervalMs
+    ? Math.max(0, Math.floor((closedThroughMs - input.from * 1000) / intervalMs))
+    : null;
+  const coveragePct = expectedCandleCount && expectedCandleCount > 0
+    ? Math.min(100, (closedCandles.length / expectedCandleCount) * 100)
+    : null;
+  const complete = intervalMs
+    ? actualFrom.getTime() <= input.from * 1000 + intervalMs && actualTo.getTime() >= closedThroughMs - intervalMs
+    : true;
 
   const result: MarketHistoryResult = {
     candles,
@@ -190,7 +239,23 @@ async function fetchHistoryWindow(
       provider: history.meta.provider,
       sourceMarket: history.meta.sourceMarket,
       cacheHit: history.meta.cacheHit,
-      stale: history.meta.stale
+      stale: history.meta.stale,
+      coverage: {
+        requestedFrom: new Date(input.from * 1000).toISOString(),
+        requestedTo: new Date(input.to * 1000).toISOString(),
+        actualFrom: actualFrom.toISOString(),
+        actualTo: actualTo.toISOString(),
+        closedCandleCount: closedCandles.length,
+        expectedCandleCount,
+        coveragePct,
+        internalGapCount,
+        complete
+      },
+      pricing: {
+        requestedPair: `${symbol}/USDC`,
+        providerDenomination: "USD",
+        quoteTreatment: "USD proxy for USDC; no FX conversion applied"
+      }
     }
   };
 
@@ -200,4 +265,16 @@ async function fetchHistoryWindow(
   });
 
   return result;
+}
+
+function countInternalGaps(candles: Array<{ openTime: Date }>, intervalMs: number) {
+  let gapCount = 0;
+  for (let index = 1; index < candles.length; index += 1) {
+    const previous = candles[index - 1]!.openTime.getTime();
+    const current = candles[index]!.openTime.getTime();
+    if (current - previous > intervalMs * 1.5) {
+      gapCount += Math.max(1, Math.round((current - previous) / intervalMs) - 1);
+    }
+  }
+  return gapCount;
 }

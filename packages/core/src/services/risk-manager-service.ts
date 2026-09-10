@@ -46,7 +46,6 @@ export class RiskManagerService {
       return {
         allowed: false,
         reasons: ["max orders per hour reached"],
-        nextStatus: BotStatus.Paused,
         alertType: AlertType.BudgetMaxReached
       };
     }
@@ -60,17 +59,18 @@ export class RiskManagerService {
       };
     }
 
-    if (signal.side === TradeSide.Buy && order.requestedQuoteAmount > bot.config.maxDeployableUsd) {
+    if (signal.side === TradeSide.Buy && order.requestedQuoteAmount + (snapshot?.deployedQuoteAmount ?? 0) > bot.config.maxDeployableUsd) {
       reasons.push("order exceeds max deployable budget");
     }
 
-    if (!isSell && snapshot && snapshot.totalEquityUsd > 0) {
-      const drawdown = ((bot.config.totalBudgetUsd - snapshot.totalEquityUsd) / bot.config.totalBudgetUsd) * 100;
+    if (!isSell && snapshot && Number.isFinite(marketPrice.price) && marketPrice.price > 0) {
+      const markedEquityUsd = snapshot.availableQuoteAmount + snapshot.availableBaseAmount * marketPrice.price - (metadata?.externalNativeFeesQuote ?? 0);
+      const peak = Math.max(metadata?.equityHighWatermarkUsd ?? bot.config.totalBudgetUsd, snapshot.totalEquityUsd, markedEquityUsd);
+      const drawdown = peak > 0 ? ((peak - markedEquityUsd) / peak) * 100 : 0;
       if (drawdown >= bot.config.maxDrawdownPct) {
         return {
           allowed: false,
           reasons: ["max drawdown reached"],
-          nextStatus: BotStatus.Paused,
           alertType: AlertType.DrawdownThreshold
         };
       }

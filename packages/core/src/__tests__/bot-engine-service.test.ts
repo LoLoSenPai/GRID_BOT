@@ -1,14 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 
-import type { AlertRepository, AlertSink, BotStateRepository, MarketPricePort, PriceSnapshotRepository, SystemLogRepository, TradeRepository } from "../domain/contracts";
-import { AlertType, BotMode, BotStatus, ExecutionProvider, ExecutionStatus, GridType, LogLevel, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
-import type { BotAggregate, ExecutionEstimate, ExecutionReport, MarketPrice, PositionLot } from "../domain/types";
+import type { AlertRepository, AlertSink, BotStateRepository, MarketPricePort, PendingExecutionAttempt, PriceSnapshotRepository, SystemLogRepository, TradeRepository } from "../domain/contracts";
+import { AlertType, BotMode, BotStatus, ExecutionProvider, ExecutionStatus, GridType, LogLevel, OrderStatus, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
+import type { BotAggregate, ExecuteSwapParams, ExecutionEstimate, ExecutionReport, MarketPrice, PositionLot } from "../domain/types";
 import { AlertService } from "../services/alert-service";
 import { BotEngineService } from "../services/bot-engine-service";
 import { ExecutionService } from "../services/execution-service";
 import { GridStrategyService } from "../services/grid-strategy-service";
 import { MarketDataUnavailableError } from "../services/market-price-service";
 import { RiskManagerService } from "../services/risk-manager-service";
+import { PaperExecutionAdapter } from "../adapters/paper-execution-adapter";
 
 function createAggregate(overrides: {
   bot?: Partial<BotAggregate["bot"]>;
@@ -49,7 +50,8 @@ function createAggregate(overrides: {
       maxSlippageBps: 50,
       cooldownMs: 300000,
       maxOrdersPerHour: 12,
-      maxDrawdownPct: 18,
+      // Execution fixtures mix historic balances; drawdown behavior has dedicated RiskManager tests.
+      maxDrawdownPct: 100,
       maxConsecutiveFailures: 3,
       levelLockMs: 60000,
       priceConfirmationWindowMs: 10000,
@@ -114,8 +116,13 @@ function createBotRepository(aggregate: BotAggregate): BotStateRepository & {
   };
 }
 
-function createTradeRepository(): TradeRepository & Record<string, ReturnType<typeof vi.fn>> {
+type DurableTradeMocks = { [K in "getPendingExecution" | "prepareExecutionAttempt" | "saveExecutionResult" | "commitExecution"]-?: Mock<NonNullable<TradeRepository[K]>> };
+function createTradeRepository(): TradeRepository & Record<string, ReturnType<typeof vi.fn>> & DurableTradeMocks {
   return {
+    getPendingExecution: vi.fn<NonNullable<TradeRepository["getPendingExecution"]>>(async () => null),
+    prepareExecutionAttempt: vi.fn<NonNullable<TradeRepository["prepareExecutionAttempt"]>>(async (input) => ({ ...input, executionId: "exec-row-1", orderId: "order-1" })),
+    saveExecutionResult: vi.fn<NonNullable<TradeRepository["saveExecutionResult"]>>(async () => undefined),
+    commitExecution: vi.fn<NonNullable<TradeRepository["commitExecution"]>>(async () => true),
     createOrder: vi.fn(async () => ({ id: "order-1" })),
     markOrderStatus: vi.fn(async () => undefined),
     createExecution: vi.fn(async () => ({ id: "exec-row-1" })),
@@ -205,16 +212,20 @@ function createEngine({
       expectedPrice: adapterReport.effectivePrice
     } satisfies ExecutionEstimate);
 
+  const paper = new PaperExecutionAdapter();
+  const estimate = async (params: ExecuteSwapParams) => aggregate.bot.mode === BotMode.Paper && !executionEstimate && !executionReport
+    ? paper.estimateExecution(params) : adapterEstimate;
   const executionAdapter = {
     getQuote: vi.fn(),
-    estimateExecution: vi.fn(async () => adapterEstimate),
-    prepareExecution: vi.fn(async () => adapterEstimate),
-    executeSwap: vi.fn(async (_params?: unknown) => adapterReport),
-    executePreparedSwap: vi.fn(async () => {
+    estimateExecution: vi.fn(estimate),
+    prepareExecution: vi.fn(estimate),
+    executeSwap: vi.fn(async (params: ExecuteSwapParams) => aggregate.bot.mode === BotMode.Paper && !executionReport
+      ? paper.executeSwap(params) : adapterReport),
+    executePreparedSwap: vi.fn(async (_params?: ExecuteSwapParams, _prepared?: ExecutionEstimate, _previous?: ExecutionReport) => {
       if (executionError) {
         throw executionError;
       }
-      return adapterReport;
+      return aggregate.bot.mode === BotMode.Paper ? executionAdapter.executeSwap(_params!) : adapterReport;
     }),
     getExecutionReport: vi.fn()
   };
@@ -799,6 +810,7 @@ describe("BotEngineService", () => {
   it("executes the next actionable lower buy rail immediately when a drop crosses an already occupied level", async () => {
     const aggregate = createAggregate({
       config: {
+        priceConfirmationWindowMs: 0,
         totalBudgetUsd: 50,
         maxDeployableUsd: 40,
         reserveQuoteAmount: 10,
@@ -869,7 +881,7 @@ describe("BotEngineService", () => {
     );
   });
 
-  it("executes an actionable crossed buy on the same tick even when confirmation is enabled", async () => {
+  it("defers a new crossed buy while its confirmation window is still open", async () => {
     const aggregate = createAggregate({
       config: {
         totalBudgetUsd: 50,
@@ -900,7 +912,7 @@ describe("BotEngineService", () => {
       openLots: [],
     });
 
-    const { engine, tradeRepository } = createEngine({
+    const { engine, tradeRepository, botRepository } = createEngine({
       aggregate,
       marketPrice: {
         symbol: "SOL",
@@ -915,13 +927,10 @@ describe("BotEngineService", () => {
 
     await engine.runBot(aggregate.bot.id);
 
-    expect(tradeRepository.createOrder).toHaveBeenCalledWith(
-      expect.objectContaining({
-        side: TradeSide.Buy,
-        levelIndex: 0,
-        targetPrice: 82,
-      }),
-    );
+    expect(tradeRepository.createOrder).not.toHaveBeenCalled();
+    expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ pendingSignal: expect.objectContaining({ side: TradeSide.Buy }) })
+    }));
   });
 
   it("blocks a live buy when the Jupiter quote is too far above the target rail", async () => {
@@ -940,7 +949,7 @@ describe("BotEngineService", () => {
         gridType: GridType.Arithmetic,
         minOrderQuoteAmount: 10,
         maxSlippageBps: 50,
-        priceConfirmationWindowMs: 10_000
+        priceConfirmationWindowMs: 0
       },
       latestState: {
         ...createAggregate().latestState,
@@ -1015,6 +1024,7 @@ describe("BotEngineService", () => {
     const aggregate = createAggregate({
       bot: {
         mode: BotMode.Live,
+        strategyMode: StrategyMode.AccumulateUsdc,
         executionProvider: ExecutionProvider.Jupiter,
         currentPrice: 88.1
       },
@@ -1144,7 +1154,7 @@ describe("BotEngineService", () => {
         gridType: GridType.Arithmetic,
         minOrderQuoteAmount: 10,
         maxSlippageBps: 50,
-        priceConfirmationWindowMs: 10_000
+        priceConfirmationWindowMs: 0
       },
       latestState: {
         ...createAggregate().latestState,
@@ -1189,7 +1199,7 @@ describe("BotEngineService", () => {
       executionEstimate: preparedEstimate,
       executionReport: {
         provider: ExecutionProvider.Jupiter,
-        status: ExecutionStatus.Submitted,
+        status: ExecutionStatus.Filled,
         executionId: "prepared-order",
         txId: "tx-live",
         inputAmount: 12.73,
@@ -1203,9 +1213,11 @@ describe("BotEngineService", () => {
     await engine.runBot(aggregate.bot.id);
 
     expect(executionAdapter.prepareExecution).toHaveBeenCalledOnce();
-    expect(executionAdapter.executePreparedSwap).toHaveBeenCalledWith(expect.any(Object), preparedEstimate);
+    expect(executionAdapter.executePreparedSwap).toHaveBeenCalledWith(expect.any(Object), preparedEstimate, undefined);
     expect(executionAdapter.executeSwap).not.toHaveBeenCalled();
-    expect(tradeRepository.createOrder).toHaveBeenCalledOnce();
+    expect(tradeRepository.prepareExecutionAttempt).toHaveBeenCalledOnce();
+    expect(tradeRepository.commitExecution).toHaveBeenCalledOnce();
+    expect(tradeRepository.saveExecutionResult.mock.invocationCallOrder[0]).toBeLessThan(executionAdapter.executePreparedSwap.mock.invocationCallOrder[0]!);
   });
 
   it("keeps a live sell retryable when Jupiter execution is temporarily rate limited", async () => {
@@ -1294,17 +1306,10 @@ describe("BotEngineService", () => {
     expect(tradeRepository.finalizeExecution).not.toHaveBeenCalled();
     expect(tradeRepository.markOrderStatus).not.toHaveBeenCalledWith("order-1", "failed", expect.any(String));
     expect(botRepository.updateBotStatus).not.toHaveBeenCalledWith(aggregate.bot.id, BotStatus.Error);
-    expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: BotStatus.Running,
-        metadata: expect.objectContaining({
-          pendingSignal: expect.objectContaining({
-            side: TradeSide.Sell,
-            levelIndex: 5,
-          }),
-        }),
-      }),
+    expect(tradeRepository.saveExecutionResult).toHaveBeenLastCalledWith(
+      expect.any(Object), expect.objectContaining({ status: ExecutionStatus.Unknown }), true
     );
+    expect(tradeRepository.commitExecution).not.toHaveBeenCalled();
     expect(logRepository.writeLog).toHaveBeenCalledWith(
       expect.objectContaining({
         level: LogLevel.Warn,
@@ -1583,7 +1588,7 @@ describe("BotEngineService", () => {
     );
   });
 
-  it("catches up multiple already exceeded sells during one fast upward move", async () => {
+  it.each([false, true])("catches up exceeded sells with distinct order keys (shared exit rail: %s)", async (sharedExit) => {
     const openedAt = new Date("2026-04-17T10:00:00.000Z");
     const aggregate = createAggregate({
       bot: {
@@ -1603,7 +1608,7 @@ describe("BotEngineService", () => {
       },
       latestState: {
         ...createAggregate().latestState,
-        currentPrice: 83.5,
+        currentPrice: sharedExit ? 87.5 : 83.5,
         availableQuoteAmount: 20,
         availableBaseAmount: 0.240998,
         deployedQuoteAmount: 20,
@@ -1619,7 +1624,7 @@ describe("BotEngineService", () => {
             },
             "2": {
               buyLevelIndex: 2,
-              sellLevelIndex: 3,
+              sellLevelIndex: sharedExit ? 2 : 3,
               lotId: "lot-2",
               openedAt: openedAt.toISOString(),
             },
@@ -1734,10 +1739,12 @@ describe("BotEngineService", () => {
       2,
       expect.objectContaining({
         side: TradeSide.Sell,
-        levelIndex: 3,
+        levelIndex: sharedExit ? 2 : 3,
       }),
     );
     expect(executionAdapter.executeSwap).toHaveBeenCalledTimes(2);
+    const keys = vi.mocked(tradeRepository.createOrder).mock.calls.map(([order]) => order.orderKey);
+    expect(new Set(keys).size).toBe(2);
   });
 
   it("creates a simulated execution and enters cooldown after a confirmed signal", async () => {
@@ -1781,13 +1788,14 @@ describe("BotEngineService", () => {
     expect(tradeRepository.createOrder).toHaveBeenCalledOnce();
     expect(tradeRepository.createExecution).toHaveBeenCalledOnce();
     expect(executionAdapter.executeSwap).toHaveBeenCalledOnce();
+    expect(executionAdapter.executeSwap).toHaveBeenCalledWith(expect.objectContaining({ referencePrice: 118 }));
     expect(tradeRepository.markOrderStatus).toHaveBeenCalledWith("order-1", "simulated");
     expect(tradeRepository.replaceLots).toHaveBeenCalledWith(
       aggregate.bot.id,
       expect.arrayContaining([
         expect.objectContaining<Partial<PositionLot>>({
           botId: aggregate.bot.id,
-          remainingBaseAmount: 0.4
+          remainingBaseAmount: Number((250 / 118 * 0.995).toFixed(8))
         })
       ])
     );
@@ -2013,7 +2021,7 @@ describe("BotEngineService", () => {
 
     await engine.runBot(aggregate.bot.id);
 
-    expect(tradeRepository.replaceLots).toHaveBeenCalledWith("bot-1", []);
+    expect(tradeRepository.replaceLots).toHaveBeenCalledWith("bot-1", [expect.objectContaining({ kind: "retained", remainingBaseAmount: 0.14893617, costQuote: 0 })]);
     expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({
         availableBaseAmount: 0.14893617,
@@ -2143,7 +2151,8 @@ describe("BotEngineService", () => {
     };
     const executionAdapter = {
       getQuote: vi.fn(),
-      estimateExecution: vi.fn(),
+      estimateExecution: vi.fn(async () => ({ provider: ExecutionProvider.Paper, inputMint: "USDC", outputMint: "SOL",
+        inputAmount: 50, expectedOutputAmount: 0.61, estimatedFeeAmount: 0.05, expectedPrice: 50 / 0.61, priceImpactPct: 0 })),
       executeSwap: vi.fn(async () => ({
         provider: ExecutionProvider.Paper,
         status: ExecutionStatus.Simulated,
@@ -2181,5 +2190,214 @@ describe("BotEngineService", () => {
     await engine.runBot(aggregate.bot.id);
 
     expect(tradeRepository.createOrder).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe("paper execution cost guards", () => {
+  it.each(["reserve", "deployment"])("blocks a paper buy whose principal fits but fees exceed %s", async (limit) => {
+    const aggregate = createAggregate({
+      config: { totalBudgetUsd: 1000, maxDeployableUsd: limit === "reserve" ? 300 : 250,
+        reserveQuoteAmount: limit === "reserve" ? 500 : 0, minOrderQuoteAmount: 50 },
+      latestState: { availableQuoteAmount: limit === "reserve" ? 550 : 1000,
+        deployedQuoteAmount: limit === "reserve" ? 0 : 200, availableBaseAmount: 0,
+        currentPrice: 121, totalEquityUsd: 1000, metadata: { levelLocks: {}, recenterHistory: [], recentExecutions: [],
+          pendingSignal: { levelIndex: 2, side: TradeSide.Buy,
+            firstObservedAt: new Date(Date.now() - 20_000).toISOString(), lastObservedPrice: 118 } } }
+    });
+    const { engine, tradeRepository, logRepository, executionAdapter } = createEngine({ aggregate,
+      marketPrice: { symbol: "SOL", pair: "SOL/USDC", price: 118, confidence: 0,
+        source: "test", timestamp: new Date(), feedId: "test" } });
+    await engine.runBot(aggregate.bot.id);
+    expect(executionAdapter.prepareExecution).toHaveBeenCalled();
+    expect(tradeRepository.createOrder).not.toHaveBeenCalled();
+    expect(executionAdapter.executeSwap).not.toHaveBeenCalled();
+    expect(logRepository.writeLog).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining("input and fees exceed") }));
+  });
+});
+
+function pendingBuy(): PendingExecutionAttempt {
+  return { botId: "bot-1", orderId: "order-durable", executionId: "execution-durable",
+    signal: { side: TradeSide.Buy, levelIndex: 0, levelPrice: 100, observedPrice: 100,
+      triggeredAt: new Date("2026-09-10T10:00:00Z"), idempotencyKey: "durable-buy" },
+    orderIntent: { botId: "bot-1", orderKey: "durable-buy", side: TradeSide.Buy, levelIndex: 0,
+      targetPrice: 100, requestedBaseAmount: 0, requestedQuoteAmount: 10, status: OrderStatus.Created, reason: "test" },
+    executionParams: { botId: "bot-1", inputMint: "USDC", outputMint: "SOL", amount: 10,
+      inputDecimals: 6, outputDecimals: 9, slippageBps: 50, tradeSide: TradeSide.Buy,
+      clientOrderId: "durable-buy", referencePrice: 100 },
+    preparedExecution: { provider: ExecutionProvider.Jupiter, inputMint: "USDC", outputMint: "SOL",
+      inputAmount: 10, expectedOutputAmount: 0.1, expectedPrice: 100, estimatedFeeAmount: 0,
+      priceImpactPct: 0, requestId: "immutable-order", rawQuote: { signedTransaction: "same-signed-bytes", txId: "tx-durable" } }
+  };
+}
+const durableFill: ExecutionReport = { provider: ExecutionProvider.Jupiter, status: ExecutionStatus.Filled,
+  executionId: "immutable-order", txId: "tx-durable", inputAmount: 10, outputAmount: 0.1,
+  effectivePrice: 100, feeAmount: 0 };
+function durableHarness(aggregate = createAggregate({ bot: { mode: BotMode.Live, executionProvider: ExecutionProvider.Jupiter },
+  latestState: { availableBaseAmount: 0, availableQuoteAmount: 2000, deployedQuoteAmount: 0 }, openLots: [] })) {
+  return createEngine({ aggregate, marketPrice: { symbol: "SOL", pair: "SOL/USDC", price: 100,
+    confidence: 0, source: "test", timestamp: new Date(), feedId: "test" },
+    marketPriceError: new Error("Market data is down"), executionReport: durableFill, liveTradingEnabled: true });
+}
+
+describe("durable execution recovery", () => {
+  it("does no market lookup or new order when recovery polling races with an already resolved attempt", async () => {
+    const harness = durableHarness();
+    harness.tradeRepository.getPendingExecution.mockResolvedValue(null);
+    await harness.engine.runBot("bot-1", { recoveryOnly: true });
+    expect(harness.executionAdapter.prepareExecution).not.toHaveBeenCalled();
+    expect(harness.tradeRepository.createOrder).not.toHaveBeenCalled();
+    expect(harness.tradeRepository.prepareExecutionAttempt).not.toHaveBeenCalled();
+    // The harness market provider throws: an attempted market lookup would report an engine error.
+    expect(harness.logRepository.writeLog).not.toHaveBeenCalled();
+  });
+  it("preserves a saved Success through the uncertainty marker and bypasses the failure-only RPC check", async () => {
+    const harness = durableHarness();
+    const executeResponse = { status: "Success", code: 0, signature: "tx-durable", totalInputAmount: "10000000", totalOutputAmount: "100000000" };
+    harness.tradeRepository.getPendingExecution.mockResolvedValue({ ...pendingBuy(), wasUncertain: true,
+      result: { ...durableFill, status: ExecutionStatus.Unknown, rawReport: { executeResponse } } });
+    await harness.engine.runBot("bot-1");
+    expect(harness.executionAdapter.getExecutionReport).not.toHaveBeenCalled();
+    expect(harness.tradeRepository.saveExecutionResult.mock.calls[0]?.[1].rawReport).toEqual(expect.objectContaining({ executeResponse }));
+    expect(harness.executionAdapter.executePreparedSwap.mock.calls[0]?.[2]?.rawReport).toEqual({ executeResponse });
+    expect(harness.tradeRepository.commitExecution).toHaveBeenCalledOnce();
+  });
+  it("resumes identical signed bytes after restart without preparing a new order, even with price feed down", async () => {
+    let stored: PendingExecutionAttempt | null = pendingBuy();
+    const first = durableHarness();
+    first.tradeRepository.getPendingExecution.mockImplementation(async () => stored);
+    first.tradeRepository.saveExecutionResult.mockImplementation(async (attempt, result, uncertain) => {
+      stored = { ...attempt, result, wasUncertain: uncertain };
+    });
+    first.executionAdapter.executePreparedSwap.mockRejectedValueOnce(new Error("response lost"));
+    await first.engine.runBot("bot-1");
+    expect(stored?.result?.status).toBe(ExecutionStatus.Unknown);
+    expect(first.tradeRepository.commitExecution).not.toHaveBeenCalled();
+    const restarted = durableHarness();
+    restarted.tradeRepository.getPendingExecution.mockImplementation(async () => stored);
+    restarted.tradeRepository.saveExecutionResult.mockImplementation(first.tradeRepository.saveExecutionResult.getMockImplementation()!);
+    restarted.tradeRepository.commitExecution.mockImplementation(async () => { stored = null; return true; });
+    await restarted.engine.runBot("bot-1");
+    expect(restarted.executionAdapter.prepareExecution).not.toHaveBeenCalled();
+    expect(restarted.executionAdapter.executePreparedSwap.mock.calls[0]?.[1]).toEqual(pendingBuy().preparedExecution);
+    expect(restarted.tradeRepository.commitExecution).toHaveBeenCalledOnce();
+    expect(restarted.tradeRepository.commitExecution.mock.calls[0]?.[0].snapshot.availableBaseAmount).toBe(0.1);
+    expect(stored).toBeNull();
+  });
+
+  it("does not release an uncertain attempt when an API later returns Failed without chain proof", async () => {
+    const harness = durableHarness();
+    harness.tradeRepository.getPendingExecution.mockResolvedValue({ ...pendingBuy(), wasUncertain: true });
+    harness.executionAdapter.executePreparedSwap.mockResolvedValue({ ...durableFill, status: ExecutionStatus.Failed });
+    await harness.engine.runBot("bot-1");
+    expect(harness.tradeRepository.commitExecution).not.toHaveBeenCalled();
+    expect(harness.tradeRepository.saveExecutionResult).toHaveBeenLastCalledWith(expect.any(Object),
+      expect.objectContaining({ status: ExecutionStatus.Unknown, inputAmount: 0 }), true);
+  });
+
+  it("does not send when the durable uncertainty marker cannot be saved", async () => {
+    const harness = durableHarness();
+    harness.tradeRepository.getPendingExecution.mockResolvedValue(pendingBuy());
+    harness.tradeRepository.saveExecutionResult.mockRejectedValue(new Error("database unavailable"));
+    await harness.engine.runBot("bot-1");
+    expect(harness.executionAdapter.executePreparedSwap).not.toHaveBeenCalled();
+  });
+
+  it("retries only accounting after a confirmed fill and a commit interruption", async () => {
+    let stored: PendingExecutionAttempt = pendingBuy();
+    const first = durableHarness();
+    first.tradeRepository.getPendingExecution.mockImplementation(async () => stored);
+    first.tradeRepository.saveExecutionResult.mockImplementation(async (attempt, result, uncertain) => {
+      stored = { ...attempt, result, wasUncertain: uncertain };
+    });
+    first.tradeRepository.commitExecution.mockRejectedValueOnce(new Error("commit rolled back"));
+    await first.engine.runBot("bot-1");
+    expect(stored.result?.status).toBe(ExecutionStatus.Filled);
+    const second = durableHarness();
+    second.tradeRepository.getPendingExecution.mockResolvedValue(stored);
+    await second.engine.runBot("bot-1");
+    expect(second.executionAdapter.executePreparedSwap).not.toHaveBeenCalled();
+    expect(second.tradeRepository.commitExecution).toHaveBeenCalledOnce();
+  });
+
+  it("records a chain-proven failed attempt once, increments failures and preserves a user pause", async () => {
+    const aggregate = createAggregate({ bot: { mode: BotMode.Live, status: BotStatus.Paused, executionProvider: ExecutionProvider.Jupiter } });
+    const harness = durableHarness(aggregate);
+    harness.tradeRepository.getPendingExecution.mockResolvedValue({ ...pendingBuy(), wasUncertain: true,
+      result: { ...durableFill, status: ExecutionStatus.Unknown } });
+    harness.executionAdapter.getExecutionReport.mockResolvedValue({ ...durableFill, status: ExecutionStatus.Failed,
+      inputAmount: 0, outputAmount: 0, rawReport: { rpcStatus: { err: "rejected" } } });
+    await harness.engine.runBot("bot-1");
+    expect(harness.executionAdapter.executePreparedSwap).not.toHaveBeenCalled();
+    expect(harness.tradeRepository.commitExecution).toHaveBeenCalledWith(expect.objectContaining({
+      snapshot: expect.objectContaining({ status: BotStatus.Paused, consecutiveFailures: 1 }) }));
+  });
+
+  it("accounts actual native gas as an attributed expense without inventing a USDC debit", async () => {
+    const harness = durableHarness();
+    harness.tradeRepository.getPendingExecution.mockResolvedValue({ ...pendingBuy(), result: {
+      ...durableFill, nativeFeeSymbol: "SOL", nativeFeeAmount: 0.001 } });
+    await harness.engine.runBot("bot-1");
+    const snapshot = harness.tradeRepository.commitExecution.mock.calls[0]![0].snapshot;
+    expect(snapshot.availableQuoteAmount).toBe(1990);
+    expect(snapshot.availableBaseAmount).toBe(0.1);
+    // Recovery uses the last known mark 120; gas is paid from the wallet reserve outside the bot's swap balances.
+    expect(snapshot.metadata.externalNativeFeesQuote).toBe(0.12);
+    expect(snapshot.totalEquityUsd).toBe(2001.88);
+  });
+});
+
+describe("persisted auto-recenter", () => {
+  const price: MarketPrice = { symbol: "SOL", pair: "SOL/USDC", price: 180, source: "test", confidence: 0, timestamp: new Date(), feedId: "test" };
+  it("requires a distinct source observation for live recenter even after the time window", async () => {
+    const firstSource = new Date(Date.now() - 60_000);
+    const aggregate = createAggregate({ bot: { mode: BotMode.Live, executionProvider: ExecutionProvider.Jupiter },
+      config: { recenterMode: RecenterMode.Auto }, latestState: {
+        metadata: { levelLocks: {}, recentExecutions: [], recenterHistory: [], outsideSide: "above",
+          outsideSince: firstSource.toISOString(), outsideSourceObservedAt: firstSource.toISOString() } }, openLots: [] });
+    const first = createEngine({ aggregate, marketPrice: { ...price, sourceObservedAt: firstSource }, liveTradingEnabled: true });
+    first.botRepository.updateRange = vi.fn(async () => undefined);
+    await first.engine.runBot("bot-1");
+    expect(first.botRepository.updateRange).not.toHaveBeenCalled();
+    const advanced = createEngine({ aggregate, marketPrice: { ...price, sourceObservedAt: new Date() }, liveTradingEnabled: true });
+    advanced.botRepository.updateRange = vi.fn(async () => undefined);
+    await advanced.engine.runBot("bot-1");
+    expect(advanced.botRepository.updateRange).toHaveBeenCalledOnce();
+  });
+  it("saves real bounds and cleared grid state before reporting success", async () => {
+    const aggregate = createAggregate({ config: { recenterMode: RecenterMode.Auto }, latestState: {
+      metadata: { levelLocks: {}, recentExecutions: [], recenterHistory: [], outsideSide: "above",
+        outsideSince: new Date(Date.now() - 60_000).toISOString() } }, openLots: [] });
+    const harness = createEngine({ aggregate, marketPrice: price });
+    const updateRange = vi.fn(async () => undefined);
+    harness.botRepository.updateRange = updateRange;
+    await harness.engine.runBot("bot-1");
+    expect(updateRange).toHaveBeenCalledWith("bot-1", { lowPrice: 141, highPrice: 201 }, expect.objectContaining({
+      status: BotStatus.Running, metadata: expect.objectContaining({ outsideSince: null, gridCycles: {} }) }));
+    expect(harness.alert.createAlert).toHaveBeenCalledWith(expect.objectContaining({ type: AlertType.RecenterPerformed }));
+    expect(updateRange.mock.invocationCallOrder[0]).toBeLessThan(harness.alert.createAlert.mock.invocationCallOrder[0]!);
+  });
+  it("does not announce a recenter when atomic persistence fails", async () => {
+    const aggregate = createAggregate({ config: { recenterMode: RecenterMode.Auto }, latestState: {
+      metadata: { levelLocks: {}, recentExecutions: [], recenterHistory: [], outsideSide: "above",
+        outsideSince: new Date(Date.now() - 60_000).toISOString() } }, openLots: [] });
+    const harness = createEngine({ aggregate, marketPrice: price });
+    harness.botRepository.updateRange = vi.fn(async () => { throw new Error("rollback"); });
+    await harness.engine.runBot("bot-1");
+    expect(harness.alert.createAlert).not.toHaveBeenCalledWith(expect.objectContaining({ type: AlertType.RecenterPerformed }));
+  });
+  it("keeps existing rails while an unsold trading lot still exists", async () => {
+    const aggregate = createAggregate({ config: { recenterMode: RecenterMode.Auto }, latestState: {
+      metadata: { levelLocks: {}, recentExecutions: [], recenterHistory: [], outsideSide: "below",
+        outsideSince: new Date(Date.now() - 60_000).toISOString() } }, openLots: [{ id: "held", botId: "bot-1",
+        originalBaseAmount: 1, remainingBaseAmount: 1, costQuote: 120, entryPrice: 120, openedByExecutionId: "past",
+        openedAt: new Date(), closedAt: null, closedByExecutionId: null }] });
+    const harness = createEngine({ aggregate, marketPrice: { ...price, price: 80 } });
+    const updateRange = vi.fn(async () => undefined); harness.botRepository.updateRange = updateRange;
+    await harness.engine.runBot("bot-1");
+    expect(updateRange).not.toHaveBeenCalled();
+    expect(harness.tradeRepository.createOrder).not.toHaveBeenCalled();
+    expect(harness.botRepository.createStateSnapshot).toHaveBeenCalledWith(expect.objectContaining({ status: BotStatus.OutOfRange }));
   });
 });

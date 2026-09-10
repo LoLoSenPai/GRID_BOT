@@ -44,7 +44,7 @@ function normalizeSelectedLotsToRuntimeState(
   const baseScale =
     availableBaseAmount > 0 &&
     totalBaseAmount > 0 &&
-    Math.abs(totalBaseAmount - availableBaseAmount) > getBaseTolerance(availableBaseAmount)
+    totalBaseAmount - availableBaseAmount > getBaseTolerance(availableBaseAmount)
       ? availableBaseAmount / totalBaseAmount
       : 1;
   const quoteScale =
@@ -71,7 +71,7 @@ function normalizeSelectedLotsToRuntimeState(
   });
 }
 
-export function reconcileOpenPositionLots(
+function reconcileTradingPositionLots(
   lots: PositionLot[],
   runtime?: Pick<BotStateSnapshot, "deployedQuoteAmount" | "availableBaseAmount"> | null
 ) {
@@ -128,4 +128,17 @@ export function reconcileOpenPositionLots(
     selected.sort((left, right) => left.openedAt.getTime() - right.openedAt.getTime()),
     runtime
   );
+}
+
+/** Retained inventory has no trading cost basis and must never inflate sellable lots. */
+export function reconcileOpenPositionLots(
+  lots: PositionLot[], runtime?: Pick<BotStateSnapshot, "deployedQuoteAmount" | "availableBaseAmount"> | null
+) {
+  const retained = lots.filter((lot) => lot.kind === "retained" && lot.remainingBaseAmount > 0 && !lot.closedAt);
+  const retainedBase = retained.reduce((sum, lot) => sum + lot.remainingBaseAmount, 0);
+  if (runtime && retainedBase > runtime.availableBaseAmount + getBaseTolerance(runtime.availableBaseAmount)) {
+    throw new Error("Retained inventory exceeds persisted holdings; reconciliation is required.");
+  }
+  const tradingRuntime = runtime ? { ...runtime, availableBaseAmount: Math.max(0, runtime.availableBaseAmount - retainedBase) } : runtime;
+  return [...reconcileTradingPositionLots(lots.filter((lot) => lot.kind !== "retained"), tradingRuntime), ...retained];
 }

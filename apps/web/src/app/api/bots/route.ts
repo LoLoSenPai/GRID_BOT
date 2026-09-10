@@ -60,6 +60,7 @@ export async function POST(request: Request) {
           totalBudgetUsd: parsed.totalBudgetUsd,
           maxDeployableUsd: parsed.maxDeployableUsd,
           reserveQuoteAmount: parsed.reserveQuoteAmount,
+          entryMode: parsed.entryMode as never,
           lowPrice: parsed.lowPrice,
           highPrice: parsed.highPrice,
           levelCount: parsed.levelCount,

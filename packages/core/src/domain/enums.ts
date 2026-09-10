@@ -47,6 +47,7 @@ export enum ExecutionProvider {
 export enum ExecutionStatus {
   Pending = "pending",
   Submitted = "submitted",
+  Unknown = "unknown",
   Filled = "filled",
   Failed = "failed",
   Simulated = "simulated"

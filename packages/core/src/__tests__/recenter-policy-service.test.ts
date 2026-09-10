@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { MarketRegimeAssessment, RecenterPolicyInput } from "../domain/types";
-import { RecenterPolicyService } from "../services/recenter-policy-service";
+import { canApplyRangeChange, RecenterPolicyService } from "../services/recenter-policy-service";
 
 const service = new RecenterPolicyService();
 
@@ -68,7 +68,7 @@ describe("RecenterPolicyService", () => {
     expect(decision.allowRecoverySells).toBe(true);
     expect(decision.suggestedLowPrice).toBeGreaterThan(100);
     expect(decision.suggestedHighPrice).toBeGreaterThan(110);
-    expect(decision.operatorAction).toMatch(/free rails/i);
+    expect(decision.operatorAction).toMatch(/keep existing rails/i);
   });
 
   it("avoids shifting the range during chaotic high volatility", () => {
@@ -116,5 +116,18 @@ describe("RecenterPolicyService", () => {
     expect(decision.side).toBe("below");
     expect(decision.risk).toBe("high");
     expect(decision.allowRecoverySells).toBe(true);
+  });
+});
+
+
+describe("shared range-change frequency guard", () => {
+  const input = { now: new Date("2026-09-10T18:00:00Z"), lastRecenterAt: null as Date | null,
+    recenterHistory: [] as string[], minIntervalMs: 6 * 3_600_000, maxPerDay: 2, openCycleCount: 0 };
+  it("preserves exits and enforces the minimum interval and UTC daily count", () => {
+    expect(canApplyRangeChange(input)).toBe(true);
+    expect(canApplyRangeChange({ ...input, openCycleCount: 1 })).toBe(false);
+    expect(canApplyRangeChange({ ...input, lastRecenterAt: new Date("2026-09-10T14:00:00Z") })).toBe(false);
+    expect(canApplyRangeChange({ ...input, recenterHistory: ["2026-09-10T00:00:00Z", "2026-09-10T07:00:00Z"] })).toBe(false);
+    expect(canApplyRangeChange({ ...input, recenterHistory: ["2026-09-09T00:00:00Z", "2026-09-10T07:00:00Z"] })).toBe(true);
   });
 });

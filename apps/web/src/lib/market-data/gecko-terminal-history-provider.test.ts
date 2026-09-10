@@ -72,6 +72,36 @@ describe("GeckoTerminalHistoryProvider", () => {
     expect(url).toContain("aggregate=15");
   });
 
+  it("excludes the currently open candle", async () => {
+    const rows = [
+      [at("2026-08-20T10:05:00.000Z"), 82.2, 82.5, 82.1, 82.4, 120],
+      [at("2026-08-20T10:00:00.000Z"), 82, 82.3, 81.9, 82.2, 100]
+    ];
+    const fetchFn = vi.fn<typeof fetch>(async () => response(rows));
+    const provider = new GeckoTerminalHistoryProvider({
+      fetchFn,
+      maxPages: 1,
+      retryDelaysMs: [],
+      now: () => new Date("2026-08-20T10:07:00.000Z")
+    });
+
+    const result = await provider.getHistory(baseRequest);
+
+    expect(result.candles).toHaveLength(1);
+    expect(result.candles[0]?.openTime).toEqual(new Date("2026-08-20T10:00:00.000Z"));
+  });
+
+  it("rejects internal source candle gaps", async () => {
+    const rows = [
+      [at("2026-08-20T10:10:00.000Z"), 82.2, 82.5, 82.1, 82.4, 120],
+      [at("2026-08-20T10:00:00.000Z"), 82, 82.3, 81.9, 82.2, 100]
+    ];
+    const fetchFn = vi.fn<typeof fetch>(async () => response(rows));
+    const provider = new GeckoTerminalHistoryProvider({ fetchFn, maxPages: 1, retryDelaysMs: [] });
+
+    await expect(provider.getHistory(baseRequest)).rejects.toThrow("internal gap");
+  });
+
   it("rejects a pool response that does not contain USDC", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () =>
       new Response(

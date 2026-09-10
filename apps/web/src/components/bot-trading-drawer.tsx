@@ -117,7 +117,9 @@ export function BotTradingDrawer({
                           <span
                             className={cn(
                               "inline-flex rounded border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em]",
-                              execution.side === "buy"
+                              execution.status === "unknown"
+                                ? "border-[color:rgba(248,200,108,0.18)] bg-[color:rgba(248,200,108,0.08)] text-[var(--amber)]"
+                                : execution.side === "buy"
                                 ? "border-[color:rgba(68,211,156,0.18)] bg-[color:rgba(68,211,156,0.08)] text-[var(--green)]"
                                 : "border-[color:rgba(255,107,122,0.18)] bg-[color:rgba(255,107,122,0.08)] text-[var(--red)]"
                             )}
@@ -126,10 +128,18 @@ export function BotTradingDrawer({
                           </span>
                           <span className="text-sm font-medium text-white">{formatLevelLabel(execution.levelIndex)}</span>
                         </div>
-                        <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">{execution.status}</div>
+                        <div className={cn("font-mono text-[11px] uppercase tracking-[0.16em]", execution.status === "unknown" ? "text-[var(--amber)]" : "text-[var(--muted)]")}>
+                          {execution.status === "unknown" ? "result uncertain · orders held" : execution.status}
+                        </div>
                       </div>
 
                       <div className="mt-3 text-sm font-medium text-white">{tradeDisplay.compact}</div>
+                      {execution.status === "unknown" ? (
+                        <div className="mt-2 flex items-start gap-2 text-xs text-[var(--amber)]">
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <span>Executed amounts are unavailable. The bot holds new orders until reconciliation.</span>
+                        </div>
+                      ) : null}
                       <div className="mt-2 grid gap-2 text-sm text-[var(--muted)] md:grid-cols-2">
                         <div>Target {formatNumber(execution.targetPrice, 2)}</div>
                         <div>{execution.effectivePrice ? `Route @ ${formatNumber(execution.effectivePrice, 2)}` : "Route @ --"}</div>
@@ -191,7 +201,7 @@ export function BotTradingDrawer({
                         <div>Target {formatNumber(order.targetPrice, 2)}</div>
                         <div>{formatDateTime(order.time)}</div>
                         <div>Reason {order.reason.replaceAll("_", " ")}</div>
-                        <div>{order.execution ? `Execution ${order.execution.status}` : "Awaiting execution"}</div>
+                        <div>{order.execution?.status === "unknown" ? "Execution result uncertain · orders held" : order.execution ? `Execution ${order.execution.status}` : "Awaiting execution"}</div>
                       </div>
                       {order.execution ? (
                         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-[var(--muted)]">

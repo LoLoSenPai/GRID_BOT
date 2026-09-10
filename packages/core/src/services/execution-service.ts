@@ -1,5 +1,5 @@
 import { BotMode, ExecutionProvider } from "../domain/enums";
-import type { ExecuteSwapParams, ExecutionEstimate, ExecutionQuote } from "../domain/types";
+import type { ExecuteSwapParams, ExecutionEstimate, ExecutionQuote, ExecutionReport } from "../domain/types";
 import type { ExecutionAdapter } from "../adapters/execution-adapter";
 import type { Bot } from "../domain/types";
 
@@ -38,10 +38,10 @@ export class ExecutionService {
     return this.getAdapter(bot).executeSwap(params);
   }
 
-  async executePreparedSwap(bot: Bot, params: ExecuteSwapParams, preparedExecution?: ExecutionEstimate) {
+  async executePreparedSwap(bot: Bot, params: ExecuteSwapParams, preparedExecution?: ExecutionEstimate, previousReport?: ExecutionReport) {
     const adapter = this.getAdapter(bot);
     if (preparedExecution && adapter.executePreparedSwap) {
-      return adapter.executePreparedSwap(params, preparedExecution);
+      return adapter.executePreparedSwap(params, preparedExecution, previousReport);
     }
 
     return adapter.executeSwap(params);

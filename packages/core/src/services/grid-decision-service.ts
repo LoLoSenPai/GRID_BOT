@@ -52,7 +52,9 @@ export class GridDecisionService {
     });
     const recoveringFromOutOfRange = this.isRecoveringFromOutOfRange(input.botStatus, input.latestStatus);
 
-    if (actionableSignal && !(recoveringFromOutOfRange && actionableSignal.side === TradeSide.Buy)) {
+    // Confirmation gates new exposure only. Recovery exits remain immediately available.
+    if (actionableSignal && (actionableSignal.side === TradeSide.Sell ||
+        (!recoveringFromOutOfRange && input.priceConfirmationWindowMs <= 0))) {
       return this.materializeCrossedSignal(input.botId, actionableSignal, input.now);
     }
 
@@ -85,11 +87,11 @@ export class GridDecisionService {
       return null;
     }
 
-    if (input.now.getTime() - new Date(pending.firstObservedAt).getTime() < input.priceConfirmationWindowMs) {
+    if (pending.side === TradeSide.Buy && !this.confirmationElapsed(pending, input.now, input.priceConfirmationWindowMs)) {
       return null;
     }
 
-    return {
+    const candidate = {
       levelIndex: pending.levelIndex,
       side: pending.side,
       levelPrice: pendingLevel.price,
@@ -97,10 +99,16 @@ export class GridDecisionService {
       idempotencyKey: `${input.botId}:${pending.side}:${pending.levelIndex}:${pending.firstObservedAt}`,
       triggeredAt: input.now
     };
+    return input.canBuildOrder(candidate) ? candidate : null;
   }
 
   resolvePendingSignal(input: PendingSignalInput): PendingSignal | null {
-    const crossed = this.selectActionableCrossedSignal({
+    const boundaryLevel = input.levels[0];
+    const boundary: TriggerSignal | null = boundaryLevel && this.priceStillConfirms(TradeSide.Buy, boundaryLevel.price, input.currentPrice)
+      ? { levelIndex: boundaryLevel.index, side: TradeSide.Buy, levelPrice: boundaryLevel.price,
+          observedPrice: input.currentPrice, idempotencyKey: `probe:${input.botId}:boundary`, triggeredAt: input.now }
+      : null;
+    const crossed = boundary && input.canBuildOrder(boundary) ? boundary : this.selectActionableCrossedSignal({
       botId: input.botId,
       crossedSignals: input.crossedSignals,
       now: input.now,
@@ -133,6 +141,8 @@ export class GridDecisionService {
       return null;
     }
 
+    if (!input.canBuildOrder({ levelIndex: pending.levelIndex, side: pending.side, levelPrice: pendingLevel.price,
+      observedPrice: input.currentPrice, idempotencyKey: `probe:${input.botId}:pending`, triggeredAt: input.now })) return null;
     return {
       ...pending,
       lastObservedPrice: input.currentPrice
@@ -178,7 +188,18 @@ export class GridDecisionService {
       return null;
     }
 
+    if (input.priceConfirmationWindowMs > 0) {
+      const pending = input.pendingSignal;
+      if (!pending || pending.side !== TradeSide.Buy || pending.levelIndex !== boundaryLevel.index ||
+          !this.confirmationElapsed(pending, input.now, input.priceConfirmationWindowMs)) return null;
+      candidate.idempotencyKey = `${input.botId}:boundary:buy:${boundaryLevel.index}:${pending.firstObservedAt}`;
+    }
     return candidate;
+  }
+
+  private confirmationElapsed(pending: PendingSignal, now: Date, windowMs: number) {
+    const elapsed = now.getTime() - new Date(pending.firstObservedAt).getTime();
+    return Number.isFinite(elapsed) && elapsed >= Math.max(0, windowMs);
   }
 
   priceStillConfirms(side: TradeSide, levelPrice: number, currentPrice: number): boolean {

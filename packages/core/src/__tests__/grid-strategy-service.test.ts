@@ -170,8 +170,9 @@ describe("GridStrategyService", () => {
       }
     );
 
-    expect(order?.requestedQuoteAmount).toBe(100);
-    expect(order?.requestedBaseAmount).toBeCloseTo(0.89285714, 6);
+    expect(order?.requestedQuoteAmount).toBe(100.6);
+    expect(order?.requestedBaseAmount).toBeCloseTo(100 / (112 * 0.994), 6);
+    expect(order!.requestedBaseAmount * 112 * 0.994).toBeGreaterThanOrEqual(100);
     expect(order?.matchedLotIds).toEqual(["lot-1"]);
   });
 
@@ -222,8 +223,8 @@ describe("GridStrategyService", () => {
       }
     );
 
-    expect(order?.requestedQuoteAmount).toBe(106);
-    expect(order?.requestedBaseAmount).toBeCloseTo(0.94642857, 6);
+    expect(order?.requestedQuoteAmount).toBe(106.3);
+    expect(order?.requestedBaseAmount).toBeCloseTo((100 + (112 * 0.994 - 100) / 2) / (112 * 0.994), 6);
   });
 
   it("builds an accumulate_usdc sell that exits the profitable lot", () => {

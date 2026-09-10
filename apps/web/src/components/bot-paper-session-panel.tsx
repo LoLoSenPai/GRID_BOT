@@ -138,7 +138,11 @@ export function BotPaperSessionPanel({
           label="Last paper activity"
           value={lastActivityAt ? `${formatDateTime(lastActivityAt)}${bot.paperSession.latestExecutionStatus ? ` | ${bot.paperSession.latestExecutionStatus}` : ""}` : "No execution yet"}
         />
-        <MetricReadout label="Last sim trade" value={latestTradeSummary} tone={bot.paperSession.latestExecutionStatus ? "green" : "default"} />
+        <MetricReadout
+          label="Last sim trade"
+          value={latestTradeSummary}
+          tone={bot.paperSession.latestExecutionStatus === "unknown" ? "amber" : bot.paperSession.latestExecutionStatus ? "green" : "default"}
+        />
         <MetricReadout
           label="Failure streak"
           value={String(bot.runtime.consecutiveFailures)}
@@ -220,6 +224,10 @@ function describeLatestTrade(bot: {
     latestOrderSide: string | null;
   };
 }) {
+  if (bot.paperSession.latestExecutionStatus === "unknown") {
+    return "Result uncertain; executed amounts unavailable and new orders held";
+  }
+
   if (!bot.paperSession.latestExecutionStatus || bot.paperSession.latestExecutionInputAmount === null || bot.paperSession.latestExecutionOutputAmount === null) {
     return "No paper trade yet";
   }

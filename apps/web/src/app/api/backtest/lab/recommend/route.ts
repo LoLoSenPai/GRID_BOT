@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { BacktestLabService } from "@grid-bot/core";
 
 import { readSession } from "@/lib/auth";
+import { resolveExecutionCosts } from "@/lib/backtest-cost-resolution";
 import { fetchExecutionCostCalibration } from "@/lib/backtest-execution-cost";
 import { parseBacktestRecommendRequest } from "@/lib/backtest-lab";
 import { buildAdaptiveRangePlan, buildStrategySelection, fetchBacktestSeries } from "@/lib/backtest-lab-server";
@@ -32,11 +33,16 @@ export async function POST(request: Request) {
       pair: body.pair,
       lookbackDays: body.lookbackDays
     });
+    const executionCosts = resolveExecutionCosts(executionCostCalibration, executionCostCalibration, "calibrated");
     const result = service.recommend({
       series,
       budgetUsd: body.budgetUsd,
-      marketRegime,
-      executionCost: executionCostCalibration
+      maxDeployableUsd: body.maxDeployableUsd,
+      reserveQuoteAmount: body.reserveQuoteAmount,
+      entryMode: body.entryMode,
+      rangeMethod: body.rangeMethod,
+      strategyMode: body.strategyMode,
+      executionCost: executionCosts.config
     });
     const rangePlan = buildAdaptiveRangePlan({
       series,
@@ -64,14 +70,16 @@ export async function POST(request: Request) {
         strategySelection,
         meta: {
           ...result.bestReplay.meta,
-          executionCostCalibration
+          executionCostCalibration,
+          executionCostResolution: executionCosts.resolution
         }
       },
       meta: {
         ...result.meta,
         historyWindow,
         lookbackDays: body.lookbackDays,
-        executionCostCalibration
+        executionCostCalibration,
+        executionCostResolution: executionCosts.resolution
       }
     });
   } catch (error) {

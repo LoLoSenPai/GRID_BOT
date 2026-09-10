@@ -112,6 +112,7 @@ export function mapPosition(position: Position): DomainPosition {
 export function mapLot(lot: PositionLot): DomainPositionLot {
   return {
     id: lot.id,
+    kind: lot.kind === "retained" ? "retained" : "trading",
     botId: lot.botId,
     originalBaseAmount: lot.originalBaseAmount.toNumber(),
     remainingBaseAmount: lot.remainingBaseAmount.toNumber(),

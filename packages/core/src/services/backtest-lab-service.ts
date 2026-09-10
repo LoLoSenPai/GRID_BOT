@@ -1,6 +1,6 @@
 import { DEFAULTS } from "@grid-bot/common";
 
-import { BotMode, BotStatus, ExecutionProvider, GridType, MinOrderMode, OrderStatus, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
+import { BotMode, BotStatus, EntryMode, ExecutionProvider, GridType, MinOrderMode, OrderStatus, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
 import type {
   BacktestAssumptions,
   BacktestConfig,
@@ -32,10 +32,13 @@ import { CandleReplayService } from "./candle-replay-service";
 import { DEFAULT_EXECUTION_FEE_BPS, ExecutionCostModelService } from "./execution-cost-model-service";
 import { GridDecisionService } from "./grid-decision-service";
 import { GridStrategyService } from "./grid-strategy-service";
+import { applyLotExecution, calculateNetSellPnl, isTradingLot, summarizeLots } from "./lot-accounting-service";
 import { IndicatorService } from "./indicator-service";
 import { MarketRegimeService } from "./market-regime-service";
 import { RangePlanService } from "./range-plan-service";
-import { RecenterPolicyService } from "./recenter-policy-service";
+import { ReboundZoneService, type ReboundRangeCandidate } from "./rebound-zone-service";
+import { canApplyRangeChange, RecenterPolicyService } from "./recenter-policy-service";
+import { evaluateFlatRecenter } from "./flat-recenter-service";
 import { RiskManagerService } from "./risk-manager-service";
 
 const STRATEGY_RUNTIME_DEFAULTS: Record<
@@ -85,6 +88,11 @@ export interface BacktestExecutionCostOverride {
 }
 
 export interface BacktestRecommendationRequest {
+  rangeMethod?: "rebounds" | "distribution";
+  strategyMode?: StrategyMode;
+  maxDeployableUsd?: number;
+  reserveQuoteAmount?: number;
+  entryMode?: EntryMode;
   series: BacktestMarketSeries;
   budgetUsd: number;
   marketRegime?: MarketRegimeAssessment | null;
@@ -108,6 +116,8 @@ interface BacktestRuntimeState {
   lastRecenterAt: Date | null;
   metadata: BotRuntimeMetadata;
   openLots: PositionLot[];
+  regimeBuyGuard: boolean;
+  favorableRegimeEvaluations: number;
   recenterGuard: Pick<RecenterPolicyDecision, "mode" | "side" | "allowNewBuys" | "allowRecoverySells"> | null;
   consecutiveOutsideCloses: number;
   observedCandles: HistoricalCandle[];
@@ -165,12 +175,12 @@ export function generateBacktestCandidates(
   const sortedCloses = [...trainCloses].sort((left, right) => left - right);
   const lowQuantiles = [0.1, 0.2, 0.3];
   const highQuantiles = [0.7, 0.8, 0.9];
-  const railCounts = Array.from({ length: 11 }, (_, index) => index + 6);
+  const railCounts = [6, 10, 14];
   const candidates: BacktestConfig[] = [];
 
   for (const lowQuantile of lowQuantiles) {
     const lowPrice = round(quantile(sortedCloses, lowQuantile), 8);
-    for (const highQuantile of highQuantiles) {
+    for (const highQuantile of highQuantiles.filter((value) => Math.abs(value + lowQuantile - 1) < 1e-8)) {
       const highPrice = round(quantile(sortedCloses, highQuantile), 8);
       if (!(highPrice > lowPrice)) {
         continue;
@@ -215,29 +225,45 @@ export function generateBacktestCandidates(
   return candidates;
 }
 
+function generateReboundCandidates(ranges: ReboundRangeCandidate[], budgetUsd: number, strategyMode: StrategyMode,
+  executionCost?: BacktestExecutionCostOverride): BacktestConfig[] {
+  if (!Number.isFinite(budgetUsd) || budgetUsd < 10) return [];
+  const candidates: BacktestConfig[] = [];
+  // At most 18 candidates for the chosen objective. Geometry is not itself an edge.
+  for (const range of ranges.slice(0, 3)) {
+    for (const levelCount of [6, 10, 14]) {
+      const minOrderQuoteAmount = getSuggestedMinOrderQuoteAmount(budgetUsd, levelCount);
+      if (minOrderQuoteAmount < 5) continue;
+      for (const gridType of [GridType.Arithmetic, GridType.Geometric]) {
+        candidates.push(buildCandidateConfig({ budgetUsd, lowPrice: range.lowPrice, highPrice: range.highPrice,
+          levelCount, gridType, strategyMode, minOrderQuoteAmount, executionCost }));
+      }
+    }
+  }
+  return candidates;
+}
+
+export function hasViableStep(config: BacktestConfig, natrPct: number): boolean {
+  const slip = config.maxSlippageBps / 10_000;
+  const fee = (config.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS) / 10_000;
+  if (![slip, fee, config.lowPrice, config.highPrice, natrPct].every(Number.isFinite) ||
+    slip < 0 || fee < 0 || slip >= 1 || fee >= 1 || config.lowPrice <= 0 || config.highPrice <= config.lowPrice || config.levelCount < 2) return false;
+  const costFloorPct = (((1 + slip) * (1 + fee)) / ((1 - slip) * (1 - fee)) - 1) * 100;
+  const minimumStepPct = Math.max(Math.max(0, natrPct) * 0.5, costFloorPct + 0.25);
+  const step = (config.highPrice - config.lowPrice) / (config.levelCount - 1);
+  const smallestStepPct = config.gridType === GridType.Geometric
+    ? (Math.pow(config.highPrice / config.lowPrice, 1 / (config.levelCount - 1)) - 1) * 100
+    : step / (config.highPrice - step) * 100;
+  return smallestStepPct >= minimumStepPct;
+}
+
 export function compareBacktestLeaderboardEntries(left: BacktestLeaderboardEntry, right: BacktestLeaderboardEntry): number {
-  const leftValidationGain = left.validationMetrics.endingEquityUsd - left.validationMetrics.startingBudgetUsd;
-  const rightValidationGain = right.validationMetrics.endingEquityUsd - right.validationMetrics.startingBudgetUsd;
+  // The last 30% is locked holdout: it must never influence rank or tie-breaking.
+  const a = left.selectionMetrics ?? left.trainMetrics;
+  const b = right.selectionMetrics ?? right.trainMetrics;
+  return b.returnPct - a.returnPct || a.maxDrawdownPct - b.maxDrawdownPct ||
+    a.timeOutOfRangePct - b.timeOutOfRangePct || b.closedCycleCount - a.closedCycleCount;
 
-  if (rightValidationGain !== leftValidationGain) {
-    return rightValidationGain - leftValidationGain;
-  }
-
-  if (left.validationMetrics.maxDrawdownPct !== right.validationMetrics.maxDrawdownPct) {
-    return left.validationMetrics.maxDrawdownPct - right.validationMetrics.maxDrawdownPct;
-  }
-
-  if (left.validationMetrics.timeOutOfRangePct !== right.validationMetrics.timeOutOfRangePct) {
-    return left.validationMetrics.timeOutOfRangePct - right.validationMetrics.timeOutOfRangePct;
-  }
-
-  if (left.validationMetrics.closedCycleCount !== right.validationMetrics.closedCycleCount) {
-    return right.validationMetrics.closedCycleCount - left.validationMetrics.closedCycleCount;
-  }
-
-  const leftTrainGain = left.trainMetrics.endingEquityUsd - left.trainMetrics.startingBudgetUsd;
-  const rightTrainGain = right.trainMetrics.endingEquityUsd - right.trainMetrics.startingBudgetUsd;
-  return rightTrainGain - leftTrainGain;
 }
 
 export function deriveBacktestOperatorGuidance(
@@ -318,15 +344,6 @@ export class BacktestLabService {
       continuousTrain.state,
       request.marketRegime ?? null
     );
-    const trainMetricsResult = this.simulateSegment(prepared.series, config, prepared.trainCandles, "train", undefined, request.marketRegime ?? null);
-    const validationMetricsResult = this.simulateSegment(
-      prepared.series,
-      config,
-      prepared.validationCandles,
-      "validation",
-      undefined,
-      request.marketRegime ?? null
-    );
 
     const replayPoints = [...continuousTrain.replayPoints, ...continuousValidation.replayPoints];
     const executions = [...continuousTrain.executions, ...continuousValidation.executions];
@@ -350,16 +367,35 @@ export class BacktestLabService {
       config
     );
 
+    const benchmarks = this.buildBenchmarks(prepared, config);
+    const validationBenchmarks = this.buildBenchmarks({ ...prepared, candles: prepared.validationCandles }, {
+      ...config, budgetUsd: continuousTrain.metrics.endingEquityUsd
+    });
+    const endPrice = prepared.candles.at(-1)!.close;
+    const baseEquivalent = round(overallMetrics.endingEquityUsd / endPrice, 8);
+    const buyAndHoldBaseEquivalent = round(benchmarks.buyAndHold.endingEquityUsd / endPrice, 8);
+
     return {
       series: prepared.series,
       config,
+      benchmarks,
+      validationBenchmarks,
+      accumulation: {
+        baseSymbol: prepared.series.symbol,
+        heldBaseAmount: round(continuousValidation.state.availableBaseAmount, 8),
+        retainedBaseAmount: round(continuousValidation.state.openLots.filter((lot) => lot.kind === "retained")
+          .reduce((sum, lot) => sum + lot.remainingBaseAmount, 0), 8),
+        baseEquivalent,
+        buyAndHoldBaseEquivalent,
+        excessBaseEquivalent: round(baseEquivalent - buyAndHoldBaseEquivalent, 8)
+      },
       replayPoints,
       executions,
       recenterEvents,
       rangeAdjustmentEvents,
       recenterAdvice,
-      trainMetrics: trainMetricsResult.metrics,
-      validationMetrics: validationMetricsResult.metrics,
+      trainMetrics: continuousTrain.metrics,
+      validationMetrics: continuousValidation.metrics,
       overallMetrics,
       assumptions: this.buildAssumptions(config),
       meta: this.buildMeta(prepared)
@@ -368,54 +404,106 @@ export class BacktestLabService {
 
   recommend(request: BacktestRecommendationRequest): BacktestRecommendation {
     const prepared = splitBacktestSeries(request.series);
-    const candidates = generateBacktestCandidates(prepared.series, request.budgetUsd, request.executionCost);
+    const trainingSeries = { ...prepared.series, candles: prepared.trainCandles };
+    const selectionSplit = splitBacktestSeries(trainingSeries);
+    const method = request.rangeMethod ?? "distribution";
+    const strategyMode = request.strategyMode ?? (prepared.series.symbol.toUpperCase() === "BTC"
+      ? StrategyMode.AccumulateBase : StrategyMode.AccumulateUsdc);
+    const zoneAnalysis = method === "rebounds" ? new ReboundZoneService().analyze(selectionSplit.trainCandles) : null;
+    const deployable = Math.max(0, Math.min(request.maxDeployableUsd ?? request.budgetUsd, request.budgetUsd - (request.reserveQuoteAmount ?? 0)));
+    const rawCandidates = method === "rebounds"
+      ? generateReboundCandidates(zoneAnalysis?.ranges ?? [], deployable, strategyMode, request.executionCost)
+      : generateBacktestCandidates(trainingSeries, deployable, request.executionCost).filter((config) => config.strategyMode === strategyMode);
+    const natrPct = this.indicatorService.compute(selectionSplit.trainCandles).latest?.atrPct14 ?? 0;
+    const candidates = rawCandidates.filter((config) => hasViableStep(config, natrPct)).map((config) => ({ ...config,
+      budgetUsd: request.budgetUsd, maxDeployableUsd: deployable,
+      minOrderQuoteAmount: Math.min(config.minOrderQuoteAmount,
+        Math.floor(deployable / (config.levelCount - 1) / (1 + (config.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS) / 10_000) * 1e8) / 1e8),
+      reserveQuoteAmount: request.reserveQuoteAmount ?? 0, entryMode: request.entryMode ?? EntryMode.Normal }));
+    if (!candidates.length) throw new Error(method === "rebounds"
+      ? `No launch: no repeated-rebound range meets the independent-touch, volatility, cost and budget requirements. ${zoneAnalysis?.reasons.join(" ") ?? ""}`
+      : "No launch: no distribution range meets the volatility, cost and budget requirements for this objective.");
 
-    if (candidates.length === 0) {
-      throw new Error("No viable backtest candidates were generated for the selected window.");
-    }
-
-    const leaderboard: BacktestLeaderboardEntry[] = candidates.map((config) => {
-      const trainResult = this.simulateSegment(prepared.series, config, prepared.trainCandles, "train", undefined, request.marketRegime ?? null);
-      const validationResult = this.simulateSegment(prepared.series, config, prepared.validationCandles, "validation", undefined, request.marketRegime ?? null);
-
-      return {
-        rank: 0,
-        config,
-        trainMetrics: trainResult.metrics,
-        validationMetrics: validationResult.metrics
-      };
+    const ranked = candidates.map((candidate) => {
+      const config = this.normalizeConfig(candidate);
+      const fitting = this.simulateSegment(trainingSeries, config, selectionSplit.trainCandles, "train");
+      const selection = this.simulateSegment(trainingSeries, config, selectionSplit.validationCandles, "train", fitting.state);
+      return { rank: 0, config, trainMetrics: fitting.metrics, selectionMetrics: selection.metrics,
+        validationMetrics: selection.metrics };
+    }).sort(compareBacktestLeaderboardEntries);
+    // Freeze order before accessing holdout, including for the displayed runners-up.
+    const topFive = ranked.slice(0, 5).map((entry, index) => {
+      const replay = this.replay({ series: prepared.series, config: entry.config });
+      return { ...entry, rank: index + 1, trainMetrics: replay.trainMetrics,
+        validationMetrics: replay.validationMetrics, replay };
     });
-
-    leaderboard.sort(compareBacktestLeaderboardEntries);
-    leaderboard.forEach((entry, index) => {
-      entry.rank = index + 1;
-    });
-
-    const topFive = leaderboard.slice(0, 5);
-    const best = topFive[0] ?? leaderboard[0];
-    if (!best) {
-      throw new Error("Backtest recommendation requires at least one ranked candidate.");
-    }
-    const bestReplay = this.replay({
-      series: prepared.series,
-      config: best.config,
-      marketRegime: request.marketRegime ?? null
-    });
-
+    const best = topFive[0]!;
+    const bestReplay = best.replay;
+    const insufficient = prepared.validationCandles.length < 30 || best.validationMetrics.closedCycleCount < 5;
+    const profitable = best.validationMetrics.returnPct > 0;
+    const latestClose = prepared.candles.at(-1)!.close;
+    const stillInRange = latestClose >= best.config.lowPrice && latestClose <= best.config.highPrice;
+    const objectiveSatisfied = strategyMode !== StrategyMode.AccumulateBase ||
+      best.validationMetrics.endingEquityUsd > bestReplay.validationBenchmarks!.buyAndHold.endingEquityUsd;
+    const stressConfig = { ...best.config, maxSlippageBps: best.config.maxSlippageBps * 2,
+      executionFeeBps: (best.config.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS) * 2 };
+    // One replay of the already selected configuration. Stress never reranks candidates.
+    const stressReplay = this.replay({ series: prepared.series, config: stressConfig });
+    const stressProfitable = stressReplay.validationMetrics.returnPct > 0;
+    const stressObjectiveSatisfied = strategyMode !== StrategyMode.AccumulateBase ||
+      stressReplay.validationMetrics.endingEquityUsd > stressReplay.validationBenchmarks!.buyAndHold.endingEquityUsd;
+    const stressSufficient = prepared.validationCandles.length >= 30 && stressReplay.validationMetrics.closedCycleCount >= 5;
+    const costStress = {
+      maxSlippageBps: stressConfig.maxSlippageBps, executionFeeBps: stressConfig.executionFeeBps,
+      validationMetrics: stressReplay.validationMetrics, overallMetrics: stressReplay.overallMetrics,
+      passed: stressProfitable && stressObjectiveSatisfied && stressSufficient,
+      reasons: [
+        "Same selected configuration, doubled slippage and fees; no reranking after holdout.",
+        stressProfitable ? "Positive net holdout under doubled costs." : "The doubled-cost holdout did not beat cash.",
+        ...(strategyMode === StrategyMode.AccumulateBase ? [stressObjectiveSatisfied
+          ? "The stress holdout beats a fresh buy-and-hold allocation of the same starting equity and reserve."
+          : "The stress holdout does not beat the matched-capital buy-and-hold reference."] : []),
+        ...(stressSufficient ? [] : ["Stress evidence is insufficient: fewer than 30 holdout candles or five closed cycles."])
+      ]
+    };
+    const rejected = !stillInRange || !profitable || !objectiveSatisfied || !stressProfitable || !stressObjectiveSatisfied;
+    const eligibility: NonNullable<BacktestRecommendation["eligibility"]> = {
+      status: rejected ? "no_launch" : insufficient || !stressSufficient ? "insufficient_evidence" : "paper_candidate",
+      reasons: [
+        !stillInRange ? "The latest closed price is outside the fitted range; no launch recommendation."
+          : !profitable ? "The locked holdout did not beat cash; no new launch is justified by this test."
+          : !objectiveSatisfied ? "The BTC accumulation objective does not beat the matched-capital hold reference on holdout."
+          : !stressProfitable || !stressObjectiveSatisfied ? "The selected configuration fails the frozen doubled-cost stress; no launch recommendation."
+          : insufficient ? "Fewer than 30 holdout candles or five closed cycles: evidence is insufficient."
+          : !stressSufficient ? "The doubled-cost stress has too few closed cycles for a paper recommendation."
+          : "Positive locked holdout supports paper observation only, not a claim of future profitability.",
+        "Candidates were generated from early training and ranked on a later training window; final holdout never affects rank."
+      ]
+    };
+    const guidance = deriveBacktestOperatorGuidance(best.validationMetrics, prepared.series.resolution, bestReplay.recenterAdvice);
     return {
+      rangeEvidence: {
+        method, fittingFrom: selectionSplit.trainCandles[0]!.timestamp,
+        fittingTo: selectionSplit.trainCandles.at(-1)!.timestamp,
+        selected: zoneAnalysis?.ranges.find((range) => Math.abs(range.lowPrice - best.config.lowPrice) < 1e-7 && Math.abs(range.highPrice - best.config.highPrice) < 1e-7),
+        reasons: zoneAnalysis?.reasons ?? ["Distribution baseline: bounds come from fitting-price quantiles, not repeated rebound detection."]
+      },
+      costStress,
       bestConfig: best.config,
-      leaderboard: topFive,
+      leaderboard: topFive.map(({ replay: _replay, ...entry }) => entry),
       bestReplay,
+      eligibility,
       recenterAdvice: bestReplay.recenterAdvice,
       trainMetrics: best.trainMetrics,
       validationMetrics: best.validationMetrics,
-      operatorGuidance: deriveBacktestOperatorGuidance(best.validationMetrics, prepared.series.resolution, bestReplay.recenterAdvice),
+      operatorGuidance: { ...guidance, status: eligibility.status === "no_launch" ? "Fragile" : "Caution",
+        summary: eligibility.reasons[0]!,
+        ...(eligibility.status !== "paper_candidate" ? {
+          stopRule: "No new launch is recommended by this test.",
+          recenterAction: "Recentering does not override missing evidence or failed cost stress."
+        } : {}) },
       assumptions: bestReplay.assumptions,
-      meta: {
-        ...bestReplay.meta,
-        candidateCount: candidates.length,
-        evaluatedCount: leaderboard.length
-      }
+      meta: { ...bestReplay.meta, candidateCount: candidates.length, evaluatedCount: ranked.length }
     };
   }
 
@@ -428,13 +516,19 @@ export class BacktestLabService {
     marketRegime?: MarketRegimeAssessment | null
   ): BacktestSegmentResult & { metrics: BacktestMetrics } {
     const state = initialState ?? this.createInitialState(series, config);
+    const startingEquityUsd = state.totalEquityUsd;
+    const startingRealizedPnlUsd = state.realizedPnlUsd;
+    const startingUnrealizedPnlUsd = state.unrealizedPnlUsd;
 
     if (candles.length === 0) {
       const metrics = this.summarizeMetrics([], [], [], [], config.budgetUsd, state, series, config);
       return { state, replayPoints: [], executions: [], recenterEvents: [], rangeAdjustmentEvents: [], metrics };
     }
 
-    const intervalMs = this.candleReplayService.estimateIntervalMs(candles);
+    const resolution = series.resolution?.match(/^(\d+)(m|h|d)$/);
+    const intervalMs = resolution
+      ? Number(resolution[1]) * ({ m: 60_000, h: 3_600_000, d: 86_400_000 }[resolution[2]!] ?? 1)
+      : this.candleReplayService.estimateIntervalMs(series.candles.slice(0, 2));
     const replayPoints: BacktestReplayPoint[] = [];
     const executions: BacktestReplayExecution[] = [];
     const recenterEvents: BacktestRecenterEvent[] = [];
@@ -445,6 +539,7 @@ export class BacktestLabService {
       const path = this.candleReplayService.buildIntrabougiePath(candle, intervalMs);
       path.forEach((step) => {
         const activeConfig = state.config;
+        const workerFlatAuto = activeConfig.recenterMode === RecenterMode.Auto && activeConfig.recenterModel === "worker_flat";
         const levels = this.gridStrategyService.calculateLevels(activeConfig.lowPrice, activeConfig.highPrice, activeConfig.levelCount, activeConfig.gridType);
         state.currentPrice = step.price;
         state.bot.currentPrice = step.price;
@@ -452,19 +547,55 @@ export class BacktestLabService {
         state.bot.status = state.status;
         this.clearRecenterGuardWhenInside(state, step.price);
 
+        if (workerFlatAuto && (state.status === BotStatus.Paused || state.status === BotStatus.Stopped)) {
+          this.recalculatePortfolioState(state, step.price);
+          replayPoints.push(this.snapshotPoint(state, step.timestamp, phase));
+          previousObservedPrice = step.price;
+          return;
+        }
+
         const crossedSignals = previousObservedPrice !== null ? this.gridStrategyService.detectCrossedLevels(levels, previousObservedPrice, step.price) : [];
         const outOfRange = this.isOutOfRange(activeConfig, step.price);
+
+        // The live worker clears an outside timer as soon as price re-enters and
+        // returns from that tick. Preserve that lifecycle in synthetic replay.
+        if (workerFlatAuto && !outOfRange && state.metadata.outsideSince) {
+          state.metadata.outsideSince = null;
+          state.metadata.outsideSide = null;
+          state.metadata.outsideSourceObservedAt = null;
+          state.recenterGuard = null;
+          const resumedStatus = state.status === BotStatus.Paused || state.status === BotStatus.Stopped ? state.status : BotStatus.Running;
+          state.status = resumedStatus;
+          state.bot.status = resumedStatus;
+          this.recalculatePortfolioState(state, step.price);
+          replayPoints.push(this.snapshotPoint(state, step.timestamp, phase));
+          previousObservedPrice = step.price;
+          return;
+        }
         const signal =
-          outOfRange && step.price < activeConfig.lowPrice
+          outOfRange && step.price < activeConfig.lowPrice && !workerFlatAuto
             ? this.getOutOfRangeBoundaryBuySignal(state, step.price, step.timestamp, levels, crossedSignals, activeConfig)
             : outOfRange && step.price > activeConfig.highPrice
               ? this.getOutOfRangeRecoverySellSignal(state, step.price, step.timestamp, levels, crossedSignals, activeConfig)
+              : outOfRange && workerFlatAuto
+                ? null
               : this.getConfirmedSignalFromState(state, step.price, step.timestamp, levels, crossedSignals, activeConfig);
+
+        if (workerFlatAuto && outOfRange && !signal) {
+          const recenterEvent = this.applyWorkerFlatRecenterStep(state, step.price, step.timestamp, phase);
+          if (recenterEvent) {
+            recenterEvents.push(recenterEvent);
+          }
+          this.recalculatePortfolioState(state, step.price);
+          replayPoints.push(this.snapshotPoint(state, step.timestamp, phase));
+          previousObservedPrice = step.price;
+          return;
+        }
 
         if (outOfRange && !signal) {
           state.status = BotStatus.OutOfRange;
           state.bot.status = BotStatus.OutOfRange;
-          state.metadata.pendingSignal = null;
+          state.metadata.pendingSignal = this.resolvePendingSignal(state, crossedSignals, levels, step.price, step.timestamp, activeConfig);
           this.recalculatePortfolioState(state, step.price);
           replayPoints.push(this.snapshotPoint(state, step.timestamp, phase));
           previousObservedPrice = step.price;
@@ -481,6 +612,24 @@ export class BacktestLabService {
             return;
           }
 
+          if (signal.side === TradeSide.Buy) {
+            const capacity = Math.max(0, Math.min(
+              state.availableQuoteAmount - (activeConfig.reserveQuoteAmount ?? 0),
+              (activeConfig.maxDeployableUsd ?? activeConfig.budgetUsd) - state.deployedQuoteAmount
+            ));
+            const feeFactor = 1 + (activeConfig.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS) / 10_000;
+            orderIntent.requestedQuoteAmount = Math.floor(Math.min(orderIntent.requestedQuoteAmount, capacity / feeFactor) * 1e8) / 1e8;
+            if (orderIntent.requestedQuoteAmount <= 0 ||
+                (activeConfig.minOrderMode === MinOrderMode.Manual && orderIntent.requestedQuoteAmount < activeConfig.minOrderQuoteAmount)) {
+              executions.push(this.createBlockedExecution(signal, orderIntent, step.timestamp, phase, ["Insufficient deployable cash after reserving execution fees."]));
+              state.metadata.pendingSignal = null;
+              this.recalculatePortfolioState(state, step.price);
+              replayPoints.push(this.snapshotPoint(state, step.timestamp, phase));
+              previousObservedPrice = step.price;
+              return;
+            }
+          }
+          this.recalculatePortfolioState(state, step.price);
           const marketPrice = this.toMarketPrice(series, step.price, step.timestamp);
           const risk = this.riskManagerService.evaluate(this.toAggregate(state), signal, orderIntent, marketPrice, step.timestamp);
           if (!risk.allowed) {
@@ -497,7 +646,14 @@ export class BacktestLabService {
           }
 
           const report = this.simulateExecution(signal, orderIntent, activeConfig);
-          executions.push(this.applyExecution(state, signal, orderIntent, report, step.timestamp, phase));
+          const netSellPnl = signal.side === TradeSide.Sell
+            ? calculateNetSellPnl(state.openLots, orderIntent.matchedLotIds, report.inputAmount, report.outputAmount, report.feeAmount, activeConfig.strategyMode) : 0;
+          if (signal.side === TradeSide.Sell && (netSellPnl === null || netSellPnl < -1e-8)) {
+            executions.push(this.createBlockedExecution(signal, orderIntent, step.timestamp, phase, ["Expected net sell output does not recover matched trading cost after fees."]));
+            state.metadata.pendingSignal = null;
+          } else {
+            executions.push(this.applyExecution(state, signal, orderIntent, report, step.timestamp, phase));
+          }
           this.recalculatePortfolioState(state, step.price);
           replayPoints.push(this.snapshotPoint(state, step.timestamp, phase));
           previousObservedPrice = step.price;
@@ -513,18 +669,23 @@ export class BacktestLabService {
       state.observedCandles = [...state.observedCandles, candle].slice(-ADAPTIVE_RANGE_OBSERVED_WINDOW);
       state.adaptiveBarsSinceLastEvaluation += 1;
 
-      const adaptiveRangeEvent = this.maybeApplyAdaptiveRangePlan(state, candle, phase);
+      const closedCandle = { ...candle, timestamp: new Date(candle.timestamp.getTime() + intervalMs) };
+      const adaptiveRangeEvent = this.maybeApplyAdaptiveRangePlan(state, closedCandle, phase);
       if (adaptiveRangeEvent) {
         rangeAdjustmentEvents.push(adaptiveRangeEvent);
       }
 
-      const recenterEvent = this.maybeApplySimulatedRecenter(state, candle, phase, marketRegime ?? null);
+      const recenterEvent = state.config.recenterModel === "worker_flat"
+        ? null
+        : this.maybeApplySimulatedRecenter(state, closedCandle, phase, this.assessObservedRegime(state));
       if (recenterEvent) {
         recenterEvents.push(recenterEvent);
       }
     });
 
-    const metrics = this.summarizeMetrics(replayPoints, executions, recenterEvents, rangeAdjustmentEvents, config.budgetUsd, state, series, config);
+    const metrics = this.summarizeMetrics(replayPoints, executions, recenterEvents, rangeAdjustmentEvents, startingEquityUsd, state, series, config);
+    metrics.realizedPnlUsd = round(state.realizedPnlUsd - startingRealizedPnlUsd, 8);
+    metrics.unrealizedPnlUsd = round(state.unrealizedPnlUsd - startingUnrealizedPnlUsd, 8);
     return {
       state,
       replayPoints,
@@ -576,6 +737,8 @@ export class BacktestLabService {
         recentExecutions: []
       },
       openLots: [],
+      regimeBuyGuard: false,
+      favorableRegimeEvaluations: 0,
       recenterGuard: null,
       consecutiveOutsideCloses: 0,
       observedCandles: [],
@@ -585,14 +748,21 @@ export class BacktestLabService {
 
   private normalizeConfig(config: BacktestConfig): BacktestConfig {
     const strategyDefaults = STRATEGY_RUNTIME_DEFAULTS[config.strategyMode];
+    const rangeControlMode = config.rangeControlMode ?? "static";
     return {
       ...config,
       budgetUsd: Math.max(0, round(config.budgetUsd, 2)),
+      reserveQuoteAmount: Math.max(0, Math.min(config.budgetUsd, config.reserveQuoteAmount ?? 0)),
+      maxDeployableUsd: Math.max(0, Math.min(config.budgetUsd - (config.reserveQuoteAmount ?? 0), config.maxDeployableUsd ?? config.budgetUsd)),
+      entryMode: config.entryMode ?? EntryMode.Normal,
+      autoRecenterMinIntervalMs: Math.max(0, config.autoRecenterMinIntervalMs ?? DEFAULTS.autoRecenterMinIntervalMs),
+      autoRecenterMaxPerDay: Math.max(0, config.autoRecenterMaxPerDay ?? DEFAULTS.autoRecenterMaxPerDay),
       minOrderMode: config.minOrderMode ?? MinOrderMode.Auto,
       minOrderQuoteAmount: Math.max(0, round(config.minOrderQuoteAmount, 2)),
       maxSlippageBps: Math.max(0, config.maxSlippageBps),
       executionFeeBps: Math.max(0, config.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS),
       executionCostSource: config.executionCostSource ?? "fixed_pessimistic",
+      recenterModel: rangeControlMode === "adaptive" ? "candle_defense" : config.recenterModel ?? "worker_flat",
       cooldownMs: Math.max(0, config.cooldownMs ?? strategyDefaults.cooldownMs),
       maxOrdersPerHour: Math.max(1, config.maxOrdersPerHour ?? strategyDefaults.maxOrdersPerHour),
       maxDrawdownPct: Math.max(0, config.maxDrawdownPct ?? 18),
@@ -600,7 +770,7 @@ export class BacktestLabService {
       levelLockMs: Math.max(0, config.levelLockMs ?? strategyDefaults.levelLockMs),
       priceConfirmationWindowMs: Math.max(0, config.priceConfirmationWindowMs ?? strategyDefaults.priceConfirmationWindowMs),
       recenterMode: config.recenterMode ?? RecenterMode.Manual,
-      rangeControlMode: config.rangeControlMode ?? "static",
+      rangeControlMode,
       outOfRangePause: config.outOfRangePause ?? true
     };
   }
@@ -692,7 +862,7 @@ export class BacktestLabService {
   }
 
   private canBuildOrder(state: BacktestRuntimeState, signal: TriggerSignal): boolean {
-    if (signal.side === TradeSide.Buy && state.recenterGuard?.allowNewBuys === false) {
+    if (signal.side === TradeSide.Buy && (state.regimeBuyGuard || state.recenterGuard?.allowNewBuys === false)) {
       return false;
     }
 
@@ -706,7 +876,7 @@ export class BacktestLabService {
   private simulateExecution(signal: TriggerSignal, orderIntent: OrderIntent, config: BacktestConfig) {
     const report = this.executionCostModelService.simulate({
       side: signal.side,
-      levelPrice: signal.levelPrice,
+      levelPrice: signal.observedPrice,
       requestedQuoteAmount: orderIntent.requestedQuoteAmount,
       requestedBaseAmount: orderIntent.requestedBaseAmount,
       maxSlippageBps: config.maxSlippageBps,
@@ -730,16 +900,13 @@ export class BacktestLabService {
     now: Date,
     phase: "train" | "validation"
   ): BacktestReplayExecution {
-    const lotUpdate = this.applyExecutionToLots(state.openLots, state.bot.id, signal.side, report, orderIntent, orderIntent.targetPrice, now);
+    const lotUpdate = applyLotExecution({ lots: state.openLots, botId: state.bot.id, strategyMode: state.bot.strategyMode,
+      side: signal.side, report, matchedLotIds: orderIntent.matchedLotIds, levelPrice: orderIntent.targetPrice, now });
     state.openLots = lotUpdate.lots;
     state.availableQuoteAmount = this.computeAvailableQuote(state.availableQuoteAmount, signal.side, report);
     state.availableBaseAmount = this.computeAvailableBase(state.availableBaseAmount, signal.side, report);
-    state.deployedQuoteAmount = round(state.openLots.reduce((sum, lot) => sum + lot.costQuote, 0), 8);
-    state.averageEntryPrice =
-      state.availableBaseAmount > 0 && state.deployedQuoteAmount > 0 ? round(state.deployedQuoteAmount / state.availableBaseAmount, 8) : null;
     state.realizedPnlUsd = round(state.realizedPnlUsd + lotUpdate.realizedPnlDelta, 8);
-    state.unrealizedPnlUsd = state.currentPrice !== null ? round(state.availableBaseAmount * state.currentPrice - state.deployedQuoteAmount, 8) : 0;
-    state.totalEquityUsd = round(state.availableQuoteAmount + state.availableBaseAmount * (state.currentPrice ?? orderIntent.targetPrice), 8);
+    this.recalculatePortfolioState(state, state.currentPrice ?? orderIntent.targetPrice);
     state.status = BotStatus.Cooldown;
     state.bot.status = BotStatus.Cooldown;
     state.lastExecutionAt = now;
@@ -750,7 +917,7 @@ export class BacktestLabService {
     state.metadata.pendingSignal = null;
     state.metadata.gridCycles = this.applyExecutionToGridCycles(state, signal, lotUpdate.openedLotId, orderIntent, now);
     state.metadata.recenterHistory = [...state.metadata.recenterHistory];
-    state.metadata.recentExecutions = [...state.metadata.recentExecutions, now.toISOString()].slice(-50);
+    state.metadata.recentExecutions = [...state.metadata.recentExecutions, now.toISOString()].filter((time) => now.getTime() - new Date(time).getTime() < 3_600_000);
     state.consecutiveFailures = 0;
 
     return {
@@ -760,6 +927,7 @@ export class BacktestLabService {
       side: signal.side,
       levelIndex: signal.levelIndex,
       targetPrice: orderIntent.targetPrice,
+      observedPrice: signal.observedPrice,
       fillPrice: report.fillPrice,
       inputAmount: report.inputAmount,
       outputAmount: report.outputAmount,
@@ -799,78 +967,6 @@ export class BacktestLabService {
     };
   }
 
-  private applyExecutionToLots(
-    currentLots: PositionLot[],
-    botId: string,
-    side: TradeSide,
-    report: { executionId: string; inputAmount: number; outputAmount: number; feeAmount: number },
-    orderIntent: { matchedLotIds?: string[] },
-    levelPrice: number,
-    now: Date
-  ): { lots: PositionLot[]; realizedPnlDelta: number; openedLotId: string | null } {
-    if (side === TradeSide.Buy) {
-      const costQuote = round(report.inputAmount + report.feeAmount, 8);
-      const entryPrice = report.outputAmount > 0 ? round(costQuote / report.outputAmount, 8) : levelPrice;
-      const openedLotId = `lot-${report.executionId}`;
-      return {
-        lots: [
-          ...currentLots,
-          {
-            id: openedLotId,
-            botId,
-            originalBaseAmount: report.outputAmount,
-            remainingBaseAmount: report.outputAmount,
-            entryPrice,
-            costQuote,
-            openedByExecutionId: report.executionId,
-            closedByExecutionId: null,
-            openedAt: now,
-            closedAt: null
-          }
-        ],
-        realizedPnlDelta: 0,
-        openedLotId
-      };
-    }
-
-    const matchedLotIds = new Set(orderIntent.matchedLotIds ?? currentLots.map((lot) => lot.id));
-    let remainingToSell = report.inputAmount;
-    let realizedPnlDelta = 0;
-    const quotePerBase = report.inputAmount > 0 ? report.outputAmount / report.inputAmount : levelPrice;
-    const feePerBase = report.inputAmount > 0 ? report.feeAmount / report.inputAmount : 0;
-
-    const lots = currentLots
-      .map((lot) => {
-        if (remainingToSell <= 0 || !matchedLotIds.has(lot.id)) {
-          return lot;
-        }
-
-        const sold = Math.min(lot.remainingBaseAmount, remainingToSell);
-        const costPerBase = lot.remainingBaseAmount > 0 ? lot.costQuote / lot.remainingBaseAmount : 0;
-        const soldCostQuote = round(costPerBase * sold, 8);
-        const soldQuoteOutput = round(quotePerBase * sold, 8);
-        const soldFeeQuote = round(feePerBase * sold, 8);
-        remainingToSell = round(remainingToSell - sold, 8);
-        const nextRemaining = round(lot.remainingBaseAmount - sold, 8);
-        const nextCostQuote = round(Math.max(lot.costQuote - soldCostQuote, 0), 8);
-        realizedPnlDelta = round(realizedPnlDelta + soldQuoteOutput - soldFeeQuote - soldCostQuote, 8);
-        return {
-          ...lot,
-          remainingBaseAmount: nextRemaining,
-          costQuote: nextCostQuote,
-          closedByExecutionId: nextRemaining === 0 ? report.executionId : lot.closedByExecutionId,
-          closedAt: nextRemaining === 0 ? now : lot.closedAt
-        };
-      })
-      .filter((lot) => lot.remainingBaseAmount > 0);
-
-    return {
-      lots,
-      realizedPnlDelta,
-      openedLotId: null
-    };
-  }
-
   private applyExecutionToGridCycles(
     state: BacktestRuntimeState,
     signal: TriggerSignal,
@@ -897,7 +993,8 @@ export class BacktestLabService {
 
     const matchedLotIds = new Set(orderIntent.matchedLotIds ?? []);
     for (const [key, cycle] of Object.entries(nextCycles)) {
-      if (cycle.sellLevelIndex === signal.levelIndex || matchedLotIds.has(cycle.lotId)) {
+      if ((cycle.sellLevelIndex === signal.levelIndex || matchedLotIds.has(cycle.lotId)) &&
+          !state.openLots.some((lot) => lot.id === cycle.lotId && lot.kind !== "retained")) {
         delete nextCycles[key];
       }
     }
@@ -916,12 +1013,12 @@ export class BacktestLabService {
   }
 
   private recalculatePortfolioState(state: BacktestRuntimeState, currentPrice: number) {
-    const totalCost = round(state.openLots.reduce((sum, lot) => sum + lot.costQuote, 0), 8);
-    const totalBase = round(state.openLots.reduce((sum, lot) => sum + lot.remainingBaseAmount, 0), 8);
-    state.deployedQuoteAmount = totalCost;
-    state.averageEntryPrice = totalBase > 0 && totalCost > 0 ? round(totalCost / totalBase, 8) : null;
-    state.unrealizedPnlUsd = totalBase > 0 ? round(totalBase * currentPrice - totalCost, 8) : 0;
+    const summary = summarizeLots(state.openLots, currentPrice);
+    state.deployedQuoteAmount = summary.tradingCostQuote;
+    state.averageEntryPrice = summary.averageEntryPrice;
+    state.unrealizedPnlUsd = summary.unrealizedPnlUsd;
     state.totalEquityUsd = round(state.availableQuoteAmount + state.availableBaseAmount * currentPrice, 8);
+    state.metadata.equityHighWatermarkUsd = Math.max(state.metadata.equityHighWatermarkUsd ?? state.config.budgetUsd, state.totalEquityUsd);
   }
 
   private clearRecenterGuardWhenInside(state: BacktestRuntimeState, currentPrice: number) {
@@ -930,6 +1027,100 @@ export class BacktestLabService {
     }
 
     state.recenterGuard = null;
+  }
+
+  private applyWorkerFlatRecenterStep(
+    state: BacktestRuntimeState,
+    currentPrice: number,
+    now: Date,
+    phase: "train" | "validation"
+  ): BacktestRecenterEvent | null {
+    const decision = evaluateFlatRecenter({
+      lowPrice: state.config.lowPrice,
+      highPrice: state.config.highPrice,
+      currentPrice,
+      now,
+      confirmationMs: state.config.priceConfirmationWindowMs,
+      outsideSince: state.metadata.outsideSince ?? null,
+      outsideSide: state.metadata.outsideSide ?? null,
+      outsideSourceObservedAt: state.metadata.outsideSourceObservedAt ?? null,
+      currentObservationId: now.toISOString(),
+      requireSourceAdvance: false,
+      lastRecenterAt: state.lastRecenterAt,
+      recenterHistory: state.metadata.recenterHistory,
+      minIntervalMs: state.config.autoRecenterMinIntervalMs ?? DEFAULTS.autoRecenterMinIntervalMs,
+      maxPerDay: state.config.autoRecenterMaxPerDay ?? DEFAULTS.autoRecenterMaxPerDay,
+      openTradingLotCount: state.openLots.filter(isTradingLot).length,
+      unresolvedExecution: false
+    });
+
+    if (decision.action === "inside") {
+      state.metadata.outsideSince = null;
+      state.metadata.outsideSide = null;
+      state.metadata.outsideSourceObservedAt = null;
+      state.recenterGuard = null;
+      const resumedStatus = state.status === BotStatus.Paused || state.status === BotStatus.Stopped ? state.status : BotStatus.Running;
+      state.status = resumedStatus;
+      state.bot.status = resumedStatus;
+      return null;
+    }
+
+    if (decision.action !== "recenter") {
+      state.metadata.outsideSince = decision.outsideSince;
+      state.metadata.outsideSide = decision.outsideSide;
+      state.metadata.outsideSourceObservedAt = decision.outsideSourceObservedAt;
+      state.recenterGuard = decision.side
+        ? { mode: "soft", side: decision.side, allowNewBuys: false, allowRecoverySells: true }
+        : null;
+      state.status = BotStatus.OutOfRange;
+      state.bot.status = BotStatus.OutOfRange;
+      return null;
+    }
+
+    if (decision.suggestedLowPrice === null || decision.suggestedHighPrice === null || decision.side === null) {
+      return null;
+    }
+
+    const previousLowPrice = state.config.lowPrice;
+    const previousHighPrice = state.config.highPrice;
+    state.config = {
+      ...state.config,
+      lowPrice: decision.suggestedLowPrice,
+      highPrice: decision.suggestedHighPrice
+    };
+    state.metadata.outsideSince = null;
+    state.metadata.outsideSide = null;
+    state.metadata.outsideSourceObservedAt = null;
+    state.metadata.pendingSignal = null;
+    state.metadata.levelLocks = {};
+    state.metadata.gridCycles = {};
+    const today = now.toISOString().slice(0, 10);
+    state.metadata.recenterHistory = [
+      ...state.metadata.recenterHistory.filter((time) => time.slice(0, 10) === today),
+      now.toISOString()
+    ];
+    state.lastRecenterAt = now;
+    state.recenterGuard = null;
+    const resumedStatus = state.status === BotStatus.Paused || state.status === BotStatus.Stopped ? state.status : BotStatus.Running;
+    state.status = resumedStatus;
+    state.bot.status = resumedStatus;
+
+    return {
+      id: `recenter-${phase}-${now.getTime()}`,
+      phase,
+      timestamp: now,
+      mode: "hybrid",
+      side: decision.side,
+      previousLowPrice,
+      previousHighPrice,
+      nextLowPrice: decision.suggestedLowPrice,
+      nextHighPrice: decision.suggestedHighPrice,
+      allowNewBuys: false,
+      allowRecoverySells: true,
+      applied: true,
+      risk: "medium",
+      reason: decision.reason
+    };
   }
 
   private maybeApplySimulatedRecenter(
@@ -955,7 +1146,7 @@ export class BacktestLabService {
       currentPrice: candle.close,
       lowPrice: state.config.lowPrice,
       highPrice: state.config.highPrice,
-      openCycleCount: state.openLots.length,
+      openCycleCount: state.openLots.filter((lot) => lot.kind !== "retained").length,
       maxOccupancyPct,
       consecutiveOutsideBars: state.consecutiveOutsideCloses,
       marketRegime
@@ -1000,7 +1191,7 @@ export class BacktestLabService {
       reason
     });
 
-    if (state.openLots.length > 0) {
+    if (state.openLots.filter((lot) => lot.kind !== "retained").length > 0) {
       if (guardUnchanged) {
         return null;
       }
@@ -1011,6 +1202,7 @@ export class BacktestLabService {
       );
     }
 
+    if (!this.canChangeRange(state, candle.timestamp)) return buildEvent(false, "Range change deferred by the shared interval or daily limit.");
     state.config = {
       ...state.config,
       lowPrice: nextLowPrice,
@@ -1055,26 +1247,28 @@ export class BacktestLabService {
       currentLowPrice: state.config.lowPrice,
       currentHighPrice: state.config.highPrice,
       currentLevelCount: state.config.levelCount,
-      budgetUsd: state.config.budgetUsd,
+      budgetUsd: state.config.maxDeployableUsd ?? state.config.budgetUsd,
+      maxSlippageBps: state.config.maxSlippageBps,
+      executionFeeBps: state.config.executionFeeBps,
       minOrderQuoteAmount:
         state.config.minOrderMode === MinOrderMode.Auto
-          ? getSuggestedMinOrderQuoteAmount(state.config.budgetUsd, state.config.levelCount)
+          ? getSuggestedMinOrderQuoteAmount(state.config.maxDeployableUsd ?? state.config.budgetUsd, state.config.levelCount)
           : state.config.minOrderQuoteAmount,
       indicators: latestIndicators,
       marketRegime
     });
 
     if (rangePlan.risk === "high" || marketRegime.regime !== "RANGE" || marketRegime.confidence < 0.45) {
-      state.recenterGuard = {
-        mode: "soft",
-        side: candle.close > state.config.highPrice ? "above" : candle.close < state.config.lowPrice ? "below" : "inside",
-        allowNewBuys: false,
-        allowRecoverySells: true
-      };
+      state.regimeBuyGuard = true;
+      state.favorableRegimeEvaluations = 0;
       return null;
     }
+    // A tick inside range cannot lift regime defense; require two favorable closed-bar evaluations.
+    state.favorableRegimeEvaluations += 1;
+    if (state.regimeBuyGuard && state.favorableRegimeEvaluations < 2) return null;
+    state.regimeBuyGuard = false;
 
-    if (state.openLots.length > 0 || state.deployedQuoteAmount > 0) {
+    if (state.openLots.filter((lot) => lot.kind !== "retained").length > 0 || state.deployedQuoteAmount > 0) {
       return null;
     }
 
@@ -1094,6 +1288,9 @@ export class BacktestLabService {
       return null;
     }
 
+    if (!this.canChangeRange(state, candle.timestamp)) return null;
+    state.lastRecenterAt = candle.timestamp;
+    state.metadata.recenterHistory = [...state.metadata.recenterHistory, candle.timestamp.toISOString()];
     state.config = {
       ...state.config,
       lowPrice: rangePlan.recommendedLowPrice,
@@ -1138,14 +1335,14 @@ export class BacktestLabService {
     const endingEquityUsd = points.at(-1)?.totalEquityUsd ?? endState.totalEquityUsd;
     const realizedPnlUsd = points.at(-1)?.realizedPnlUsd ?? endState.realizedPnlUsd;
     const unrealizedPnlUsd = points.at(-1)?.unrealizedPnlUsd ?? endState.unrealizedPnlUsd;
-    const totalPnlUsd = round(realizedPnlUsd + unrealizedPnlUsd, 8);
+    const totalPnlUsd = round(endingEquityUsd - startingBudgetUsd, 8);
     const returnPct = startingBudgetUsd > 0 ? round(((endingEquityUsd - startingBudgetUsd) / startingBudgetUsd) * 100, 8) : 0;
     const maxDrawdownPct = computeMaxDrawdownPct(points, startingBudgetUsd);
     const maxOccupancyPct = points.reduce((max, point) => Math.max(max, point.occupancyPct), 0);
     const timeInRangePct = computeTimeRatio(points, true);
     const timeOutOfRangePct = computeTimeRatio(points, false);
     const closedCycleCount = executions.filter((execution) => execution.status === OrderStatus.Simulated && execution.side === TradeSide.Sell).length;
-    const openCycleCount = endState.openLots.length;
+    const openCycleCount = endState.openLots.filter((lot) => lot.kind !== "retained").length;
     const simulatedExecutions = executions.filter((execution) => execution.status === OrderStatus.Simulated);
     const executedBuyCount = simulatedExecutions.filter((execution) => execution.side === TradeSide.Buy).length;
     const executedSellCount = simulatedExecutions.filter((execution) => execution.side === TradeSide.Sell).length;
@@ -1197,15 +1394,16 @@ export class BacktestLabService {
       currentPrice: state.currentPrice ?? fallbackPrice,
       lowPrice: state.config.lowPrice,
       highPrice: state.config.highPrice,
-      openCycleCount: state.openLots.length,
+      openCycleCount: state.openLots.filter((lot) => lot.kind !== "retained").length,
       maxOccupancyPct,
       consecutiveOutsideBars: countTrailingOutsideCloses(candles, state.config),
-      marketRegime
+      marketRegime: this.assessObservedRegime(state)
     });
   }
 
   private snapshotPoint(state: BacktestRuntimeState, timestamp: Date, phase: "train" | "validation"): BacktestReplayPoint {
-    const drawdownPct = state.totalEquityUsd > 0 ? round(Math.max(0, ((state.config.budgetUsd - state.totalEquityUsd) / state.config.budgetUsd) * 100), 8) : 0;
+    const peak = Math.max(state.metadata.equityHighWatermarkUsd ?? state.config.budgetUsd, state.totalEquityUsd);
+    const drawdownPct = peak > 0 ? round(Math.max(0, ((peak - state.totalEquityUsd) / peak) * 100), 8) : 0;
     const occupancyPct = state.config.budgetUsd > 0 ? round((state.deployedQuoteAmount / state.config.budgetUsd) * 100, 8) : 0;
 
     return {
@@ -1217,6 +1415,8 @@ export class BacktestLabService {
       activeHighPrice: state.config.highPrice,
       availableQuoteAmount: state.availableQuoteAmount,
       availableBaseAmount: state.availableBaseAmount,
+      retainedBaseAmount: round(state.openLots.filter((lot) => lot.kind === "retained")
+        .reduce((sum, lot) => sum + lot.remainingBaseAmount, 0), 8),
       deployedQuoteAmount: state.deployedQuoteAmount,
       realizedPnlUsd: state.realizedPnlUsd,
       unrealizedPnlUsd: state.unrealizedPnlUsd,
@@ -1224,6 +1424,30 @@ export class BacktestLabService {
       drawdownPct,
       occupancyPct
     };
+  }
+
+  private canChangeRange(state: BacktestRuntimeState, now: Date) {
+    return canApplyRangeChange({ now, lastRecenterAt: state.lastRecenterAt,
+      recenterHistory: state.metadata.recenterHistory,
+      minIntervalMs: state.config.autoRecenterMinIntervalMs ?? DEFAULTS.autoRecenterMinIntervalMs,
+      maxPerDay: state.config.autoRecenterMaxPerDay ?? DEFAULTS.autoRecenterMaxPerDay,
+      openCycleCount: state.openLots.filter((lot) => lot.kind !== "retained").length });
+  }
+
+  private assessObservedRegime(state: BacktestRuntimeState) {
+    return this.marketRegimeService.assess(state.observedCandles, this.indicatorService.compute(state.observedCandles));
+  }
+
+  private buildBenchmarks(prepared: PreparedSeries, config: BacktestConfig) {
+    const first = prepared.candles[0]!.open;
+    const last = prepared.candles.at(-1)!.close;
+    const deployable = config.entryMode === EntryMode.SellOnly ? 0 : Math.max(0, Math.min(
+      config.maxDeployableUsd ?? config.budgetUsd, config.budgetUsd - (config.reserveQuoteAmount ?? 0)));
+    const spend = deployable / (1 + (config.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS) / 10_000);
+    const tokens = spend / (first * (1 + config.maxSlippageBps / 10_000));
+    const endingEquityUsd = round(config.budgetUsd - deployable + tokens * last, 8);
+    return { cash: { endingEquityUsd: config.budgetUsd, returnPct: 0 },
+      buyAndHold: { endingEquityUsd, returnPct: config.budgetUsd > 0 ? round((endingEquityUsd / config.budgetUsd - 1) * 100, 8) : 0 } };
   }
 
   private buildMeta(prepared: PreparedSeries): BacktestRunMeta {
@@ -1252,21 +1476,35 @@ export class BacktestLabService {
       executionFeeBps: config.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS,
       trainValidationSplit: 0.7,
       recenterMode: config.recenterMode,
+      recenterModel: config.recenterModel,
       recenterScope: config.recenterMode === RecenterMode.Auto ? "simulated_when_auto_recenter" : "advisory_only",
       rangeControlMode: config.rangeControlMode === "adaptive" ? "adaptive_lab_only" : "static",
-      outOfRangeModel: "pause_new_entries_allow_recovery_sells_and_single_l01_boundary_buy",
+      outOfRangeModel: config.recenterMode === RecenterMode.Auto && config.recenterModel === "worker_flat"
+        ? "pause_new_entries_allow_recovery_sells"
+        : "pause_new_entries_allow_recovery_sells_and_single_l01_boundary_buy",
       excludedCosts: ["network fees", "rent", "priority fees", "failed transaction costs"],
       notes: [
         "Candle replay approximates intrabar order; it is not tick-level execution data.",
-        "Ranking uses validation metrics before train metrics to reduce overfitting.",
+        "Ranking uses chronological selection within training only. The last 30% is a locked continuation holdout with carried lots and equity baseline.",
+        "Signals fill at the observed price plus estimated costs; four OHLC observations cannot reproduce tick fills or latency.",
+        "Replay starts in cash with no imported inventory; sell-only therefore cannot sell pre-existing wallet tokens.",
+        config.recenterMode === RecenterMode.Manual
+          ? "Manual mode keeps fixed rails and permits the worker's single lower-boundary buy and upper recovery exits."
+          : config.recenterModel === "worker_flat"
+            ? "Auto recenter shares the worker's flat-inventory decision, timing and frequency limits, evaluated at synthetic OHLC steps; live source freshness is not reproduced."
+            : "Experimental candle-defense recenter evaluates regime and occupancy at candle close; it differs from worker auto-center.",
         config.executionCostSource === "calibrated_live_fills"
           ? "Execution cost is calibrated from recent successful live fills for this pair."
           : "Execution cost uses the fixed pessimistic Lab default.",
         config.rangeControlMode === "adaptive"
           ? "Adaptive range is simulated in Lab only and only shifts rails while no open cycles are present."
-          : "Range is static unless a Lab-only adaptive scenario is selected.",
+          : config.recenterMode === RecenterMode.Auto
+            ? "Range width stays fixed while the selected recenter model may move its bounds."
+            : "Range bounds remain fixed for this replay.",
         config.recenterMode === RecenterMode.Auto
-          ? "Auto recenter is simulated in Lab only; it is not auto-applied to live bots."
+          ? config.recenterModel === "worker_flat"
+            ? "Worker-flat auto recenter is simulated in Lab only with synthetic OHLC observation times; it is not auto-applied to live bots."
+            : "Candle-defense auto recenter is simulated in Lab only; it is not auto-applied to live bots."
           : "Recenter output is advisory in Lab unless a recenter simulation scenario is selected."
       ]
     };
@@ -1279,17 +1517,19 @@ export class BacktestLabService {
         id: "cfg-backtest",
         botId: state.bot.id,
         totalBudgetUsd: state.config.budgetUsd,
-        maxDeployableUsd: state.config.budgetUsd,
-        reserveQuoteAmount: 0,
+        maxDeployableUsd: state.config.maxDeployableUsd ?? state.config.budgetUsd,
+        reserveQuoteAmount: state.config.reserveQuoteAmount ?? 0,
+        entryMode: state.config.entryMode,
         lowPrice: state.config.lowPrice,
         highPrice: state.config.highPrice,
         levelCount: state.config.levelCount,
         gridType: state.config.gridType,
         minOrderQuoteAmount:
           state.config.minOrderMode === MinOrderMode.Auto
-            ? getSuggestedMinOrderQuoteAmount(state.config.budgetUsd, state.config.levelCount)
+            ? getSuggestedMinOrderQuoteAmount(state.config.maxDeployableUsd ?? state.config.budgetUsd, state.config.levelCount)
             : state.config.minOrderQuoteAmount,
         maxSlippageBps: state.config.maxSlippageBps,
+        executionFeeBps: state.config.executionFeeBps,
         cooldownMs: state.config.cooldownMs,
         maxOrdersPerHour: state.config.maxOrdersPerHour,
         maxDrawdownPct: state.config.maxDrawdownPct,
@@ -1297,8 +1537,8 @@ export class BacktestLabService {
         levelLockMs: state.config.levelLockMs,
         priceConfirmationWindowMs: state.config.priceConfirmationWindowMs,
         recenterMode: state.config.recenterMode,
-        autoRecenterMinIntervalMs: DEFAULTS.autoRecenterMinIntervalMs,
-        autoRecenterMaxPerDay: DEFAULTS.autoRecenterMaxPerDay,
+        autoRecenterMinIntervalMs: state.config.autoRecenterMinIntervalMs ?? DEFAULTS.autoRecenterMinIntervalMs,
+        autoRecenterMaxPerDay: state.config.autoRecenterMaxPerDay ?? DEFAULTS.autoRecenterMaxPerDay,
         outOfRangePause: state.config.outOfRangePause
       },
       latestState: {
@@ -1452,10 +1692,10 @@ function computeAverageSlippageBps(executions: BacktestReplayExecution[]) {
 
       const diff =
         execution.side === TradeSide.Buy
-          ? execution.fillPrice - execution.targetPrice
-          : execution.targetPrice - execution.fillPrice;
+          ? execution.fillPrice - (execution.observedPrice ?? execution.targetPrice)
+          : (execution.observedPrice ?? execution.targetPrice) - execution.fillPrice;
 
-      return Math.max(0, (diff / execution.targetPrice) * 10_000);
+      return Math.max(0, (diff / (execution.observedPrice ?? execution.targetPrice)) * 10_000);
     })
     .filter((value): value is number => value !== null);
 

@@ -17,7 +17,8 @@ import {
   PrismaPriceSnapshotRepository,
   PrismaSystemLogRepository,
   PrismaTradeRepository,
-  prisma
+  prisma,
+  botLockPool
 } from "@grid-bot/db";
 
 import { DiscordWebhookSink } from "./discord-webhook-sink";
@@ -25,6 +26,7 @@ import { JupiterPricePoller } from "./jupiter-price-poller";
 import { getPortfolioSnapshotIntervalMs, safeBackfillPortfolioSnapshots, safeCreatePortfolioSnapshots } from "./portfolio-snapshots";
 import { getRuntimeMaintenanceIntervalMs, runRuntimeMaintenance } from "./runtime-maintenance";
 import { SymbolRunScheduler } from "./symbol-run-scheduler";
+import { ExecutionRecoveryPoller } from "./execution-recovery-poller";
 
 const env = getEnv();
 
@@ -71,6 +73,10 @@ async function main() {
     },
     env.BOT_TICK_INTERVAL_MS
   );
+  const recoveryPoller = new ExecutionRecoveryPoller(
+    async () => (await prisma.executionAttempt.findMany({ select: { botId: true } })).map((attempt) => attempt.botId),
+    (botId) => engine.runBot(botId, { recoveryOnly: true })
+  );
   logger.info(
     { tickIntervalMs: env.BOT_TICK_INTERVAL_MS, symbolRunMinIntervalMs: env.SYMBOL_RUN_MIN_INTERVAL_MS },
     "Worker started"
@@ -79,6 +85,7 @@ async function main() {
   await safeCreatePortfolioSnapshots();
   await runRuntimeMaintenance();
   pricePoller.start();
+  recoveryPoller.start();
   const portfolioSnapshotInterval = setInterval(async () => {
     await safeCreatePortfolioSnapshots();
   }, getPortfolioSnapshotIntervalMs());
@@ -86,11 +93,16 @@ async function main() {
     await runRuntimeMaintenance();
   }, getRuntimeMaintenanceIntervalMs());
 
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     clearInterval(portfolioSnapshotInterval);
     clearInterval(maintenanceInterval);
     pricePoller.stop();
+    await Promise.all([symbolRunScheduler.stop(), recoveryPoller.stop()]);
     await prisma.$disconnect();
+    await botLockPool.end();
     process.exit(0);
   };
 

@@ -1,12 +1,12 @@
-import { BotMode, GridType, MinOrderMode, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
+import { BotMode, EntryMode, GridType, MinOrderMode, RecenterMode, StrategyMode } from "@grid-bot/core/enums";
 
 import {
   createDraftFromPreset,
   normalizeBotDraftCapital,
   type BotFormDraft,
   type BotPairPresetId
-} from "@/lib/bot-management";
-import type { BacktestReplayRequestBody, LabPair } from "@/lib/backtest-lab";
+} from "./bot-management";
+import type { BacktestRecenterModel, BacktestReplayRequestBody, LabPair } from "./backtest-lab";
 
 export const LAB_BOT_DRAFT_STORAGE_KEY = "grid-bot:lab-bot-draft:v1";
 
@@ -52,6 +52,14 @@ function isRecenterMode(value: unknown): value is RecenterMode {
   return value === RecenterMode.Manual || value === RecenterMode.Auto;
 }
 
+function isRecenterModel(value: unknown): value is BacktestRecenterModel {
+  return value === "worker_flat" || value === "candle_defense";
+}
+
+function isEntryMode(value: unknown): value is EntryMode {
+  return value === EntryMode.Normal || value === EntryMode.SellOnly;
+}
+
 function isBotMode(value: unknown): value is BotMode {
   return value === BotMode.Paper || value === BotMode.Live;
 }
@@ -86,8 +94,15 @@ function parseConfig(value: unknown): LabDraftConfig | null {
     return null;
   }
 
+  if (value.recenterModel !== undefined && !isRecenterModel(value.recenterModel)) {
+    return null;
+  }
+
   return {
     budgetUsd: value.budgetUsd,
+    maxDeployableUsd: isFiniteNumber(value.maxDeployableUsd) ? value.maxDeployableUsd : value.budgetUsd,
+    reserveQuoteAmount: isFiniteNumber(value.reserveQuoteAmount) ? value.reserveQuoteAmount : 0,
+    entryMode: isEntryMode(value.entryMode) ? value.entryMode : EntryMode.Normal,
     lowPrice: value.lowPrice,
     highPrice: value.highPrice,
     levelCount: value.levelCount,
@@ -105,6 +120,11 @@ function parseConfig(value: unknown): LabDraftConfig | null {
     levelLockMs: value.levelLockMs,
     priceConfirmationWindowMs: value.priceConfirmationWindowMs,
     recenterMode: isRecenterMode(value.recenterMode) ? value.recenterMode : RecenterMode.Manual,
+    // Transfers created before the model field existed used candle-level defense.
+    // Keep that behavior explicit so an old Lab result cannot silently become worker auto-center.
+    recenterModel: isRecenterModel(value.recenterModel) ? value.recenterModel : "candle_defense",
+    autoRecenterMinIntervalMs: isFiniteNumber(value.autoRecenterMinIntervalMs) ? value.autoRecenterMinIntervalMs : undefined,
+    autoRecenterMaxPerDay: isFiniteNumber(value.autoRecenterMaxPerDay) ? value.autoRecenterMaxPerDay : undefined,
     outOfRangePause: value.outOfRangePause
   };
 }
@@ -174,16 +194,20 @@ export function buildBotDraftFromLabTransfer(
 ): LabBotDraftBuildResult {
   const mode = transfer.mode ?? fallbackMode;
   const minOrderMode = transfer.config.minOrderMode === MinOrderMode.Manual ? "manual" : "auto";
-  const forcedManualRecenter = transfer.config.recenterMode === RecenterMode.Auto || transfer.config.rangeControlMode === "adaptive";
+  const forcedManualRecenter =
+    transfer.config.recenterMode === RecenterMode.Auto &&
+    (transfer.config.recenterModel !== "worker_flat" || transfer.config.rangeControlMode === "adaptive");
+  const recenterMode = forcedManualRecenter ? RecenterMode.Manual : transfer.config.recenterMode;
   const draft = normalizeBotDraftCapital({
     ...createDraftFromPreset(transfer.pairPresetId, mode),
     name: transfer.label,
     strategyMode: transfer.config.strategyMode,
     mode,
+    entryMode: transfer.config.entryMode,
     gridType: transfer.config.gridType,
     totalBudgetUsd: transfer.config.budgetUsd,
-    maxDeployableUsd: transfer.config.budgetUsd,
-    reserveQuoteAmount: 0,
+    maxDeployableUsd: transfer.config.maxDeployableUsd,
+    reserveQuoteAmount: transfer.config.reserveQuoteAmount,
     lowPrice: transfer.config.lowPrice,
     highPrice: transfer.config.highPrice,
     levelCount: transfer.config.levelCount,
@@ -195,7 +219,9 @@ export function buildBotDraftFromLabTransfer(
     maxConsecutiveFailures: transfer.config.maxConsecutiveFailures,
     levelLockMs: transfer.config.levelLockMs,
     priceConfirmationWindowMs: transfer.config.priceConfirmationWindowMs,
-    recenterMode: RecenterMode.Manual,
+    recenterMode,
+    autoRecenterMinIntervalMs: transfer.config.autoRecenterMinIntervalMs ?? 6 * 60 * 60 * 1000,
+    autoRecenterMaxPerDay: transfer.config.autoRecenterMaxPerDay ?? 2,
     outOfRangePause: transfer.config.outOfRangePause
   });
 

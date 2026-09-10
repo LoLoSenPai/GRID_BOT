@@ -21,15 +21,15 @@ const POOL_BY_SYMBOL: Record<string, string> = {
 
 const SOURCE_RESOLUTION: Record<
   HistoryResolution,
-  { timeframe: "minute" | "hour" | "day"; aggregate: number; bucketMs: number }
+  { timeframe: "minute" | "hour" | "day"; aggregate: number; bucketMs: number; sourceIntervalMs: number }
 > = {
-  "5m": { timeframe: "minute", aggregate: 5, bucketMs: 5 * 60_000 },
-  "30m": { timeframe: "minute", aggregate: 15, bucketMs: 30 * 60_000 },
-  "1h": { timeframe: "hour", aggregate: 1, bucketMs: 60 * 60_000 },
-  "4h": { timeframe: "hour", aggregate: 4, bucketMs: 4 * 60 * 60_000 },
-  "1d": { timeframe: "day", aggregate: 1, bucketMs: 24 * 60 * 60_000 },
-  "1w": { timeframe: "day", aggregate: 1, bucketMs: 7 * 24 * 60 * 60_000 },
-  "1mo": { timeframe: "day", aggregate: 1, bucketMs: 31 * 24 * 60 * 60_000 },
+  "5m": { timeframe: "minute", aggregate: 5, bucketMs: 5 * 60_000, sourceIntervalMs: 5 * 60_000 },
+  "30m": { timeframe: "minute", aggregate: 15, bucketMs: 30 * 60_000, sourceIntervalMs: 15 * 60_000 },
+  "1h": { timeframe: "hour", aggregate: 1, bucketMs: 60 * 60_000, sourceIntervalMs: 60 * 60_000 },
+  "4h": { timeframe: "hour", aggregate: 4, bucketMs: 4 * 60 * 60_000, sourceIntervalMs: 4 * 60 * 60_000 },
+  "1d": { timeframe: "day", aggregate: 1, bucketMs: 24 * 60 * 60_000, sourceIntervalMs: 24 * 60 * 60_000 },
+  "1w": { timeframe: "day", aggregate: 1, bucketMs: 7 * 24 * 60 * 60_000, sourceIntervalMs: 24 * 60 * 60_000 },
+  "1mo": { timeframe: "day", aggregate: 1, bucketMs: 31 * 24 * 60 * 60_000, sourceIntervalMs: 24 * 60 * 60_000 },
 };
 
 type GeckoOhlcvRow = [number, number, number, number, number, number];
@@ -99,6 +99,8 @@ export class GeckoTerminalHistoryProvider implements CandleHistoryProvider {
       aggregate: sourceResolution.aggregate,
     });
     const fetchedAt = this.now();
+    assertNoInternalGaps(rawRows, sourceResolution.sourceIntervalMs, `${symbol}/${quoteSymbol} ${resolution}`);
+    const closedThroughMs = Math.min(request.to.getTime(), fetchedAt.getTime());
     const candles = aggregateRows(rawRows, {
       provider: this.provider,
       symbol,
@@ -107,9 +109,10 @@ export class GeckoTerminalHistoryProvider implements CandleHistoryProvider {
       poolAddress,
       fetchedAt,
       bucketMs: sourceResolution.bucketMs,
-    }).filter(
-      (candle) => candle.openTime.getTime() >= request.from.getTime() && candle.openTime.getTime() <= request.to.getTime()
-    );
+    }).filter((candle) => {
+      const closeTimeMs = candle.closeTime?.getTime() ?? Number.POSITIVE_INFINITY;
+      return candle.openTime.getTime() >= request.from.getTime() && closeTimeMs <= closedThroughMs;
+    });
 
     if (candles.length === 0) {
       throw new Error(`No GeckoTerminal OHLCV history returned for ${symbol}/${quoteSymbol} ${resolution}`);
@@ -228,6 +231,18 @@ export class GeckoTerminalHistoryProvider implements CandleHistoryProvider {
       `GeckoTerminal history request failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
       { cause: lastError }
     );
+  }
+}
+
+function assertNoInternalGaps(rows: GeckoOhlcvRow[], expectedIntervalMs: number, marketLabel: string) {
+  const sortedTimestamps = [...new Set(rows.map((row) => row[0] * 1000))].sort((left, right) => left - right);
+  for (let index = 1; index < sortedTimestamps.length; index += 1) {
+    const previous = sortedTimestamps[index - 1]!;
+    const current = sortedTimestamps[index]!;
+    if (current - previous > expectedIntervalMs * 1.5) {
+      const missingCount = Math.max(1, Math.round((current - previous) / expectedIntervalMs) - 1);
+      throw new Error(`GeckoTerminal history contains ${missingCount} internal gap(s) for ${marketLabel}`);
+    }
   }
 }
 

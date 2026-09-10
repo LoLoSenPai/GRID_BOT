@@ -23,6 +23,7 @@ type DetailBot = NonNullable<Awaited<ReturnType<typeof getBotDetail>>>;
 function deriveExecutionAmounts(
   side: "buy" | "sell",
   execution: {
+    status: string;
     executedInputAmount: { toString(): string } | null;
     executedOutputAmount: { toString(): string } | null;
     executedFeeAmount: { toString(): string } | null;
@@ -33,6 +34,16 @@ function deriveExecutionAmounts(
     requestedBaseAmount: { toString(): string };
   }
 ) {
+  if (execution.status === "unknown") {
+    return {
+      quoteAmount: null,
+      baseAmount: null,
+      feeAmount: null,
+      effectivePrice: null,
+      netEffectivePrice: null
+    };
+  }
+
   const requestedQuoteAmount = Number(order.requestedQuoteAmount);
   const requestedBaseAmount = Number(order.requestedBaseAmount);
   const executedInputAmount = execution.executedInputAmount ? Number(execution.executedInputAmount) : null;
@@ -79,6 +90,7 @@ function toDraftConfig(bot: Pick<OverviewBot, "baseSymbol" | "name" | "strategyM
     name: bot.name,
     strategyMode: bot.strategyMode as BotFormDraft["strategyMode"],
     mode: bot.mode as BotFormDraft["mode"],
+    entryMode: (config?.entryMode ?? EntryMode.Normal) as BotFormDraft["entryMode"],
     gridType: (config?.gridType ?? "arithmetic") as BotFormDraft["gridType"],
     totalBudgetUsd: Number(config?.totalBudgetUsd ?? 0),
     maxDeployableUsd: Number(config?.maxDeployableUsd ?? 0),
@@ -143,6 +155,7 @@ export function buildMarketPreviewBoard(symbol: PreviewSymbol, history: MarketPr
     presetId,
     name: pairPreset.defaultName,
     ...pairPreset.defaults,
+    entryMode: EntryMode.Normal,
     mode
   } satisfies BotFormDraft;
   const behaviorPreset = BOT_BEHAVIOR_PRESETS[inferBehaviorPresetId(draft)];

@@ -8,12 +8,23 @@ export const JUPITER_PRICE_SYMBOLS = ["SOL", "BTC", "HYPE"] as const;
 export interface JupiterPriceEntry {
   createdAt?: string;
   usdPrice?: number | null;
-  blockId?: number;
+  blockId?: number | null;
   decimals?: number;
   priceChange24h?: number;
 }
 
 export type JupiterPriceResponse = Record<string, JupiterPriceEntry | null | undefined>;
+
+export interface PriceBlockObservation {
+  blockId: number;
+  firstObservedAt: string;
+  hasAdvanced?: boolean;
+}
+
+export interface PriceObservationStore {
+  load(): Promise<Record<string, PriceBlockObservation>>;
+  save(observations: Record<string, PriceBlockObservation>): Promise<void>;
+}
 
 export interface MarketPriceServiceOptions {
   fetchFn?: typeof fetch;
@@ -23,6 +34,7 @@ export interface MarketPriceServiceOptions {
   apiKey?: string;
   baseUrl?: string;
   staleAfterMs?: number;
+  observationStore?: PriceObservationStore;
 }
 
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -67,7 +79,11 @@ export class MarketPriceService implements MarketPricePort {
   private readonly baseUrl: string;
   private readonly staleAfterMs: number;
   private readonly latestBySymbol = new Map<string, MarketPrice>();
-  private batchInFlight: Promise<MarketPrice[]> | null = null;
+  private readonly batchesInFlight = new Map<string, Promise<MarketPrice[]>>();
+  private readonly blockObservations = new Map<string, PriceBlockObservation>();
+  private readonly observationStore?: PriceObservationStore;
+  private observationLoad: Promise<void> | null = null;
+  private observationSave: Promise<void> = Promise.resolve();
 
   constructor(options: MarketPriceServiceOptions = {}) {
     const env = getEnv();
@@ -78,10 +94,11 @@ export class MarketPriceService implements MarketPricePort {
     this.apiKey = options.apiKey ?? env.JUPITER_API_KEY ?? "";
     this.baseUrl = options.baseUrl ?? env.JUPITER_PRICE_BASE_URL;
     this.staleAfterMs = options.staleAfterMs ?? env.PRICE_STALE_AFTER_MS;
+    this.observationStore = options.observationStore;
   }
 
   async getLatestPrice(bot: Bot): Promise<MarketPrice> {
-    const cached = this.getFreshPrice(bot.baseSymbol);
+    const cached = this.getFreshPrice(bot.baseSymbol, bot.quoteSymbol);
     if (cached) {
       return cached;
     }
@@ -89,19 +106,19 @@ export class MarketPriceService implements MarketPricePort {
     return this.fetchLatestPrice(bot.baseSymbol, bot.quoteSymbol);
   }
 
-  getCachedPrice(symbol: string) {
-    return this.latestBySymbol.get(symbol.toUpperCase()) ?? null;
+  getCachedPrice(symbol: string, quoteSymbol = "USDC") {
+    return this.latestBySymbol.get(`${symbol}/${quoteSymbol}`.toUpperCase()) ?? null;
   }
 
   setLatestPrice(marketPrice: MarketPrice) {
-    this.latestBySymbol.set(marketPrice.symbol.toUpperCase(), marketPrice);
+    this.latestBySymbol.set(marketPrice.pair.toUpperCase(), marketPrice);
     return marketPrice;
   }
 
   async fetchLatestPrice(symbol: string, quoteSymbol = "USDC"): Promise<MarketPrice> {
     const normalizedSymbol = symbol.toUpperCase();
     const normalizedQuoteSymbol = quoteSymbol.toUpperCase();
-    const prices = await this.fetchLatestPrices(JUPITER_PRICE_SYMBOLS, normalizedQuoteSymbol);
+    const prices = await this.fetchLatestPrices([...new Set([...JUPITER_PRICE_SYMBOLS, normalizedSymbol])], normalizedQuoteSymbol);
     const marketPrice = prices.find((price) => price.symbol === normalizedSymbol);
 
     if (!marketPrice) {
@@ -121,16 +138,15 @@ export class MarketPriceService implements MarketPricePort {
     symbols: readonly string[] = JUPITER_PRICE_SYMBOLS,
     quoteSymbol = "USDC"
   ): Promise<MarketPrice[]> {
-    if (this.batchInFlight) {
-      return this.batchInFlight;
-    }
-
     const normalizedSymbols = [...new Set(symbols.map((symbol) => symbol.toUpperCase()))];
     const normalizedQuoteSymbol = quoteSymbol.toUpperCase();
+    const batchKey = `${[...normalizedSymbols].sort().join(",")}/${normalizedQuoteSymbol}`;
+    const pending = this.batchesInFlight.get(batchKey);
+    if (pending) return pending;
     const request = this.fetchJupiterBatch(normalizedSymbols, normalizedQuoteSymbol).finally(() => {
-      this.batchInFlight = null;
+      this.batchesInFlight.delete(batchKey);
     });
-    this.batchInFlight = request;
+    this.batchesInFlight.set(batchKey, request);
     return request;
   }
 
@@ -142,16 +158,24 @@ export class MarketPriceService implements MarketPricePort {
       });
     }
 
+    await this.loadObservations();
     const quoteMint = getMintForSymbol(quoteSymbol);
     const baseMints = symbols.map((symbol) => getMintForSymbol(symbol));
     const ids = [...new Set([...baseMints, quoteMint])].join(",");
     const url = `${this.baseUrl}?ids=${encodeURIComponent(ids)}`;
     const payload = await this.fetchJupiterPayload(url, apiKey);
     const receivedAt = this.now();
-    const quoteUsdPrice = getJupiterUsdPrice(payload, quoteMint) ?? (quoteSymbol === "USDC" ? 1 : null);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new MarketDataUnavailableError("Malformed Jupiter Price V3 response", { provider: "jupiter-price-v3" });
+    }
+    const quoteObservation = this.observeBlock(quoteMint, payload[quoteMint]?.blockId, receivedAt);
+    const quoteUsdPrice = quoteObservation ? getJupiterUsdPrice(payload, quoteMint) : null;
+    // Observe all requested mints even while the quote mint is warming up.
+    const baseObservations = baseMints.map((mint) => this.observeBlock(mint, payload[mint]?.blockId, receivedAt));
 
     if (!quoteUsdPrice) {
-      throw new MarketDataUnavailableError(`Jupiter Price V3 returned no reliable quote price for ${quoteSymbol}`, {
+      for (const symbol of symbols) this.latestBySymbol.delete(`${symbol}/${quoteSymbol}`);
+      throw new MarketDataUnavailableError(`Jupiter Price V3 returned no fresh quote price for ${quoteSymbol}; missing data, stale block or source warming up`, {
         provider: "jupiter-price-v3",
         symbol: quoteSymbol,
       });
@@ -163,21 +187,30 @@ export class MarketPriceService implements MarketPricePort {
         return [];
       }
 
-      const baseUsdPrice = getJupiterUsdPrice(payload, baseMint);
-      if (!baseUsdPrice) {
+      const baseObservation = baseObservations[index];
+      const baseUsdPrice = baseObservation ? getJupiterUsdPrice(payload, baseMint) : null;
+      if (!baseUsdPrice || !baseObservation || !quoteObservation) {
+        this.latestBySymbol.delete(`${symbol}/${quoteSymbol}`);
         return [];
       }
 
       return [
-        this.setLatestPrice({
+        {
           symbol,
           pair: `${symbol}/${quoteSymbol}`,
           price: baseUsdPrice / quoteUsdPrice,
           confidence: 0,
           source: "jupiter-price-v3",
-          timestamp: receivedAt,
+          // Price V3 has a block ID, not an observation timestamp. This is the
+          // first local sighting of that block, never a claimed on-chain time.
+          timestamp: new Date(Math.min(Date.parse(baseObservation.firstObservedAt), Date.parse(quoteObservation.firstObservedAt))),
+          receivedAt,
+          sourceObservedAt: new Date(baseObservation.firstObservedAt),
+          sourceBlockId: baseObservation.blockId,
+          quoteSourceBlockId: quoteObservation.blockId,
+          freshnessBasis: "block-observed" as const,
           feedId: baseMint,
-        }),
+        },
       ];
     });
 
@@ -187,7 +220,44 @@ export class MarketPriceService implements MarketPricePort {
       });
     }
 
-    return prices;
+    // Persist source evidence before publishing a usable price, so a worker restart
+    // cannot make a repeatedly served source block fresh again.
+    if (this.observationStore) {
+      const snapshot = Object.fromEntries(this.blockObservations);
+      this.observationSave = this.observationSave.catch(() => {}).then(() => this.observationStore!.save(snapshot));
+      try { await this.observationSave; } catch (cause) {
+        throw new MarketDataUnavailableError("Could not persist price source observations", { provider: "jupiter-price-v3", cause });
+      }
+    }
+    return prices.map((price) => this.setLatestPrice(price));
+  }
+
+  private async loadObservations() {
+    if (!this.observationStore) return;
+    this.observationLoad ??= this.observationStore.load().then((observations) => {
+      for (const [mint, observation] of Object.entries(observations)) {
+        if (!Number.isSafeInteger(observation.blockId) || observation.blockId <= 0 ||
+          !Number.isFinite(Date.parse(observation.firstObservedAt))) throw new Error("Invalid persisted price source observation.");
+        this.blockObservations.set(mint, observation);
+      }
+    });
+    try { await this.observationLoad; } catch (cause) {
+      throw new MarketDataUnavailableError("Could not load price source observations", { provider: "jupiter-price-v3", cause });
+    }
+  }
+
+  private observeBlock(mint: string, blockId: number | null | undefined, receivedAt: Date): PriceBlockObservation | null {
+    if (!Number.isSafeInteger(blockId) || !blockId || blockId <= 0) return null;
+    const previous = this.blockObservations.get(mint);
+    if (previous && blockId < previous.blockId) return null;
+    const observation = previous?.blockId === blockId ? previous : {
+      blockId, firstObservedAt: receivedAt.toISOString(), hasAdvanced: previous !== undefined,
+    };
+    this.blockObservations.set(mint, observation);
+    const age = receivedAt.getTime() - Date.parse(observation.firstObservedAt);
+    // The first sighting cannot prove recency. Require advancement before use;
+    // after that, unchanged blocks age from their first sighting, including USDC.
+    return observation.hasAdvanced && age >= 0 && age <= this.staleAfterMs ? observation : null;
   }
 
   private async fetchJupiterPayload(url: string, apiKey: string): Promise<JupiterPriceResponse> {
@@ -199,7 +269,7 @@ export class MarketPriceService implements MarketPricePort {
       }
 
       try {
-        const response = await this.fetchWithTimeout(url, apiKey);
+        const { response, payload } = await this.fetchWithTimeout(url, apiKey);
         if (!response.ok) {
           const error = new MarketDataUnavailableError(
             `Jupiter Price V3 request failed with status ${response.status}`,
@@ -217,7 +287,7 @@ export class MarketPriceService implements MarketPricePort {
           continue;
         }
 
-        return (await response.json()) as JupiterPriceResponse;
+        return payload as JupiterPriceResponse;
       } catch (error) {
         if (error instanceof MarketDataUnavailableError && error.status && !isRetryableMarketDataStatus(error.status)) {
           throw error;
@@ -240,29 +310,29 @@ export class MarketPriceService implements MarketPricePort {
 
   private async fetchWithTimeout(url: string, apiKey: string) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
-
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => { controller.abort(); reject(new Error("Jupiter Price V3 request timed out")); }, this.timeoutMs);
+    });
     try {
-      return await this.fetchFn(url, {
-        headers: {
-          accept: "application/json",
-          "x-api-key": apiKey,
-        },
-        cache: "no-store",
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeoutId);
-    }
+      return await Promise.race([timeout, (async () => {
+        const response = await this.fetchFn(url, {
+          headers: { accept: "application/json", "x-api-key": apiKey },
+          cache: "no-store", signal: controller.signal,
+        });
+        const payload: unknown = response.ok ? await response.json() : null;
+        return { response, payload };
+      })()]);
+    } finally { clearTimeout(timeoutId); }
   }
 
-  private getFreshPrice(symbol: string) {
-    const cached = this.getCachedPrice(symbol);
+  private getFreshPrice(symbol: string, quoteSymbol: string) {
+    const cached = this.getCachedPrice(symbol, quoteSymbol);
     if (!cached) {
       return null;
     }
 
-    if (this.now().getTime() - cached.timestamp.getTime() > this.staleAfterMs) {
+    if (this.now().getTime() < cached.timestamp.getTime() || this.now().getTime() - cached.timestamp.getTime() > this.staleAfterMs) {
       return null;
     }
 

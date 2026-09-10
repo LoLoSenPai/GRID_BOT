@@ -19,6 +19,17 @@ function lot(id: string, costQuote: number, openedAt: string, costBasis = 86): P
 }
 
 describe("reconcileOpenPositionLots", () => {
+  it("never expands trading lots to absorb retained or unassigned wallet inventory", () => {
+    const trading = lot("trading", 100, "2026-09-10T10:00:00Z", 100);
+    const result = reconcileOpenPositionLots([trading], { deployedQuoteAmount: 100, availableBaseAmount: 2 });
+    expect(result[0]?.remainingBaseAmount).toBe(1);
+    expect(result[0]?.costQuote).toBe(100);
+  });
+
+  it("keeps explicit retained inventory even when no trading cost remains", () => {
+    const retained: PositionLot = { ...lot("retained", 100, "2026-09-10T10:00:00Z", 100), kind: "retained", costQuote: 0, entryPrice: 0 };
+    expect(reconcileOpenPositionLots([retained], { deployedQuoteAmount: 0, availableBaseAmount: 1 })).toEqual([retained]);
+  });
   it("keeps all open lots when they match runtime deployed quote", () => {
     const lots = [
       lot("old", 47.1, "2026-05-20T12:00:00.000Z"),

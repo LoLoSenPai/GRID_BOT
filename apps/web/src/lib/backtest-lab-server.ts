@@ -34,6 +34,8 @@ export function buildAdaptiveRangePlan(input: {
     currentHighPrice: input.config.highPrice,
     currentLevelCount: input.config.levelCount,
     budgetUsd: input.config.budgetUsd,
+    maxSlippageBps: input.config.maxSlippageBps,
+    executionFeeBps: input.config.executionFeeBps,
     minOrderQuoteAmount: input.config.minOrderQuoteAmount,
     indicators: input.indicators.latest,
     marketRegime: input.marketRegime
@@ -60,7 +62,13 @@ export async function fetchBacktestSeries(input: {
   series: BacktestMarketSeries;
   indicators: LabIndicatorSummary;
   marketRegime: MarketRegimeAssessment;
-  historyWindow: { from: string; to: string; source: string };
+  historyWindow: {
+    from: string;
+    to: string;
+    source: string;
+    coverage: Awaited<ReturnType<typeof fetchMarketHistoryLookback>>["meta"]["coverage"];
+    pricing: Awaited<ReturnType<typeof fetchMarketHistoryLookback>>["meta"]["pricing"];
+  };
 }> {
   const history = await fetchMarketHistoryLookback(input.pair, input.resolution as HistoryResolution, input.lookbackDays);
   const series = {
@@ -90,7 +98,9 @@ export async function fetchBacktestSeries(input: {
     historyWindow: {
       from: history.meta.from,
       to: history.meta.to,
-      source: history.meta.source
+      source: history.meta.source,
+      coverage: history.meta.coverage,
+      pricing: history.meta.pricing
     }
   };
 }

@@ -278,9 +278,9 @@ export async function getDashboardData(mode?: BotMode) {
       kind: "execution" as const,
       timestamp: execution.createdAt,
       botName: execution.bot.name,
-      title: `${execution.provider} ${execution.status}`,
+      title: execution.status === "unknown" ? `${execution.provider} result uncertain` : `${execution.provider} ${execution.status}`,
       detail: execution.txId ?? execution.executionRef,
-      tone: execution.status === "failed" ? "red" : execution.status === "simulated" ? "blue" : "green"
+      tone: execution.status === "failed" ? "red" : execution.status === "unknown" ? "amber" : execution.status === "simulated" ? "blue" : "green"
     })),
     ...logs.map((log) => ({
       id: log.id,
@@ -455,9 +455,9 @@ export async function getActivityFeed(mode?: BotMode) {
       kind: "execution" as const,
       timestamp: execution.createdAt,
       botName: execution.bot.name,
-      heading: `${execution.provider} ${execution.status}`,
+      heading: execution.status === "unknown" ? `${execution.provider} result uncertain` : `${execution.provider} ${execution.status}`,
       detail: execution.txId ?? execution.executionRef,
-      tone: execution.status === "failed" ? "red" : execution.status === "simulated" ? "blue" : "green"
+      tone: execution.status === "failed" ? "red" : execution.status === "unknown" ? "amber" : execution.status === "simulated" ? "blue" : "green"
     }))
   ].sort((left, right) => right.timestamp.getTime() - left.timestamp.getTime());
 

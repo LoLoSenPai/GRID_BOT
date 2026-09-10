@@ -95,7 +95,7 @@ export class RecenterPolicyService {
         suggestedLowPrice: suggestedRange.low,
         suggestedHighPrice: suggestedRange.high,
         risk: maxOccupancyPct >= HIGH_OCCUPANCY_PCT ? "high" : "medium",
-        operatorAction: "Move only free rails and keep recovery sells available for open cycles.",
+        operatorAction: "Keep existing rails and recovery exits until every trading cycle is closed.",
         reasons: [...reasons, `${openCycleCount} open cycle(s) still need paired exits.`]
       });
     }
@@ -140,7 +140,7 @@ function getBreakoutSide(currentPrice: number, lowPrice: number, highPrice: numb
   return "inside";
 }
 
-function suggestHybridRange(input: { currentPrice: number; lowPrice: number; highPrice: number; side: Exclude<RecenterBreakoutSide, "inside"> }) {
+export function suggestHybridRange(input: { currentPrice: number; lowPrice: number; highPrice: number; side: Exclude<RecenterBreakoutSide, "inside"> }) {
   const width = input.highPrice - input.lowPrice;
   const anchorRatio = input.side === "above" ? 0.65 : 0.35;
   const low = Math.max(input.currentPrice - width * anchorRatio, input.currentPrice * 0.01);
@@ -182,4 +182,20 @@ function decision(input: {
     operatorAction: input.operatorAction,
     reasons: input.reasons
   };
+}
+
+/** Frequency/lot safety shared by the engine and historical replay. */
+export function canApplyRangeChange(input: {
+  now: Date;
+  lastRecenterAt: Date | null;
+  recenterHistory: string[];
+  minIntervalMs: number;
+  maxPerDay: number;
+  openCycleCount: number;
+}): boolean {
+  if (input.openCycleCount > 0 || input.maxPerDay <= 0) return false;
+  if (input.lastRecenterAt && input.now.getTime() - input.lastRecenterAt.getTime() < input.minIntervalMs) return false;
+  const today = input.now.toISOString().slice(0, 10);
+  const count = input.recenterHistory.filter((time) => time.slice(0, 10) === today).length;
+  return count < input.maxPerDay;
 }
