@@ -1,0 +1,45 @@
+name: grid-bot-paper-pilot
+
+services:
+  paper-db:
+    image: postgres:17
+    restart: "no"
+    environment:
+      POSTGRES_DB: grid_bot_pilot_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: isolated-only
+    volumes:
+      - paper_pilot_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d grid_bot_pilot_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  paper-pilot:
+    build:
+      context: ../..
+      dockerfile: deploy/paper-pilot/Dockerfile.paper-pilot
+    restart: "no"
+    init: true
+    env_file:
+      - path: ${PAPER_PILOT_ENV_FILE:-/opt/grid-bot/paper-pilot/secrets/jupiter.env}
+        required: true
+        format: raw
+    environment:
+      NODE_ENV: test
+    depends_on:
+      paper-db:
+        condition: service_healthy
+    # The observer hard-codes loopback PostgreSQL and rejects a nonempty DB.
+    # Sharing the DB network namespace makes 127.0.0.1:5432 resolve to the
+    # dedicated paper-db service without exposing PostgreSQL on the VPS host.
+    network_mode: service:paper-db
+    volumes:
+      - type: bind
+        source: ${PAPER_PILOT_OUTPUT_DIR:-/opt/grid-bot/paper-pilot/data/observation-20260910}
+        target: /app/output
+
+volumes:
+  paper_pilot_db:

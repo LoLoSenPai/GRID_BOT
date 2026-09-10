@@ -1,0 +1,157 @@
+{
+  "purpose": "research_only",
+  "symbol": "SOL",
+  "generatedAt": "2026-09-10T18:51:28.355Z",
+  "basis": "Operational and allocation comparison using latest known 30-day envelope; not an independently validated launch recommendation",
+  "sourceSha256": "841f7d6823dd7d324701c3250f9f3bf1ac2dfbaf81023b29173618e8d8ccf009",
+  "fit": {
+    "low": 73.33945669679605,
+    "high": 108.13153705734794,
+    "anchor": 99.80094850174407,
+    "padding": 2.0081907301959987,
+    "from": "2026-08-11T16:00:00.000Z",
+    "to": "2026-09-10T12:00:00.000Z"
+  },
+  "portfolios": [
+    {
+      "id": "wide_reserve",
+      "label": "Large · 480 + réserve 120",
+      "totalBudgetUsd": 600,
+      "reserveQuoteAmount": 120,
+      "allocations": [
+        {
+          "id": "wide",
+          "config": {
+            "budgetUsd": 480,
+            "maxDeployableUsd": 480,
+            "reserveQuoteAmount": 0,
+            "lowPrice": 73.33945669679605,
+            "highPrice": 108.13153705734794,
+            "levelCount": 10,
+            "gridType": "geometric",
+            "strategyMode": "accumulate_usdc",
+            "rangeControlMode": "static",
+            "recenterMode": "manual_recenter",
+            "recenterModel": "worker_flat",
+            "minOrderMode": "manual",
+            "minOrderQuoteAmount": 5,
+            "maxSlippageBps": 50,
+            "executionFeeBps": 10,
+            "executionCostSource": "fixed_pessimistic",
+            "cooldownMs": 15000,
+            "maxOrdersPerHour": 96,
+            "levelLockMs": 15000,
+            "priceConfirmationWindowMs": 0,
+            "maxDrawdownPct": 18,
+            "maxConsecutiveFailures": 3,
+            "entryMode": "normal",
+            "outOfRangePause": true,
+            "autoRecenterMinIntervalMs": 21600000,
+            "autoRecenterMaxPerDay": 2
+          }
+        }
+      ]
+    },
+    {
+      "id": "zones_reserve",
+      "label": "3 zones · 160 chacune + réserve 120",
+      "totalBudgetUsd": 600,
+      "reserveQuoteAmount": 120,
+      "allocations": [
+        {
+          "id": "zone_1",
+          "config": {
+            "budgetUsd": 160,
+            "maxDeployableUsd": 160,
+            "reserveQuoteAmount": 0,
+            "lowPrice": 73.33945669679605,
+            "highPrice": 83.47233923469638,
+            "levelCount": 4,
+            "gridType": "geometric",
+            "strategyMode": "accumulate_usdc",
+            "rangeControlMode": "static",
+            "recenterMode": "manual_recenter",
+            "recenterModel": "worker_flat",
+            "minOrderMode": "manual",
+            "minOrderQuoteAmount": 5,
+            "maxSlippageBps": 50,
+            "executionFeeBps": 10,
+            "executionCostSource": "fixed_pessimistic",
+            "cooldownMs": 15000,
+            "maxOrdersPerHour": 96,
+            "levelLockMs": 15000,
+            "priceConfirmationWindowMs": 0,
+            "maxDrawdownPct": 18,
+            "maxConsecutiveFailures": 3,
+            "entryMode": "normal",
+            "outOfRangePause": true,
+            "autoRecenterMinIntervalMs": 21600000,
+            "autoRecenterMaxPerDay": 2
+          }
+        },
+        {
+          "id": "zone_2",
+          "config": {
+            "budgetUsd": 160,
+            "maxDeployableUsd": 160,
+            "reserveQuoteAmount": 0,
+            "lowPrice": 83.47233923469638,
+            "highPrice": 95.00522271549124,
+            "levelCount": 4,
+            "gridType": "geometric",
+            "strategyMode": "accumulate_usdc",
+            "rangeControlMode": "static",
+            "recenterMode": "manual_recenter",
+            "recenterModel": "worker_flat",
+            "minOrderMode": "manual",
+            "minOrderQuoteAmount": 5,
+            "maxSlippageBps": 50,
+            "executionFeeBps": 10,
+            "executionCostSource": "fixed_pessimistic",
+            "cooldownMs": 15000,
+            "maxOrdersPerHour": 96,
+            "levelLockMs": 15000,
+            "priceConfirmationWindowMs": 0,
+            "maxDrawdownPct": 18,
+            "maxConsecutiveFailures": 3,
+            "entryMode": "normal",
+            "outOfRangePause": true,
+            "autoRecenterMinIntervalMs": 21600000,
+            "autoRecenterMaxPerDay": 2
+          }
+        },
+        {
+          "id": "zone_3",
+          "config": {
+            "budgetUsd": 160,
+            "maxDeployableUsd": 160,
+            "reserveQuoteAmount": 0,
+            "lowPrice": 95.00522271549124,
+            "highPrice": 108.13153705734794,
+            "levelCount": 4,
+            "gridType": "geometric",
+            "strategyMode": "accumulate_usdc",
+            "rangeControlMode": "static",
+            "recenterMode": "manual_recenter",
+            "recenterModel": "worker_flat",
+            "minOrderMode": "manual",
+            "minOrderQuoteAmount": 5,
+            "maxSlippageBps": 50,
+            "executionFeeBps": 10,
+            "executionCostSource": "fixed_pessimistic",
+            "cooldownMs": 15000,
+            "maxOrdersPerHour": 96,
+            "levelLockMs": 15000,
+            "priceConfirmationWindowMs": 0,
+            "maxDrawdownPct": 18,
+            "maxConsecutiveFailures": 3,
+            "entryMode": "normal",
+            "outOfRangePause": true,
+            "autoRecenterMinIntervalMs": 21600000,
+            "autoRecenterMaxPerDay": 2
+          }
+        }
+      ]
+    }
+  ]
+}
