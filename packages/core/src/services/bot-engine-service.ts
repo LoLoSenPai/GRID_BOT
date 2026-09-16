@@ -41,6 +41,7 @@ import { RiskManagerService } from "./risk-manager-service";
 import { round } from "../utils/math";
 import { applyLotExecution, summarizeLots, isTradingLot, calculateNetSellPnl } from "./lot-accounting-service";
 import { evaluateFlatRecenter } from "./flat-recenter-service";
+import { Decimal } from "decimal.js";
 
 const HEARTBEAT_UPDATE_INTERVAL_MS = 2_000;
 const QUOTE_GUARD_LOG_INTERVAL_MS = 60_000;
@@ -898,16 +899,35 @@ export class BotEngineService {
     const expectedNetQuoteOutput = round(estimate.expectedOutputAmount - estimatedFeeQuote, 8);
     const expectedNetPnl = calculateNetSellPnl(aggregate.openLots, orderIntent.matchedLotIds,
       orderIntent.requestedBaseAmount, estimate.expectedOutputAmount, estimatedFeeQuote, aggregate.bot.strategyMode);
-    const soldCostQuote = expectedNetPnl === null ? 0 : expectedNetQuoteOutput - expectedNetPnl;
+    const appliesLiveSlippageFloor = aggregate.bot.mode === BotMode.Live &&
+      aggregate.bot.strategyMode !== StrategyMode.AccumulateUsdc;
+    const minimumGrossQuoteOutput = appliesLiveSlippageFloor
+      ? new Decimal(estimate.expectedOutputAmount)
+          .mul(new Decimal(1).minus(new Decimal(Math.max(0, aggregate.config.maxSlippageBps)).div(10_000)))
+          .toDecimalPlaces(aggregate.bot.quoteDecimals, Decimal.ROUND_DOWN)
+          .toNumber()
+      : estimate.expectedOutputAmount;
+    const minimumNetQuoteOutput = round(minimumGrossQuoteOutput - estimatedFeeQuote, 8);
+    const minimumNetPnl = appliesLiveSlippageFloor
+      ? calculateNetSellPnl(aggregate.openLots, orderIntent.matchedLotIds,
+          orderIntent.requestedBaseAmount, minimumGrossQuoteOutput, estimatedFeeQuote, aggregate.bot.strategyMode)
+      : expectedNetPnl;
+    const soldCostQuote = minimumNetPnl === null ? 0 : round(minimumNetQuoteOutput - minimumNetPnl, 8);
 
-    if (expectedNetPnl !== null && expectedNetPnl >= 0) {
-      return { allowed: true, message: "Sell quote is expected to be net profitable." };
+    if (minimumNetPnl !== null && minimumNetPnl >= 0) {
+      return {
+        allowed: true,
+        message: appliesLiveSlippageFloor
+          ? "Sell quote remains net profitable at the configured slippage floor."
+          : "Sell quote is expected to be net profitable."
+      };
     }
 
     return {
       allowed: false,
       message:
-        `Quote guard blocked sell: expected net output ${expectedNetQuoteOutput.toFixed(8)} ` +
+        `Quote guard blocked sell: ${appliesLiveSlippageFloor ? "minimum" : "expected"} net output ` +
+        `${minimumNetQuoteOutput.toFixed(8)} ` +
         `does not cover lot cost ${soldCostQuote.toFixed(8)} after estimated fees.`,
       metadata: {
         side: signal.side,
@@ -915,9 +935,14 @@ export class BotEngineService {
         targetPrice: orderIntent.targetPrice,
         estimatedPrice,
         expectedOutputAmount: estimate.expectedOutputAmount,
+        expectedNetQuoteOutput,
+        minimumGrossQuoteOutput,
+        minimumNetQuoteOutput,
+        slippageToleranceBps: appliesLiveSlippageFloor ? Math.max(0, aggregate.config.maxSlippageBps) : 0,
         estimatedFeeQuote,
         soldCostQuote,
         expectedNetPnl,
+        minimumNetPnl,
         requestedQuoteAmount: orderIntent.requestedQuoteAmount,
         requestedBaseAmount: orderIntent.requestedBaseAmount,
         checkedAt: now.toISOString()

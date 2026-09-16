@@ -260,6 +260,77 @@ function createEngine({
   };
 }
 
+function createBtcAccumulationSellAggregate(costQuote = 40.01, mode = BotMode.Live): BotAggregate {
+  const openedAt = new Date("2026-09-15T10:00:00.000Z");
+  return createAggregate({
+    bot: {
+      key: "btc-grid",
+      name: "BTC Grid",
+      baseMint: "BTC",
+      baseSymbol: "BTC",
+      baseDecimals: 8,
+      quoteDecimals: 6,
+      strategyMode: StrategyMode.AccumulateBase,
+      mode,
+      executionProvider: mode === BotMode.Live ? ExecutionProvider.Jupiter : ExecutionProvider.Paper,
+      currentPrice: 76_000
+    },
+    config: {
+      totalBudgetUsd: 100,
+      maxDeployableUsd: 100,
+      reserveQuoteAmount: 0,
+      lowPrice: 75_000,
+      highPrice: 76_266.67,
+      levelCount: 2,
+      minOrderQuoteAmount: 10,
+      maxSlippageBps: 50,
+      priceConfirmationWindowMs: 0
+    },
+    latestState: {
+      ...createAggregate().latestState,
+      currentPrice: 76_000,
+      availableQuoteAmount: 59.99,
+      availableBaseAmount: 0.001,
+      deployedQuoteAmount: costQuote,
+      averageEntryPrice: costQuote / 0.001,
+      metadata: {
+        levelLocks: {},
+        pendingSignal: null,
+        gridCycles: {
+          "0": {
+            buyLevelIndex: 0,
+            sellLevelIndex: 1,
+            lotId: "lot-btc",
+            openedAt: openedAt.toISOString()
+          }
+        },
+        recenterHistory: [],
+        recentExecutions: []
+      }
+    },
+    position: {
+      baseAmount: 0.001,
+      quoteSpent: costQuote,
+      averageEntryPrice: costQuote / 0.001,
+      realizedPnlUsd: 0,
+      unrealizedPnlUsd: 0,
+      totalFeesQuote: 0
+    },
+    openLots: [{
+      id: "lot-btc",
+      botId: "bot-1",
+      originalBaseAmount: 0.001,
+      remainingBaseAmount: 0.001,
+      entryPrice: costQuote / 0.001,
+      costQuote,
+      openedByExecutionId: "exec-btc-buy",
+      closedByExecutionId: null,
+      openedAt,
+      closedAt: null
+    }]
+  });
+}
+
 describe("BotEngineService", () => {
   it("transitions cooldown bots back to running after the cooldown window", async () => {
     const aggregate = createAggregate({
@@ -1138,6 +1209,176 @@ describe("BotEngineService", () => {
     );
   });
 
+  it("blocks a live BTC accumulation sell whose prepared quote can fall below principal within slippage", async () => {
+    const aggregate = createBtcAccumulationSellAggregate();
+    const { engine, tradeRepository, executionAdapter, logRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "BTC",
+        pair: "BTC/USDC",
+        price: 76_266.67,
+        confidence: 0.1,
+        source: "test-market",
+        timestamp: new Date("2026-09-16T10:00:00.000Z"),
+        feedId: "feed-btc"
+      },
+      executionEstimate: {
+        provider: ExecutionProvider.Jupiter,
+        inputMint: "BTC",
+        outputMint: "USDC",
+        inputAmount: 0.00052726,
+        expectedOutputAmount: 39.83,
+        estimatedFeeAmount: 0,
+        priceImpactPct: 0,
+        expectedPrice: 75_944.49,
+        requestId: "prepared-btc-loss"
+      },
+      liveTradingEnabled: true
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(executionAdapter.prepareExecution).toHaveBeenCalledOnce();
+    expect(executionAdapter.estimateExecution).not.toHaveBeenCalled();
+    expect(tradeRepository.prepareExecutionAttempt).not.toHaveBeenCalled();
+    expect(executionAdapter.executePreparedSwap).not.toHaveBeenCalled();
+    expect(logRepository.writeLog).toHaveBeenCalledWith(expect.objectContaining({
+      category: "execution_guard",
+      message: expect.stringContaining("minimum net output"),
+      metadata: expect.objectContaining({
+        expectedOutputAmount: 39.83,
+        minimumGrossQuoteOutput: 39.63085,
+        minimumNetQuoteOutput: 39.63085,
+        soldCostQuote: 40.01,
+        slippageToleranceBps: 50
+      })
+    }));
+  });
+
+  it("floors the live BTC minimum output to quote decimals before checking principal", async () => {
+    const aggregate = createBtcAccumulationSellAggregate(40.0100005);
+    const { engine, tradeRepository, logRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "BTC",
+        pair: "BTC/USDC",
+        price: 76_266.67,
+        confidence: 0.1,
+        source: "test-market",
+        timestamp: new Date("2026-09-16T10:00:00.000Z"),
+        feedId: "feed-btc"
+      },
+      executionEstimate: {
+        provider: ExecutionProvider.Jupiter,
+        inputMint: "BTC",
+        outputMint: "USDC",
+        inputAmount: 0.00052726,
+        expectedOutputAmount: 40.21105618,
+        estimatedFeeAmount: 0,
+        priceImpactPct: 0,
+        expectedPrice: 76_266.67,
+        requestId: "prepared-btc-rounding"
+      },
+      liveTradingEnabled: true
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.prepareExecutionAttempt).not.toHaveBeenCalled();
+    expect(logRepository.writeLog).toHaveBeenCalledWith(expect.objectContaining({
+      category: "execution_guard",
+      metadata: expect.objectContaining({
+        expectedNetQuoteOutput: 40.21105618,
+        minimumGrossQuoteOutput: 40.01,
+        minimumNetQuoteOutput: 40.01,
+        soldCostQuote: 40.0100005
+      })
+    }));
+  });
+
+  it("authorizes the prepared live BTC order when its slippage-floor output covers principal", async () => {
+    const aggregate = createBtcAccumulationSellAggregate(40.0100005);
+    const preparedEstimate: ExecutionEstimate = {
+      provider: ExecutionProvider.Jupiter,
+      inputMint: "BTC",
+      outputMint: "USDC",
+      inputAmount: 0.00052726,
+      expectedOutputAmount: 40.2110573,
+      estimatedFeeAmount: 0,
+      priceImpactPct: 0,
+      expectedPrice: 76_266.67,
+      requestId: "prepared-btc-profitable"
+    };
+    const { engine, tradeRepository, executionAdapter, logRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "BTC",
+        pair: "BTC/USDC",
+        price: 76_266.67,
+        confidence: 0.1,
+        source: "test-market",
+        timestamp: new Date("2026-09-16T10:00:00.000Z"),
+        feedId: "feed-btc"
+      },
+      executionEstimate: preparedEstimate,
+      executionError: new Error("429 temporary rate limit"),
+      liveTradingEnabled: true
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(tradeRepository.prepareExecutionAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      preparedExecution: preparedEstimate
+    }));
+    expect(executionAdapter.prepareExecution).toHaveBeenCalledOnce();
+    expect(executionAdapter.estimateExecution).not.toHaveBeenCalled();
+    expect(executionAdapter.executePreparedSwap).toHaveBeenCalledWith(expect.any(Object), preparedEstimate, undefined);
+    expect(logRepository.writeLog).not.toHaveBeenCalledWith(expect.objectContaining({ category: "execution_guard" }));
+  });
+
+  it("does not apply live slippage a second time to a paper accumulation estimate", async () => {
+    const aggregate = createBtcAccumulationSellAggregate(40.01, BotMode.Paper);
+    const { engine, tradeRepository, executionAdapter, logRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "BTC",
+        pair: "BTC/USDC",
+        price: 76_266.67,
+        confidence: 0.1,
+        source: "test-market",
+        timestamp: new Date("2026-09-16T10:00:00.000Z"),
+        feedId: "feed-btc"
+      },
+      executionEstimate: {
+        provider: ExecutionProvider.Paper,
+        inputMint: "BTC",
+        outputMint: "USDC",
+        inputAmount: 0.00052726,
+        expectedOutputAmount: 40.01,
+        estimatedFeeAmount: 0,
+        priceImpactPct: 0.005,
+        expectedPrice: 75_882.84
+      },
+      executionReport: {
+        provider: ExecutionProvider.Paper,
+        status: ExecutionStatus.Simulated,
+        executionId: "paper-btc-sell",
+        txId: null,
+        inputAmount: 0.00052726,
+        outputAmount: 40.01,
+        effectivePrice: 75_882.84,
+        feeAmount: 0
+      }
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(executionAdapter.prepareExecution).toHaveBeenCalled();
+    expect(tradeRepository.createOrder).toHaveBeenCalled();
+    expect(executionAdapter.executeSwap).toHaveBeenCalled();
+    expect(logRepository.writeLog).not.toHaveBeenCalledWith(expect.objectContaining({ category: "execution_guard" }));
+  });
+
   it("executes a live trade with the same prepared Jupiter order that passed the quote guard", async () => {
     const aggregate = createAggregate({
       bot: {
@@ -1278,7 +1519,7 @@ describe("BotEngineService", () => {
       inputMint: "SOL",
       outputMint: "USDC",
       inputAmount: 0.3457,
-      expectedOutputAmount: 30.1,
+      expectedOutputAmount: 30.16,
       estimatedFeeAmount: 0,
       priceImpactPct: 0,
       expectedPrice: 87.05,
