@@ -89,38 +89,69 @@ enum LogLevel {
   error
 }
 
+enum GridBandStatus {
+  ACTIVE
+  PARKED_BELOW
+  CLOSED
+}
+
+enum ExitTargetStatus {
+  KNOWN
+  UNKNOWN
+}
+
+enum CapitalReservationStatus {
+  RESERVED
+  UNKNOWN
+  SETTLED
+  RELEASED
+}
+
+enum CapitalLedgerEntryType {
+  PORTFOLIO_FUNDING
+  BAND_ALLOCATION
+  RESERVATION
+  RESERVATION_RELEASE
+  BUY_SETTLEMENT
+  SELL_SETTLEMENT
+  PROFIT_SWEEP
+  RETAINED_BASE
+  RECONCILIATION
+}
+
 model Bot {
-  id                String             @id @default(cuid())
-  key               String             @unique
-  clonedFromBotId   String?             @map("cloned_from_bot_id")
-  name              String
-  baseMint          String
-  quoteMint         String
-  baseSymbol        String
-  quoteSymbol       String
-  baseDecimals      Int
-  quoteDecimals     Int
-  strategyMode      StrategyMode
-  mode              BotMode
-  status            BotStatus
-  executionProvider ExecutionProvider
-  currentPrice      Decimal?           @db.Decimal(30, 10)
-  lastHeartbeatAt   DateTime?
-  archivedAt        DateTime?          @map("archived_at")
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  config            BotConfig?
-  stateSnapshots    BotStateSnapshot[]
-  orders            Order[]
-  executions        Execution[]
-  position          Position?
-  positionLots      PositionLot[]
+  id                 String              @id @default(cuid())
+  key                String              @unique
+  clonedFromBotId    String?             @map("cloned_from_bot_id")
+  name               String
+  baseMint           String
+  quoteMint          String
+  baseSymbol         String
+  quoteSymbol        String
+  baseDecimals       Int
+  quoteDecimals      Int
+  strategyMode       StrategyMode
+  mode               BotMode
+  status             BotStatus
+  executionProvider  ExecutionProvider
+  currentPrice       Decimal?            @db.Decimal(30, 10)
+  lastHeartbeatAt    DateTime?
+  archivedAt         DateTime?           @map("archived_at")
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  config             BotConfig?
+  stateSnapshots     BotStateSnapshot[]
+  orders             Order[]
+  executions         Execution[]
+  position           Position?
+  positionLots       PositionLot[]
   inventorySnapshots InventorySnapshot[]
-  pnlSnapshots      PnlSnapshot[]
-  alerts            Alert[]
-  systemLogs        SystemLog[]
-  priceSnapshots    PriceSnapshot[]
-  executionAttempt  ExecutionAttempt?
+  pnlSnapshots       PnlSnapshot[]
+  alerts             Alert[]
+  systemLogs         SystemLog[]
+  priceSnapshots     PriceSnapshot[]
+  executionAttempt   ExecutionAttempt?
+  gridBand           GridBand?
 
   @@index([clonedFromBotId])
   @@index([mode, archivedAt])
@@ -128,75 +159,75 @@ model Bot {
 }
 
 model BotConfig {
-  id                       String       @id @default(cuid())
-  botId                    String       @unique
-  totalBudgetUsd           Decimal      @db.Decimal(30, 10)
-  maxDeployableUsd         Decimal      @db.Decimal(30, 10)
-  reserveQuoteAmount       Decimal      @db.Decimal(30, 10)
-  lowPrice                 Decimal      @db.Decimal(30, 10)
-  highPrice                Decimal      @db.Decimal(30, 10)
-  levelCount               Int
-  gridType                 GridType
-  minOrderQuoteAmount      Decimal      @db.Decimal(30, 10)
-  maxSlippageBps           Int
-  cooldownMs               Int
-  maxOrdersPerHour         Int
-  maxDrawdownPct           Decimal      @db.Decimal(10, 4)
-  maxConsecutiveFailures   Int
-  levelLockMs              Int
+  id                        String       @id @default(cuid())
+  botId                     String       @unique
+  totalBudgetUsd            Decimal      @db.Decimal(30, 10)
+  maxDeployableUsd          Decimal      @db.Decimal(30, 10)
+  reserveQuoteAmount        Decimal      @db.Decimal(30, 10)
+  lowPrice                  Decimal      @db.Decimal(30, 10)
+  highPrice                 Decimal      @db.Decimal(30, 10)
+  levelCount                Int
+  gridType                  GridType
+  minOrderQuoteAmount       Decimal      @db.Decimal(30, 10)
+  maxSlippageBps            Int
+  cooldownMs                Int
+  maxOrdersPerHour          Int
+  maxDrawdownPct            Decimal      @db.Decimal(10, 4)
+  maxConsecutiveFailures    Int
+  levelLockMs               Int
   priceConfirmationWindowMs Int
-  recenterMode             RecenterMode
-  entryMode                EntryMode    @default(normal) @map("entry_mode")
+  recenterMode              RecenterMode
+  entryMode                 EntryMode    @default(normal) @map("entry_mode")
   autoRecenterMinIntervalMs Int
-  autoRecenterMaxPerDay    Int
-  outOfRangePause          Boolean      @default(true)
-  createdAt                DateTime     @default(now())
-  updatedAt                DateTime     @updatedAt
-  bot                      Bot          @relation(fields: [botId], references: [id], onDelete: Cascade)
+  autoRecenterMaxPerDay     Int
+  outOfRangePause           Boolean      @default(true)
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
+  bot                       Bot          @relation(fields: [botId], references: [id], onDelete: Cascade)
 
   @@map("bot_configs")
 }
 
 model BotStateSnapshot {
-  id                  String     @id @default(cuid())
-  botId               String
-  status              BotStatus
-  currentPrice        Decimal?   @db.Decimal(30, 10)
+  id                   String    @id @default(cuid())
+  botId                String
+  status               BotStatus
+  currentPrice         Decimal?  @db.Decimal(30, 10)
   availableQuoteAmount Decimal   @db.Decimal(30, 10)
-  availableBaseAmount Decimal    @db.Decimal(30, 10)
-  deployedQuoteAmount Decimal    @db.Decimal(30, 10)
-  averageEntryPrice   Decimal?   @db.Decimal(30, 10)
-  realizedPnlUsd      Decimal    @db.Decimal(30, 10)
-  unrealizedPnlUsd    Decimal    @db.Decimal(30, 10)
-  totalEquityUsd      Decimal    @db.Decimal(30, 10)
-  consecutiveFailures Int        @default(0)
-  lastExecutionAt     DateTime?
-  lastProcessedAt     DateTime
-  lastRecenterAt      DateTime?
-  metadata            Json
-  createdAt           DateTime   @default(now())
-  bot                 Bot        @relation(fields: [botId], references: [id], onDelete: Cascade)
+  availableBaseAmount  Decimal   @db.Decimal(30, 10)
+  deployedQuoteAmount  Decimal   @db.Decimal(30, 10)
+  averageEntryPrice    Decimal?  @db.Decimal(30, 10)
+  realizedPnlUsd       Decimal   @db.Decimal(30, 10)
+  unrealizedPnlUsd     Decimal   @db.Decimal(30, 10)
+  totalEquityUsd       Decimal   @db.Decimal(30, 10)
+  consecutiveFailures  Int       @default(0)
+  lastExecutionAt      DateTime?
+  lastProcessedAt      DateTime
+  lastRecenterAt       DateTime?
+  metadata             Json
+  createdAt            DateTime  @default(now())
+  bot                  Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
 
   @@index([botId, createdAt(sort: Desc)])
   @@map("bot_state_snapshots")
 }
 
 model Order {
-  id                  String      @id @default(cuid())
-  botId               String
-  orderKey            String      @unique
-  side                TradeSide
-  levelIndex          Int
-  targetPrice         Decimal     @db.Decimal(30, 10)
-  requestedBaseAmount Decimal     @db.Decimal(30, 10)
-  requestedQuoteAmount Decimal    @db.Decimal(30, 10)
-  status              OrderStatus
-  reason              String
-  createdAt           DateTime    @default(now())
-  updatedAt           DateTime    @updatedAt
-  bot                 Bot         @relation(fields: [botId], references: [id], onDelete: Cascade)
-  executions          Execution[]
-  executionAttempts   ExecutionAttempt[]
+  id                   String             @id @default(cuid())
+  botId                String
+  orderKey             String             @unique
+  side                 TradeSide
+  levelIndex           Int
+  targetPrice          Decimal            @db.Decimal(30, 10)
+  requestedBaseAmount  Decimal            @db.Decimal(30, 10)
+  requestedQuoteAmount Decimal            @db.Decimal(30, 10)
+  status               OrderStatus
+  reason               String
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  bot                  Bot                @relation(fields: [botId], references: [id], onDelete: Cascade)
+  executions           Execution[]
+  executionAttempts    ExecutionAttempt[]
 
   @@index([botId, createdAt(sort: Desc)])
   @@map("orders")
@@ -225,40 +256,40 @@ model Execution {
   order                Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
   bot                  Bot               @relation(fields: [botId], references: [id], onDelete: Cascade)
 
-  attempt              ExecutionAttempt?
+  attempt ExecutionAttempt?
 
   @@index([botId, createdAt(sort: Desc)])
   @@map("executions")
 }
 
 model Position {
-  id             String    @id @default(cuid())
-  botId          String    @unique
-  baseAmount     Decimal   @db.Decimal(30, 10)
-  quoteSpent     Decimal   @db.Decimal(30, 10)
-  averageEntryPrice Decimal @db.Decimal(30, 10)
-  realizedPnlUsd Decimal   @db.Decimal(30, 10)
-  unrealizedPnlUsd Decimal @db.Decimal(30, 10)
-  totalFeesQuote Decimal   @db.Decimal(30, 10)
-  updatedAt      DateTime  @updatedAt
-  bot            Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+  id                String   @id @default(cuid())
+  botId             String   @unique
+  baseAmount        Decimal  @db.Decimal(30, 10)
+  quoteSpent        Decimal  @db.Decimal(30, 10)
+  averageEntryPrice Decimal  @db.Decimal(30, 10)
+  realizedPnlUsd    Decimal  @db.Decimal(30, 10)
+  unrealizedPnlUsd  Decimal  @db.Decimal(30, 10)
+  totalFeesQuote    Decimal  @db.Decimal(30, 10)
+  updatedAt         DateTime @updatedAt
+  bot               Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
 
   @@map("positions")
 }
 
 model PositionLot {
-  kind               String    @default("trading")
-  id                 String    @id
-  botId              String
-  originalBaseAmount Decimal   @db.Decimal(30, 10)
-  remainingBaseAmount Decimal  @db.Decimal(30, 10)
-  entryPrice         Decimal   @db.Decimal(30, 10)
-  costQuote          Decimal   @db.Decimal(30, 10)
+  kind                String    @default("trading")
+  id                  String    @id
+  botId               String
+  originalBaseAmount  Decimal   @db.Decimal(30, 10)
+  remainingBaseAmount Decimal   @db.Decimal(30, 10)
+  entryPrice          Decimal   @db.Decimal(30, 10)
+  costQuote           Decimal   @db.Decimal(30, 10)
   openedByExecutionId String
   closedByExecutionId String?
-  openedAt           DateTime
-  closedAt           DateTime?
-  bot                Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+  openedAt            DateTime
+  closedAt            DateTime?
+  bot                 Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
 
   @@index([botId, openedAt(sort: Asc)])
   @@map("position_lots")
@@ -274,62 +305,62 @@ model ExecutionAttempt {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  bot         Bot       @relation(fields: [botId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  execution   Execution @relation(fields: [executionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  order       Order     @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  bot       Bot       @relation(fields: [botId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  execution Execution @relation(fields: [executionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  order     Order     @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@map("execution_attempts")
 }
 
 model InventorySnapshot {
-  id                 String    @id @default(cuid())
-  botId              String
-  baseAmount         Decimal   @db.Decimal(30, 10)
-  quoteAmount        Decimal   @db.Decimal(30, 10)
-  reservedBaseAmount Decimal   @db.Decimal(30, 10)
+  id                  String   @id @default(cuid())
+  botId               String
+  baseAmount          Decimal  @db.Decimal(30, 10)
+  quoteAmount         Decimal  @db.Decimal(30, 10)
+  reservedBaseAmount  Decimal  @db.Decimal(30, 10)
   reservedQuoteAmount Decimal  @db.Decimal(30, 10)
-  averageCost        Decimal?  @db.Decimal(30, 10)
-  createdAt          DateTime  @default(now())
-  bot                Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+  averageCost         Decimal? @db.Decimal(30, 10)
+  createdAt           DateTime @default(now())
+  bot                 Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
 
   @@index([botId, createdAt(sort: Desc)])
   @@map("inventory_snapshots")
 }
 
 model PnlSnapshot {
-  id              String    @id @default(cuid())
-  botId           String
-  realizedPnlUsd  Decimal   @db.Decimal(30, 10)
+  id               String   @id @default(cuid())
+  botId            String
+  realizedPnlUsd   Decimal  @db.Decimal(30, 10)
   unrealizedPnlUsd Decimal  @db.Decimal(30, 10)
-  totalPnlUsd     Decimal   @db.Decimal(30, 10)
-  equityUsd       Decimal   @db.Decimal(30, 10)
-  price           Decimal   @db.Decimal(30, 10)
-  createdAt       DateTime  @default(now())
-  bot             Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+  totalPnlUsd      Decimal  @db.Decimal(30, 10)
+  equityUsd        Decimal  @db.Decimal(30, 10)
+  price            Decimal  @db.Decimal(30, 10)
+  createdAt        DateTime @default(now())
+  bot              Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
 
   @@index([botId, createdAt(sort: Desc)])
   @@map("pnl_snapshots")
 }
 
 model PortfolioSnapshot {
-  id                  String   @id @default(cuid())
-  mode                BotMode
-  botCount            Int      @map("bot_count")
-  activeBotCount      Int      @map("active_bot_count")
-  totalBudgetUsd      Decimal  @map("total_budget_usd") @db.Decimal(30, 10)
-  capitalDeployedUsd  Decimal  @map("capital_deployed_usd") @db.Decimal(30, 10)
-  realizedPnlUsd      Decimal  @map("realized_pnl_usd") @db.Decimal(30, 10)
-  unrealizedPnlUsd    Decimal  @map("unrealized_pnl_usd") @db.Decimal(30, 10)
-  totalPnlUsd         Decimal  @map("total_pnl_usd") @db.Decimal(30, 10)
-  totalEquityUsd      Decimal  @map("total_equity_usd") @db.Decimal(30, 10)
-  createdAt           DateTime @default(now()) @map("created_at")
+  id                 String   @id @default(cuid())
+  mode               BotMode
+  botCount           Int      @map("bot_count")
+  activeBotCount     Int      @map("active_bot_count")
+  totalBudgetUsd     Decimal  @map("total_budget_usd") @db.Decimal(30, 10)
+  capitalDeployedUsd Decimal  @map("capital_deployed_usd") @db.Decimal(30, 10)
+  realizedPnlUsd     Decimal  @map("realized_pnl_usd") @db.Decimal(30, 10)
+  unrealizedPnlUsd   Decimal  @map("unrealized_pnl_usd") @db.Decimal(30, 10)
+  totalPnlUsd        Decimal  @map("total_pnl_usd") @db.Decimal(30, 10)
+  totalEquityUsd     Decimal  @map("total_equity_usd") @db.Decimal(30, 10)
+  createdAt          DateTime @default(now()) @map("created_at")
 
   @@index([mode, createdAt(sort: Desc)])
   @@map("portfolio_snapshots")
 }
 
 model Alert {
-  id              String     @id @default(cuid())
+  id              String    @id @default(cuid())
   botId           String?
   type            AlertType
   severity        String
@@ -338,39 +369,39 @@ model Alert {
   metadata        Json?
   acknowledgedAt  DateTime?
   sentToDiscordAt DateTime?
-  createdAt       DateTime   @default(now())
-  bot             Bot?       @relation(fields: [botId], references: [id], onDelete: Cascade)
+  createdAt       DateTime  @default(now())
+  bot             Bot?      @relation(fields: [botId], references: [id], onDelete: Cascade)
 
   @@index([createdAt(sort: Desc)])
   @@map("alerts")
 }
 
 model SystemLog {
-  id        String    @id @default(cuid())
+  id        String   @id @default(cuid())
   botId     String?
   level     LogLevel
   category  String
   message   String
   metadata  Json?
-  createdAt DateTime  @default(now())
-  bot       Bot?      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  bot       Bot?     @relation(fields: [botId], references: [id], onDelete: Cascade)
 
   @@index([createdAt(sort: Desc)])
   @@map("system_logs")
 }
 
 model PriceSnapshot {
-  id         String    @id @default(cuid())
+  id         String   @id @default(cuid())
   botId      String?
   symbol     String
   source     String
-  price      Decimal   @db.Decimal(30, 10)
-  confidence Decimal   @db.Decimal(30, 10)
+  price      Decimal  @db.Decimal(30, 10)
+  confidence Decimal  @db.Decimal(30, 10)
   feedId     String
   status     String
   capturedAt DateTime
-  createdAt  DateTime  @default(now())
-  bot        Bot?      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+  bot        Bot?     @relation(fields: [botId], references: [id], onDelete: Cascade)
 
   @@index([symbol, capturedAt(sort: Desc)])
   @@map("price_snapshots")
@@ -398,4 +429,159 @@ model MarketCandle {
   @@index([symbol, quoteSymbol, resolution, openTime(sort: Desc)])
   @@index([provider, symbol, quoteSymbol, resolution, fetchedAt])
   @@map("market_candles")
+}
+
+model Portfolio {
+  id              String   @id @default(cuid())
+  mode            BotMode
+  walletIdentity  String   @map("wallet_identity")
+  quoteMint       String   @map("quote_mint")
+  freeQuoteAmount Decimal  @default(0) @map("free_quote_amount") @db.Decimal(30, 10)
+  version         Int      @default(1)
+  autoLive        Boolean  @default(false) @map("auto_live")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  assetStrategies      AssetStrategy[]
+  capitalReservations  CapitalReservation[]
+  capitalLedgerEntries CapitalLedgerEntry[]
+
+  @@unique([mode, walletIdentity, quoteMint])
+  @@map("portfolios")
+}
+
+model AssetStrategy {
+  id                   String               @id @default(cuid())
+  portfolioId          String               @map("portfolio_id")
+  baseMint             String               @map("base_mint")
+  baseSymbol           String               @map("base_symbol")
+  objective            StrategyMode
+  allocationPolicy     String               @default("equal") @map("allocation_policy")
+  allocatedQuoteAmount Decimal              @default(0) @map("allocated_quote_amount") @db.Decimal(30, 10)
+  retainedBaseAmount   Decimal              @default(0) @map("retained_base_amount") @db.Decimal(30, 10)
+  createdAt            DateTime             @default(now()) @map("created_at")
+  updatedAt            DateTime             @updatedAt @map("updated_at")
+  portfolio            Portfolio            @relation(fields: [portfolioId], references: [id], onDelete: Restrict)
+  bands                GridBand[]
+  capitalLedgerEntries CapitalLedgerEntry[]
+
+  @@unique([portfolioId, baseMint])
+  @@index([portfolioId])
+  @@map("asset_strategies")
+}
+
+model GridBand {
+  id                   String               @id @default(cuid())
+  assetStrategyId      String               @map("asset_strategy_id")
+  botId                String               @unique @map("bot_id")
+  status               GridBandStatus       @default(ACTIVE)
+  allocatedQuoteAmount Decimal              @map("allocated_quote_amount") @db.Decimal(30, 10)
+  availableQuoteAmount Decimal              @map("available_quote_amount") @db.Decimal(30, 10)
+  reservedQuoteAmount  Decimal              @default(0) @map("reserved_quote_amount") @db.Decimal(30, 10)
+  deployedCostQuote    Decimal              @default(0) @map("deployed_cost_quote") @db.Decimal(30, 10)
+  realizedLossQuote    Decimal              @default(0) @map("realized_loss_quote") @db.Decimal(30, 10)
+  createdAt            DateTime             @default(now()) @map("created_at")
+  updatedAt            DateTime             @updatedAt @map("updated_at")
+  assetStrategy        AssetStrategy        @relation(fields: [assetStrategyId], references: [id], onDelete: Restrict)
+  bot                  Bot                  @relation(fields: [botId], references: [id], onDelete: Restrict)
+  revisions            GridRevision[]
+  exitCommitments      LotExitCommitment[]
+  capitalReservations  CapitalReservation[]
+  capitalLedgerEntries CapitalLedgerEntry[]
+
+  @@index([assetStrategyId])
+  @@map("grid_bands")
+}
+
+model GridRevision {
+  id          String              @id @default(cuid())
+  bandId      String              @map("band_id")
+  sequence    Int
+  lowPrice    Decimal             @map("low_price") @db.Decimal(30, 10)
+  highPrice   Decimal             @map("high_price") @db.Decimal(30, 10)
+  levelCount  Int                 @map("level_count")
+  gridType    GridType            @map("grid_type")
+  reason      String
+  observedAt  DateTime            @map("observed_at")
+  snapshotId  String?             @map("snapshot_id")
+  createdAt   DateTime            @default(now()) @map("created_at")
+  band        GridBand            @relation(fields: [bandId], references: [id], onDelete: Restrict)
+  commitments LotExitCommitment[]
+
+  @@unique([bandId, sequence])
+  @@index([bandId, createdAt(sort: Desc)])
+  @@map("grid_revisions")
+}
+
+model LotExitCommitment {
+  id                 String           @id @default(cuid())
+  bandId             String           @map("band_id")
+  lotId              String           @unique @map("lot_id")
+  targetStatus       ExitTargetStatus @map("target_status")
+  buyLevelIndex      Int?             @map("buy_level_index")
+  sellLevelIndex     Int?             @map("sell_level_index")
+  buyTargetPrice     Decimal?         @map("buy_target_price") @db.Decimal(30, 10)
+  sellTargetPrice    Decimal?         @map("sell_target_price") @db.Decimal(30, 10)
+  economicRule       StrategyMode     @map("economic_rule")
+  originRevisionId   String           @map("origin_revision_id")
+  maxAdverseDriftBps Int              @map("max_adverse_drift_bps")
+  fulfilledAt        DateTime?        @map("fulfilled_at")
+  createdAt          DateTime         @default(now()) @map("created_at")
+  band               GridBand         @relation(fields: [bandId], references: [id], onDelete: Restrict)
+  originRevision     GridRevision     @relation(fields: [originRevisionId], references: [id], onDelete: Restrict)
+
+  @@index([bandId, fulfilledAt])
+  @@map("lot_exit_commitments")
+}
+
+model CapitalReservation {
+  id             String                   @id @default(cuid())
+  portfolioId    String                   @map("portfolio_id")
+  bandId         String                   @map("band_id")
+  quoteAmount    Decimal                  @map("quote_amount") @db.Decimal(30, 10)
+  status         CapitalReservationStatus @default(RESERVED)
+  idempotencyKey String                   @map("idempotency_key")
+  executionId    String?                  @unique @map("execution_id")
+  unknownReason  String?                  @map("unknown_reason")
+  createdAt      DateTime                 @default(now()) @map("created_at")
+  updatedAt      DateTime                 @updatedAt @map("updated_at")
+  portfolio      Portfolio                @relation(fields: [portfolioId], references: [id], onDelete: Restrict)
+  band           GridBand                 @relation(fields: [bandId], references: [id], onDelete: Restrict)
+  ledgerEntries  CapitalLedgerEntry[]
+
+  @@unique([portfolioId, idempotencyKey])
+  @@index([portfolioId, status])
+  @@index([bandId, status])
+  @@map("capital_reservations")
+}
+
+model CapitalLedgerEntry {
+  id                        String                 @id @default(cuid())
+  portfolioId               String                 @map("portfolio_id")
+  assetStrategyId           String?                @map("asset_strategy_id")
+  bandId                    String?                @map("band_id")
+  reservationId             String?                @map("reservation_id")
+  entryType                 CapitalLedgerEntryType @map("entry_type")
+  idempotencyKey            String                 @map("idempotency_key")
+  executionId               String?                @map("execution_id")
+  portfolioFreeQuoteDelta   Decimal                @default(0) @map("portfolio_free_quote_delta") @db.Decimal(30, 10)
+  strategyAllocatedQuoteDelta Decimal               @default(0) @map("strategy_allocated_quote_delta") @db.Decimal(30, 10)
+  bandAllocatedQuoteDelta   Decimal                @default(0) @map("band_allocated_quote_delta") @db.Decimal(30, 10)
+  bandAvailableQuoteDelta   Decimal                @default(0) @map("band_available_quote_delta") @db.Decimal(30, 10)
+  bandReservedQuoteDelta    Decimal                @default(0) @map("band_reserved_quote_delta") @db.Decimal(30, 10)
+  bandDeployedCostDelta     Decimal                @default(0) @map("band_deployed_cost_delta") @db.Decimal(30, 10)
+  strategyRetainedBaseDelta Decimal                @default(0) @map("strategy_retained_base_delta") @db.Decimal(30, 10)
+  externalFeeQuoteDelta     Decimal                @default(0) @map("external_fee_quote_delta") @db.Decimal(30, 10)
+  reason                    String
+  metadata                  Json?
+  createdAt                 DateTime               @default(now()) @map("created_at")
+  portfolio                 Portfolio              @relation(fields: [portfolioId], references: [id], onDelete: Restrict)
+  assetStrategy             AssetStrategy?         @relation(fields: [assetStrategyId], references: [id], onDelete: Restrict)
+  band                      GridBand?              @relation(fields: [bandId], references: [id], onDelete: Restrict)
+  reservation               CapitalReservation?    @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+
+  @@unique([portfolioId, idempotencyKey])
+  @@index([portfolioId, createdAt])
+  @@index([bandId, createdAt])
+  @@map("capital_ledger_entries")
 }

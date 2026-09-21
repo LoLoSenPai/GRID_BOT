@@ -1,6 +1,11 @@
 import { getEnv, logger } from "@grid-bot/common";
 import {
   AlertService,
+  CachedCandleHistoryProvider,
+  GeckoTerminalHistoryProvider,
+  PortfolioManagerService,
+  DEFAULT_PORTFOLIO_POLICY,
+  buildPortfolioPolicyInput,
   BotEngineService,
   DflowAdapter,
   ExecutionProvider,
@@ -13,6 +18,8 @@ import {
 } from "@grid-bot/core";
 import {
   PrismaAlertRepository,
+  PrismaMarketCandleRepository,
+  PrismaPortfolioManagerStore,
   PrismaBotStateRepository,
   PrismaPriceSnapshotRepository,
   PrismaSystemLogRepository,
@@ -77,6 +84,13 @@ async function main() {
     async () => (await prisma.executionAttempt.findMany({ select: { botId: true } })).map((attempt) => attempt.botId),
     (botId) => engine.runBot(botId, { recoveryOnly: true })
   );
+  const portfolioManager = new PortfolioManagerService(new PrismaPortfolioManagerStore(),
+    new CachedCandleHistoryProvider(new PrismaMarketCandleRepository(), new GeckoTerminalHistoryProvider()),
+    DEFAULT_PORTFOLIO_POLICY, buildPortfolioPolicyInput);
+  let policyRun: Promise<void> = Promise.resolve();
+  const policyInterval = setInterval(() => {
+    policyRun = portfolioManager.runCycle().catch(() => logger.warn("Portfolio observation unavailable; adaptation deferred."));
+  }, 60_000);
   logger.info(
     { tickIntervalMs: env.BOT_TICK_INTERVAL_MS, symbolRunMinIntervalMs: env.SYMBOL_RUN_MIN_INTERVAL_MS },
     "Worker started"
@@ -99,8 +113,10 @@ async function main() {
     shuttingDown = true;
     clearInterval(portfolioSnapshotInterval);
     clearInterval(maintenanceInterval);
+    clearInterval(policyInterval);
     pricePoller.stop();
     await Promise.all([symbolRunScheduler.stop(), recoveryPoller.stop()]);
+    await policyRun;
     await prisma.$disconnect();
     await botLockPool.end();
     process.exit(0);

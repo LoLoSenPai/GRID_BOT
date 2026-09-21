@@ -1,3 +1,4 @@
+import { gridCostFloorPct } from "../utils/grid-cost-floor";
 import { DEFAULTS } from "@grid-bot/common";
 
 import { BotMode, BotStatus, EntryMode, ExecutionProvider, GridType, MinOrderMode, OrderStatus, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
@@ -248,7 +249,7 @@ export function hasViableStep(config: BacktestConfig, natrPct: number): boolean 
   const fee = (config.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS) / 10_000;
   if (![slip, fee, config.lowPrice, config.highPrice, natrPct].every(Number.isFinite) ||
     slip < 0 || fee < 0 || slip >= 1 || fee >= 1 || config.lowPrice <= 0 || config.highPrice <= config.lowPrice || config.levelCount < 2) return false;
-  const costFloorPct = (((1 + slip) * (1 + fee)) / ((1 - slip) * (1 - fee)) - 1) * 100;
+  const costFloorPct = gridCostFloorPct(config.maxSlippageBps, config.executionFeeBps ?? DEFAULT_EXECUTION_FEE_BPS);
   const minimumStepPct = Math.max(Math.max(0, natrPct) * 0.5, costFloorPct + 0.25);
   const step = (config.highPrice - config.lowPrice) / (config.levelCount - 1);
   const smallestStepPct = config.gridType === GridType.Geometric

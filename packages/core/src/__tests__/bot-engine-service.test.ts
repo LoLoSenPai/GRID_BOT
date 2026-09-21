@@ -11,6 +11,62 @@ import { GridStrategyService } from "../services/grid-strategy-service";
 import { MarketDataUnavailableError } from "../services/market-price-service";
 import { RiskManagerService } from "../services/risk-manager-service";
 import { PaperExecutionAdapter } from "../adapters/paper-execution-adapter";
+import type { BandExecutionContext } from "../domain/portfolio-types";
+
+function attachPortfolio(aggregate: BotAggregate, lot?: PositionLot) {
+  const now = new Date();
+  aggregate.portfolio = {
+    portfolio: { id: "portfolio", mode: BotMode.Paper, autoLive: false, walletIdentity: "virtual", quoteMint: "USDC",
+      freeQuoteAmount: 0, version: 1, createdAt: now, updatedAt: now },
+    strategy: { id: "strategy", portfolioId: "portfolio", baseMint: aggregate.bot.baseMint, baseSymbol: aggregate.bot.baseSymbol,
+      objective: aggregate.bot.strategyMode, allocationPolicy: "equal", allocatedQuoteAmount: 2000, retainedBaseAmount: 0 },
+    band: { id: "band", botId: aggregate.bot.id, status: "ACTIVE", allocatedQuoteAmount: 2000,
+      availableQuoteAmount: 1500, reservedQuoteAmount: 0, deployedCostQuote: lot?.costQuote ?? 0, realizedLossQuote: 0,
+      activeRevision: { id: "revision-new", bandId: "band", sequence: 2, lowPrice: aggregate.config.lowPrice,
+        highPrice: aggregate.config.highPrice, levelCount: aggregate.config.levelCount, gridType: aggregate.config.gridType,
+        observedAt: now, createdAt: now, snapshotId: null, reason: "closed volatility changed" } },
+    exitCommitments: lot ? [{ id: "exit", bandId: "band", lotId: lot.id, targetStatus: "KNOWN", buyLevelIndex: 1,
+      sellLevelIndex: 2, buyTargetPrice: 100, sellTargetPrice: 110, economicRule: aggregate.bot.strategyMode,
+      originRevisionId: "revision-old", maxAdverseDriftBps: 50, fulfilledAt: null, createdAt: now }] : [],
+    capitalBlockedReason: null,
+  } as BandExecutionContext;
+  return aggregate;
+}
+
+describe("V2 execution independent from current grid", () => {
+  it("sells an old absolute commitment outside a moved, parked envelope using durable paper accounting", async () => {
+    const lot: PositionLot = { id: "old-lot", botId: "bot-1", kind: "trading", originalBaseAmount: 1, openedByExecutionId: "old-buy", closedByExecutionId: null,
+      remainingBaseAmount: 1, costQuote: 100, entryPrice: 100, openedAt: new Date("2026-01-01"), closedAt: null };
+    const aggregate = attachPortfolio(createAggregate({ bot: { strategyMode: StrategyMode.AccumulateUsdc },
+      config: { lowPrice: 70, highPrice: 90 }, openLots: [lot] }), lot);
+    aggregate.portfolio!.band.status = "PARKED_BELOW";
+    const setup = createEngine({ aggregate, marketPrice: { symbol: "SOL/USDC", pair: "SOL/USDC", price: 111,
+      confidence: 0, source: "test", feedId: "test", timestamp: new Date() } });
+    await setup.engine.runBot("bot-1");
+    expect(setup.tradeRepository.prepareExecutionAttempt).toHaveBeenCalledOnce();
+    expect(setup.tradeRepository.prepareExecutionAttempt.mock.calls[0]![0].signal).toMatchObject({
+      exitLotId: lot.id, gridRevisionId: "revision-old", levelPrice: 110 });
+    expect(setup.tradeRepository.commitExecution).toHaveBeenCalledOnce();
+    expect(setup.tradeRepository.commitExecution.mock.calls[0]![0].report.status).toBe(ExecutionStatus.Simulated);
+    expect(setup.tradeRepository.createExecution).not.toHaveBeenCalled();
+  });
+
+  it("establishes a baseline on revision change instead of buying through newly positioned rails", async () => {
+    const aggregate = attachPortfolio(createAggregate({ bot: { strategyMode: StrategyMode.AccumulateUsdc },
+      latestState: { currentPrice: 150 }, config: { priceConfirmationWindowMs: 0 } }));
+    const marketPrice = { symbol: "SOL/USDC", pair: "SOL/USDC", price: 115, confidence: 0,
+      source: "test", feedId: "test", timestamp: new Date() };
+    const setup = createEngine({ aggregate, marketPrice });
+    await setup.engine.runBot("bot-1");
+    expect(setup.tradeRepository.prepareExecutionAttempt).not.toHaveBeenCalled();
+    expect(setup.botRepository.createStateSnapshot.mock.calls.at(-1)![0].metadata).toMatchObject({
+      pendingSignal: null, gridRevisionId: "revision-new", revisionBaselinePending: false });
+    marketPrice.price = 109;
+    await setup.engine.runBot("bot-1");
+    expect(setup.tradeRepository.prepareExecutionAttempt).toHaveBeenCalledOnce();
+    expect(setup.tradeRepository.prepareExecutionAttempt.mock.calls[0]![0].orderIntent.orderKey).toContain("revision-new");
+  });
+});
 
 function createAggregate(overrides: {
   bot?: Partial<BotAggregate["bot"]>;

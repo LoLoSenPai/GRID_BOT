@@ -339,6 +339,7 @@ export async function getBotsOverview(mode?: BotMode) {
         }
       },
       executions: { orderBy: { createdAt: "desc" }, take: 1, include: { order: true } },
+      positionLots: { where: { remainingBaseAmount: { gt: 0 } }, orderBy: { openedAt: "asc" } },
       systemLogs: { where: { category: "paper_reset" }, orderBy: { createdAt: "desc" }, take: 1 },
       _count: {
         select: {
@@ -365,6 +366,7 @@ export async function getBotDetail(botId: string, mode?: BotMode) {
       ...(mode ? { mode: mode as never } : {})
     },
     include: {
+      gridBand: { include: { exitCommitments: { where: { fulfilledAt: null } } } },
       config: true,
       position: true,
       positionLots: {
@@ -397,6 +399,17 @@ export async function getBotDetail(botId: string, mode?: BotMode) {
     return null;
   }
   const latestState = await findLatestBotStateSnapshot(bot.id);
+
+  if (latestState && bot.gridBand) {
+    const metadata = latestState.metadata && typeof latestState.metadata === "object" && !Array.isArray(latestState.metadata)
+      ? latestState.metadata : {};
+    latestState.metadata = { ...metadata, gridCycles: Object.fromEntries(bot.gridBand.exitCommitments.map(exit => [exit.id, {
+      lotId: exit.lotId, buyLevelIndex: exit.buyLevelIndex ?? 0, sellLevelIndex: exit.sellLevelIndex,
+      buyTargetPrice: exit.buyTargetPrice ? Number(exit.buyTargetPrice) : null,
+      sellTargetPrice: exit.sellTargetPrice ? Number(exit.sellTargetPrice) : null,
+      gridRevisionId: exit.originRevisionId, openedAt: exit.createdAt.toISOString(),
+    }])) };
+  }
 
   return {
     ...bot,

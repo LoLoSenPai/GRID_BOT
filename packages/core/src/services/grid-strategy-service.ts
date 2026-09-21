@@ -4,6 +4,7 @@ import type { BotAggregate, GridCycle, GridLevel, OrderIntent, PositionLot, Trig
 import { round } from "../utils/math";
 import { priceMoveTouchesLevel } from "../utils/price-trigger";
 import { Decimal } from "decimal.js";
+import { blocksDuplicateEntry } from "./portfolio-policy-service";
 
 const PRICE_EPSILON = 0.00000001;
 
@@ -70,6 +71,17 @@ export class GridStrategyService {
   }
 
   buildOrderIntent(bot: BotAggregate, signal: TriggerSignal): OrderIntent | null {
+    if (bot.portfolio && signal.side === TradeSide.Sell) {
+      const exit = bot.portfolio.exitCommitments.find(e => e.lotId === signal.exitLotId && !e.fulfilledAt);
+      const lot = bot.openLots.find(l => l.id === signal.exitLotId && this.isOpenLotSellable(l));
+      if (!exit || !lot || exit.targetStatus !== "KNOWN" || exit.sellTargetPrice !== signal.levelPrice ||
+        exit.economicRule !== bot.bot.strategyMode || signal.observedPrice < signal.levelPrice) return null;
+      const sell = this.buildSellPlanFromLot(bot, lot, signal.observedPrice);
+      return sell ? { botId: bot.bot.id, orderKey: signal.idempotencyKey, side: TradeSide.Sell,
+        levelIndex: signal.levelIndex, targetPrice: exit.sellTargetPrice!, requestedBaseAmount: sell.requestedBaseAmount,
+        requestedQuoteAmount: sell.requestedQuoteAmount, status: OrderStatus.Created,
+        reason: `Preserved lot exit from revision ${exit.originRevisionId}`, matchedLotIds: [lot.id] } : null;
+    }
     const snapshot = bot.latestState;
     const gridCycles = this.getActiveGridCycles(bot);
     const availableQuote = snapshot?.availableQuoteAmount ?? bot.config.totalBudgetUsd;
@@ -86,7 +98,12 @@ export class GridStrategyService {
         return null;
       }
 
-      if (this.isBuyLevelOccupied(gridCycles, signal.levelIndex)) {
+      if (bot.portfolio) {
+        if (bot.portfolio.band.status !== "ACTIVE" || bot.portfolio.capitalBlockedReason) return null;
+        const spacing = (bot.config.highPrice - bot.config.lowPrice) / (bot.config.levelCount - 1);
+        if (bot.openLots.some(l => blocksDuplicateEntry({ oldEntryPrice: l.entryPrice, currentPrice: signal.levelPrice,
+          widerSpacing: spacing, openTradingLot: this.isOpenLotSellable(l) }))) return null;
+      } else if (this.isBuyLevelOccupied(gridCycles, signal.levelIndex)) {
         return null;
       }
 
@@ -97,7 +114,7 @@ export class GridStrategyService {
 
       return {
         botId: bot.bot.id,
-        orderKey: signal.idempotencyKey,
+        orderKey: bot.portfolio ? `${bot.portfolio.band.activeRevision.id}:${signal.idempotencyKey}` : signal.idempotencyKey,
         side: TradeSide.Buy,
         levelIndex: signal.levelIndex,
         targetPrice: signal.levelPrice,

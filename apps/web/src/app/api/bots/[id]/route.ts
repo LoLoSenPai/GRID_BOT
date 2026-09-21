@@ -8,7 +8,7 @@ import {
   type BotStatus,
   type PositionLot,
 } from "@grid-bot/core";
-import { findLatestBotStateSnapshot, prisma } from "@grid-bot/db";
+import { findLatestBotStateSnapshot, prisma, archivePaperPortfolioBand } from "@grid-bot/db";
 
 import { readSession } from "@/lib/auth";
 import {
@@ -34,6 +34,7 @@ export async function PATCH(
     const bot = await prisma.bot.findFirst({
       where: { id, archivedAt: null },
       include: {
+        gridBand: true,
         config: true,
         position: true,
         positionLots: {
@@ -46,6 +47,7 @@ export async function PATCH(
     if (!bot?.config) {
       return NextResponse.json({ error: "Bot not found." }, { status: 404 });
     }
+    if (bot.gridBand) return NextResponse.json({ error: "V2 capital and grid revisions are managed from Portfolio." }, { status: 409 });
 
     if (bot.status === "running" || bot.status === "cooldown") {
       return NextResponse.json(
@@ -487,7 +489,7 @@ export async function DELETE(
   const { id } = await params;
   const bot = await prisma.bot.findFirst({
     where: { id, archivedAt: null },
-    select: { id: true, status: true, name: true },
+    select: { id: true, status: true, name: true, gridBand: true },
   });
 
   if (!bot) {
@@ -502,6 +504,10 @@ export async function DELETE(
   }
 
   try {
+    if (bot.gridBand) {
+      await archivePaperPortfolioBand(id);
+      return NextResponse.json({ ok: true, archivedBotName: bot.name });
+    }
     await prisma.$transaction([
       prisma.bot.update({
         where: { id },

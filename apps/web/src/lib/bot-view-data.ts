@@ -133,6 +133,7 @@ function mapPositionLot(lot: {
   closedByExecutionId: string | null;
   openedAt: Date;
   closedAt: Date | null;
+  kind?: string;
 }): PositionLot {
   return {
     id: lot.id,
@@ -144,7 +145,8 @@ function mapPositionLot(lot: {
     openedByExecutionId: lot.openedByExecutionId,
     closedByExecutionId: lot.closedByExecutionId,
     openedAt: lot.openedAt,
-    closedAt: lot.closedAt
+    closedAt: lot.closedAt,
+    kind: lot.kind === "retained" ? "retained" : "trading"
   };
 }
 
@@ -239,6 +241,9 @@ export function serializeBotOverview(bot: OverviewBot) {
   const latestExecution = bot.executions[0] ?? null;
   const latestExecutionAmounts = latestExecution ? deriveExecutionAmounts(latestExecution.order.side as "buy" | "sell", latestExecution, latestExecution.order) : null;
   const latestPaperSignalAt = latest?.lastProcessedAt?.toISOString() ?? null;
+  const openLots = bot.positionLots.filter((lot) => Number(lot.remainingBaseAmount) > 0);
+  const retainedBaseAmount = openLots.filter((lot) => lot.kind === "retained").reduce((sum, lot) => sum + Number(lot.remainingBaseAmount), 0);
+  const tradingBaseAmount = openLots.filter((lot) => lot.kind !== "retained").reduce((sum, lot) => sum + Number(lot.remainingBaseAmount), 0);
 
   return {
     id: bot.id,
@@ -308,6 +313,7 @@ export function serializeBotOverview(bot: OverviewBot) {
           }
         : null
     },
+    exposure: { retainedBaseAmount, tradingBaseAmount, tradingLotCount: openLots.filter((lot) => lot.kind !== "retained").length },
     paperSession: {
       enabled: bot.mode === "paper",
       startedAt: (latestPaperReset?.createdAt ?? bot.createdAt).toISOString(),
@@ -340,7 +346,7 @@ export function serializeBotBoard(bot: DetailBot): BotDetailViewData {
   const runtimeMetadata = latestState?.metadata && typeof latestState.metadata === "object" ? (latestState.metadata as Record<string, unknown>) : null;
   const gridCycles =
     runtimeMetadata && runtimeMetadata.gridCycles && typeof runtimeMetadata.gridCycles === "object"
-      ? (runtimeMetadata.gridCycles as Record<string, { buyLevelIndex: number; sellLevelIndex: number | null; lotId: string; openedAt: string }>)
+      ? (runtimeMetadata.gridCycles as Record<string, { buyLevelIndex: number; sellLevelIndex: number | null; lotId: string; openedAt: string; buyTargetPrice?: number; sellTargetPrice?: number | null; gridRevisionId?: string }>)
       : {};
   const openPositionLots = reconcileOpenPositionLots(
     bot.positionLots.map(mapPositionLot),
@@ -473,7 +479,8 @@ export function serializeBotBoard(bot: DetailBot): BotDetailViewData {
       remainingBaseAmount: lot.remainingBaseAmount,
       entryPrice: lot.entryPrice,
       costQuote: lot.costQuote,
-      openedAt: lot.openedAt.toISOString()
+      openedAt: lot.openedAt.toISOString(),
+      kind: lot.kind === "retained" ? "retained" : "trading"
     })),
     openCycles: Object.entries(gridCycles)
       .flatMap(([cycleId, cycle]) => {
@@ -486,9 +493,12 @@ export function serializeBotBoard(bot: DetailBot): BotDetailViewData {
           id: cycleId,
           lotId: cycle.lotId,
           buyLevelIndex: cycle.buyLevelIndex,
-          buyPrice: levels[cycle.buyLevelIndex] ?? Number(config?.lowPrice ?? 0),
+          buyPrice: cycle.buyTargetPrice ?? levels[cycle.buyLevelIndex] ?? Number(config?.lowPrice ?? 0),
+          buyTargetPrice: cycle.buyTargetPrice ?? null,
           sellLevelIndex: cycle.sellLevelIndex,
-          sellPrice: cycle.sellLevelIndex !== null ? (levels[cycle.sellLevelIndex] ?? null) : null,
+          sellPrice: cycle.sellTargetPrice ?? (cycle.sellLevelIndex !== null ? (levels[cycle.sellLevelIndex] ?? null) : null),
+          sellTargetPrice: cycle.sellTargetPrice ?? null,
+          gridRevisionId: cycle.gridRevisionId ?? null,
           remainingBaseAmount: lot ? Number(lot.remainingBaseAmount) : 0,
           costQuote: lot ? Number(lot.costQuote) : 0,
           openedAt: cycle.openedAt

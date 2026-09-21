@@ -14,12 +14,13 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const { id } = await params;
   const bot = await prisma.bot.findFirst({
     where: { id, archivedAt: null },
-    include: { config: true }
+    include: { config: true, gridBand: true }
   });
 
   if (!bot?.config) {
     return NextResponse.json({ error: "Bot not found." }, { status: 404 });
   }
+  if (bot.gridBand) return NextResponse.json({ error: "Create a new paper portfolio to start a separate experiment; its ledger cannot be reset." }, { status: 409 });
 
   if (bot.mode !== BotMode.Paper) {
     return NextResponse.json({ error: "Paper reset is only available for paper bots." }, { status: 409 });

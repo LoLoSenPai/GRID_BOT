@@ -13,6 +13,7 @@ import type {
   StrategyMode,
   TradeSide
 } from "./enums";
+import type { BandExecutionContext } from "./portfolio-types";
 
 export interface BotConfig {
   /** Optional execution-cost estimate used for recovery sizing; quotes still require net validation. */
@@ -49,6 +50,9 @@ export interface PendingSignal {
 }
 
 export interface GridCycle {
+  gridRevisionId?: string;
+  buyTargetPrice?: number;
+  sellTargetPrice?: number | null;
   buyLevelIndex: number;
   sellLevelIndex: number | null;
   lotId: string;
@@ -56,6 +60,8 @@ export interface GridCycle {
 }
 
 export interface BotRuntimeMetadata {
+  gridRevisionId?: string;
+  revisionBaselinePending?: boolean;
   /** Attributed gas expense paid by the wallet's native SOL reserve, outside the bot's swap balances. */
   externalNativeFeesQuote?: number;
   equityHighWatermarkUsd?: number;
@@ -132,6 +138,7 @@ export interface Bot {
 }
 
 export interface BotAggregate {
+  portfolio?: BandExecutionContext | null;
   bot: Bot;
   config: BotConfig;
   latestState: BotStateSnapshot | null;
@@ -160,6 +167,9 @@ export interface MarketPrice {
 }
 
 export interface TriggerSignal {
+  exitLotId?: string;
+  gridRevisionId?: string;
+  maxAdverseDriftBps?: number;
   levelIndex: number;
   side: TradeSide;
   levelPrice: number;

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getEnv } from "@grid-bot/common";
 import { BotMode, BotStatus } from "@grid-bot/core";
-import { findLatestBotStateSnapshot, prisma } from "@grid-bot/db";
+import { findLatestBotStateSnapshot, prisma, resumePortfolioBand } from "@grid-bot/db";
 
 import { readSession } from "@/lib/auth";
 import {
@@ -20,6 +20,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
   const bot = await prisma.bot.findFirst({
     where: { id, archivedAt: null },
     include: {
+      gridBand: true,
       config: true,
       position: true,
       positionLots: {
@@ -39,6 +40,10 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
 
   if (bot.status === BotStatus.Running) {
     return NextResponse.json({ ok: true });
+  }
+  if (bot.gridBand) {
+    try { await resumePortfolioBand(id); return NextResponse.json({ ok: true }); }
+    catch { return NextResponse.json({ error: "Reconcile pending executions before resuming this band." }, { status: 409 }); }
   }
 
   const latestState = await findLatestBotStateSnapshot(bot.id);

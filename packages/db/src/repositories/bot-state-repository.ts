@@ -5,6 +5,7 @@ import { prisma, botLockPool } from "../client";
 import { stateSnapshotData } from "./execution-persistence-data";
 import { mapAggregate } from "../mappers";
 import { findLatestBotStateSnapshot, findLatestBotStateSnapshots } from "./latest-state-snapshots";
+import { PrismaPortfolioRepository } from "./portfolio-repository";
 
 export class PrismaBotStateRepository implements BotStateRepository {
   async listRunnableBots() {
@@ -25,16 +26,18 @@ export class PrismaBotStateRepository implements BotStateRepository {
       orderBy: { createdAt: "asc" }
     });
     const latestStateByBotId = await findLatestBotStateSnapshots(bots.map((bot) => bot.id));
+    const portfolioContexts = await new PrismaPortfolioRepository().listBandContexts();
+    const portfolioByBotId = new Map(portfolioContexts.map((context) => [context.band.botId, context]));
 
     return bots
       .map((bot) =>
-        mapAggregate({
+        withPortfolio(mapAggregate({
           bot,
           config: bot.config,
           stateSnapshots: latestStateByBotId.get(bot.id) ? [latestStateByBotId.get(bot.id)!] : [],
           position: bot.position,
           positionLots: bot.positionLots
-        })
+        }), portfolioByBotId.get(bot.id))
       )
       .filter((value): value is NonNullable<typeof value> => Boolean(value));
   }
@@ -51,14 +54,15 @@ export class PrismaBotStateRepository implements BotStateRepository {
       }
     });
     const latestState = bot ? await findLatestBotStateSnapshot(bot.id) : null;
+    const portfolio = bot ? await new PrismaPortfolioRepository().getBandContext(bot.id) : null;
     return bot
-      ? mapAggregate({
+      ? withPortfolio(mapAggregate({
           bot,
           config: bot.config,
           stateSnapshots: latestState ? [latestState] : [],
           position: bot.position,
           positionLots: bot.positionLots
-        })
+        }), portfolio ?? undefined)
       : null;
   }
 
@@ -85,6 +89,13 @@ export class PrismaBotStateRepository implements BotStateRepository {
         Prisma.sql`SELECT status FROM bots WHERE id = ${snapshot.botId} FOR UPDATE`
       );
       if (!current[0]) throw new Error("Bot no longer exists.");
+      const band = await tx.gridBand.findUnique({ where: { botId: snapshot.botId },
+        include: { revisions: { orderBy: { sequence: "desc" }, take: 1 } } });
+      if (band && snapshot.metadata.gridRevisionId !== band.revisions[0]?.id) {
+        // A manager revision won the row lock while this passive snapshot was being computed.
+        // Dropping the stale observation preserves the new revision baseline and pending-signal reset.
+        return;
+      }
       const status = preserveOperatorStatus(current[0].status, snapshot.status);
       await tx.botStateSnapshot.create({ data: stateSnapshotData({ ...snapshot, status }) });
       await tx.bot.update({ where: { id: snapshot.botId }, data: { status: status as never, currentPrice: snapshot.currentPrice } });
@@ -99,6 +110,8 @@ export class PrismaBotStateRepository implements BotStateRepository {
         Prisma.sql`SELECT status FROM bots WHERE id = ${botId} FOR UPDATE`
       );
       if (!current[0]) throw new Error("Bot no longer exists.");
+      const band = await tx.gridBand.findUnique({ where: { botId }, select: { id: true } });
+      if (band) throw new Error("Portfolio grid bands must be revised through the portfolio manager.");
       const lots = await tx.positionLot.count({ where: { botId, kind: "trading", closedAt: null, remainingBaseAmount: { gt: 0 } } });
       const attempt = await tx.executionAttempt.findUnique({ where: { botId } });
       if (lots || attempt) throw new Error("Cannot recenter while trading lots or an unresolved execution exist.");
@@ -140,6 +153,10 @@ export class PrismaBotStateRepository implements BotStateRepository {
       }
     }
   }
+}
+
+function withPortfolio<T extends Awaited<ReturnType<typeof mapAggregate>>>(aggregate: T, portfolio: NonNullable<T>["portfolio"]): T {
+  return aggregate ? { ...aggregate, portfolio: portfolio ?? null } as T : aggregate;
 }
 
 export function preserveOperatorStatus(current: BotStatus, proposed: BotStatus): BotStatus {

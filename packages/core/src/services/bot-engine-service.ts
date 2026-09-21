@@ -42,6 +42,7 @@ import { round } from "../utils/math";
 import { applyLotExecution, summarizeLots, isTradingLot, calculateNetSellPnl } from "./lot-accounting-service";
 import { evaluateFlatRecenter } from "./flat-recenter-service";
 import { Decimal } from "decimal.js";
+import { eligibleCommittedExits } from "./lot-exit-commitment-service";
 
 const HEARTBEAT_UPDATE_INTERVAL_MS = 2_000;
 const QUOTE_GUARD_LOG_INTERVAL_MS = 60_000;
@@ -54,6 +55,7 @@ type SignalExecutionOutcome = "not_actionable" | "handled_no_execution" | "execu
 export class BotEngineService {
   private readonly passivePriceSnapshotWriteAt = new Map<string, number>();
   private readonly lastObservedPriceByBotId = new Map<string, number>();
+  private readonly lastObservedRevisionByBotId = new Map<string, string>();
   private readonly lastHeartbeatWriteAt = new Map<string, number>();
   private readonly quoteGuardLogWriteAt = new Map<string, number>();
   private readonly executionRetryLogWriteAt = new Map<string, number>();
@@ -134,6 +136,25 @@ export class BotEngineService {
           await this.persistPassivePriceSnapshot(aggregate, marketPrice, now);
           await this.persistPassiveState(aggregate, marketPrice.price, now);
           return;
+        }
+
+        if (aggregate.portfolio) {
+          const context = aggregate.portfolio;
+          const exit = eligibleCommittedExits({ botId, price: marketPrice.price, now, lots: aggregate.openLots,
+            commitments: context.exitCommitments.filter(e => !e.fulfilledAt) })[0];
+          if (exit && await this.executeConfirmedSignal(aggregate, exit, marketPrice, now, levels, []) !== "not_actionable") return;
+          const revision = context.band.activeRevision.id;
+          if (this.lastObservedRevisionByBotId.get(botId) !== revision || aggregate.latestState?.metadata.revisionBaselinePending) {
+            this.lastObservedRevisionByBotId.set(botId, revision);
+            await this.persistPassiveState(aggregate, marketPrice.price, now,
+              { pendingSignal: null, revisionBaselinePending: false, gridRevisionId: revision }, undefined, undefined, levels, []);
+            return;
+          }
+          if (context.band.status !== "ACTIVE" || context.capitalBlockedReason || this.isOutOfRange(aggregate, marketPrice.price)) {
+            await this.persistPassivePriceSnapshot(aggregate, marketPrice, now);
+            await this.persistPassiveState(aggregate, marketPrice.price, now, { pendingSignal: null }, undefined, undefined, levels, []);
+            return;
+          }
         }
 
         if (this.isOutOfRange(aggregate, marketPrice.price)) {
@@ -356,6 +377,9 @@ export class BotEngineService {
     levels: Array<{ index: number; price: number }>,
     crossedSignals: TriggerSignal[]
   ): Promise<SignalExecutionOutcome> {
+    if (aggregate.portfolio && signal.side === TradeSide.Buy) {
+      signal = { ...signal, gridRevisionId: aggregate.portfolio.band.activeRevision.id };
+    }
     const botId = aggregate.bot.id;
     const orderIntent = this.gridStrategyService.buildOrderIntent(aggregate, signal);
     if (!orderIntent) {
@@ -410,7 +434,7 @@ export class BotEngineService {
     const guardedExecutionParams = quoteGuard.executionParams ?? executionParams;
 
     await this.persistPriceSnapshot(botId, marketPrice, now);
-    if (aggregate.bot.mode === BotMode.Live) {
+    if (aggregate.bot.mode === BotMode.Live || aggregate.portfolio) {
       if (!this.tradeRepository.prepareExecutionAttempt || !this.tradeRepository.saveExecutionResult || !this.tradeRepository.commitExecution || !quoteGuard.preparedExecution) {
         throw new Error("Live execution requires durable preparation and atomic accounting.");
       }
@@ -564,7 +588,8 @@ export class BotEngineService {
       throw new Error("Unresolved execution requires reconciliation; new orders are blocked.");
     }
     let report = attempt.result;
-    const terminal = (value?: ExecutionReport | null) => value?.status === ExecutionStatus.Filled || value?.status === ExecutionStatus.Failed;
+    const terminal = (value?: ExecutionReport | null) => value?.status === ExecutionStatus.Filled || value?.status === ExecutionStatus.Failed ||
+      (aggregate.bot.mode === BotMode.Paper && value?.status === ExecutionStatus.Simulated);
     if (!terminal(report)) {
       const unknown: ExecutionReport = {
         executionId: attempt.executionId, provider: aggregate.bot.executionProvider,
@@ -699,7 +724,7 @@ export class BotEngineService {
       tradeSide: signal.side,
       inputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.quoteDecimals : aggregate.bot.baseDecimals,
       outputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.baseDecimals : aggregate.bot.quoteDecimals,
-      slippageBps: aggregate.config.maxSlippageBps,
+      slippageBps: signal.maxAdverseDriftBps ?? aggregate.config.maxSlippageBps,
       executionPolicy: { transactionSlippage: "provider_auto" },
       clientOrderId: orderIntent.orderKey,
       referencePrice: signal.observedPrice
@@ -805,7 +830,7 @@ export class BotEngineService {
     executionParams?: ExecuteSwapParams;
   }> {
     const targetPrice = orderIntent.targetPrice;
-    const maxAdverseDriftBps = Math.max(0, aggregate.config.maxSlippageBps);
+    const maxAdverseDriftBps = Math.max(0, signal.maxAdverseDriftBps ?? aggregate.config.maxSlippageBps);
 
     try {
       const estimate = await this.executionService.prepareExecution(aggregate.bot, executionParams);
@@ -1131,7 +1156,7 @@ export class BotEngineService {
     const estimatedPrice = estimate.expectedPrice;
     const targetPrice = orderIntent.targetPrice;
     const adverseDriftBps = ((targetPrice - estimatedPrice) / targetPrice) * 10_000;
-    const maxAdverseDriftBps = Math.max(0, aggregate.config.maxSlippageBps);
+    const maxAdverseDriftBps = Math.max(0, signal.maxAdverseDriftBps ?? aggregate.config.maxSlippageBps);
     if (Number.isFinite(estimatedPrice) && estimatedPrice > 0 && adverseDriftBps <= maxAdverseDriftBps) {
       return null;
     }
@@ -1475,6 +1500,7 @@ export class BotEngineService {
     now: Date
   ) {
     return this.gridDecisionService.resolvePendingSignal({
+      allowBoundaryCatchUp: !aggregate.portfolio,
       botId: aggregate.bot.id,
       pendingSignal: aggregate.latestState?.metadata.pendingSignal ?? null,
       crossedSignals,
@@ -1566,7 +1592,13 @@ export class BotEngineService {
         return nextCycles;
       }
 
-      nextCycles[String(signal.levelIndex)] = {
+      nextCycles[aggregate.portfolio ? `${aggregate.portfolio.band.activeRevision.id}:${signal.levelIndex}` : String(signal.levelIndex)] = {
+        ...(aggregate.portfolio ? {
+          gridRevisionId: aggregate.portfolio.band.activeRevision.id,
+          buyTargetPrice: signal.levelPrice,
+          sellTargetPrice: this.gridStrategyService.calculateLevels(aggregate.config.lowPrice, aggregate.config.highPrice,
+            aggregate.config.levelCount, aggregate.config.gridType)[signal.levelIndex + 1]?.price ?? null,
+        } : {}),
         buyLevelIndex: signal.levelIndex,
         sellLevelIndex: signal.levelIndex + 1 < aggregate.config.levelCount ? signal.levelIndex + 1 : null,
         lotId: openedLotId,

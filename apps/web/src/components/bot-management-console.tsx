@@ -88,6 +88,11 @@ type ManagedBot = {
       ready: boolean;
     } | null;
   };
+  exposure: {
+    retainedBaseAmount: number;
+    tradingBaseAmount: number;
+    tradingLotCount: number;
+  };
   paperSession: {
     enabled: boolean;
     startedAt: string;
@@ -1880,27 +1885,36 @@ function ArchiveBotDialog({
         className="w-full max-w-lg rounded-lg border border-[var(--line)] bg-[var(--panel)] p-5 shadow-[0_24px_80px_rgba(0,0,0,0.55)]"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--amber)]">Open exposure</div>
+        <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--amber)]">
+          {bot.exposure.tradingLotCount > 0 ? "Open trading exposure" : bot.exposure.retainedBaseAmount > 0 ? "Accumulated inventory" : "No open exposure"}
+        </div>
         <h2 className="mt-2 text-xl font-semibold text-white">Archive {bot.name}?</h2>
         <p className="mt-2 text-sm text-[var(--muted)]">
-          This does not sell anything. The bot still has base inventory or deployed capital, so archiving only removes it from the desk while keeping its PnL history.
+          {bot.exposure.retainedBaseAmount > 0
+            ? `Accumulated ${bot.pairLabel.split("/")[0] ?? "base"} remains in the wallet after archiving. `
+            : "This does not sell anything. "}
+          {bot.exposure.tradingLotCount > 0
+            ? "Open trading lots remain available for their paired exits. "
+            : ""}
+          Archiving removes the bot from the desk while keeping its PnL history.
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
           <MetricCard label="Deployed" value={formatCurrency(bot.runtime.deployedQuoteAmount)} />
-          <MetricCard label={`${bot.pairLabel.split("/")[0] ?? "Base"} in bot`} value={formatNumber(bot.runtime.availableBaseAmount, 6)} />
+          <MetricCard label={`Accumulated ${bot.pairLabel.split("/")[0] ?? "base"}`} value={formatNumber(bot.exposure.retainedBaseAmount, 8)} />
+          <MetricCard label="Trading base" value={formatNumber(bot.exposure.tradingBaseAmount, 8)} />
           <MetricCard label="Realized PnL" value={formatCurrency(bot.runtime.realizedPnlUsd)} tone={bot.runtime.realizedPnlUsd >= 0 ? "positive" : "negative"} />
           <MetricCard label="Net PnL" value={formatCurrency(pnl)} tone={pnl >= 0 ? "positive" : "negative"} />
         </div>
 
         <div className="mt-5 flex flex-wrap justify-end gap-2">
-          <button
+          {bot.exposure.tradingLotCount > 0 ? <button
             type="button"
             onClick={onClose}
             className="inline-flex h-9 items-center rounded-md border border-[var(--line)] px-3 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)] transition hover:bg-white/[0.04] hover:text-white"
           >
             Cancel
-          </button>
+          </button> : null}
           <button
             type="button"
             onClick={onSellOnly}

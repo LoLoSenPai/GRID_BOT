@@ -133,6 +133,7 @@ export type BotDetailViewData = {
     entryPrice: number;
     costQuote: number;
     openedAt: string;
+    kind: "trading" | "retained";
   }>;
   openCycles: Array<{
     id: string;
@@ -144,6 +145,9 @@ export type BotDetailViewData = {
     remainingBaseAmount: number;
     costQuote: number;
     openedAt: string;
+    buyTargetPrice?: number | null;
+    sellTargetPrice?: number | null;
+    gridRevisionId?: string | null;
   }>;
   alerts: Array<{
     id: string;

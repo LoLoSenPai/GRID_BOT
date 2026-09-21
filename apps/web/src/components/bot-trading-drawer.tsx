@@ -231,6 +231,14 @@ export function BotTradingDrawer({
 
           {activeTab === "openLots" ? (
             <div className="space-y-3">
+              {bot.positionLots.some((lot) => lot.kind === "retained") ? (
+                <SurfaceCard tone="muted" padding="sm">
+                  <div className="text-sm font-medium text-white">Accumulated {bot.baseSymbol}</div>
+                  <div className="mt-1 text-sm text-[var(--muted)]">
+                    {formatNumber(bot.positionLots.filter((lot) => lot.kind === "retained").reduce((sum, lot) => sum + lot.remainingBaseAmount, 0), 8)} {bot.baseSymbol} remains in the wallet and is excluded from sellable trading lots.
+                  </div>
+                </SurfaceCard>
+              ) : null}
               {bot.openCycles.length ? (
                 bot.openCycles.map((cycle) => (
                   <SurfaceCard key={cycle.id} tone="muted" padding="sm">
@@ -241,8 +249,8 @@ export function BotTradingDrawer({
                       <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">{cycle.lotId}</span>
                     </div>
                     <div className="mt-3 grid gap-2 text-sm text-[var(--muted)] md:grid-cols-2">
-                      <div>Buy rail {formatNumber(cycle.buyPrice, 2)}</div>
-                      <div>Sell rail {cycle.sellPrice !== null ? formatNumber(cycle.sellPrice, 2) : "--"}</div>
+                      <div>Buy target {formatNumber(cycle.buyTargetPrice ?? cycle.buyPrice, 2)}</div>
+                      <div>Sell target {cycle.sellTargetPrice !== null && cycle.sellTargetPrice !== undefined ? formatNumber(cycle.sellTargetPrice, 2) : cycle.sellPrice !== null ? formatNumber(cycle.sellPrice, 2) : "--"}</div>
                       <div>Open base {formatNumber(cycle.remainingBaseAmount, 6)} {bot.baseSymbol}</div>
                       <div>Cost basis {formatCurrency(cycle.costQuote)}</div>
                       <div>{formatDateTime(cycle.openedAt)}</div>

@@ -94,7 +94,7 @@ export async function POST() {
   }
 
   const bots = await prisma.bot.findMany({
-    where: { mode: BotMode.Paper as never, archivedAt: null },
+    where: { mode: BotMode.Paper as never, archivedAt: null, gridBand: { is: null } },
     include: { config: true },
     orderBy: { createdAt: "asc" }
   });

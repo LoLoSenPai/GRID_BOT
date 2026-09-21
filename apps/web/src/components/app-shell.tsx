@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { BotMode } from "@grid-bot/core/enums";
-import { Activity, Bot, FlaskConical, Gauge, LogOut } from "lucide-react";
+import { Activity, Bot, FlaskConical, Gauge, LogOut, Layers3 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { buildDeskHref } from "@/lib/desk-mode";
@@ -10,6 +10,7 @@ import { WalletBalancePanel } from "@/components/wallet-balance-panel";
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: Gauge },
   { href: "/bots", label: "Bots", icon: Bot },
+  { href: "/portfolio", label: "Portfolio", icon: Layers3 },
   { href: "/lab", label: "Lab", icon: FlaskConical, labOnly: true },
   { href: "/activity", label: "Activity", icon: Activity }
 ];

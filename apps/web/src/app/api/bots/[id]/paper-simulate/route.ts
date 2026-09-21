@@ -63,6 +63,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const bot = await prisma.bot.findFirst({
       where: { id, archivedAt: null },
       include: {
+        gridBand: true,
         config: true,
         position: true,
         positionLots: { orderBy: { openedAt: "asc" } }
@@ -72,6 +73,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (!bot?.config) {
       return NextResponse.json({ error: "Bot not found." }, { status: 404 });
     }
+    if (bot.gridBand) return NextResponse.json({ error: "Use the Portfolio replay for V2 simulations." }, { status: 409 });
 
     if (bot.mode !== BotMode.Paper) {
       return NextResponse.json({ error: "Paper simulation is only available for paper bots." }, { status: 409 });

@@ -16,6 +16,7 @@ interface SignalDecisionInput {
 }
 
 interface PendingSignalInput {
+  allowBoundaryCatchUp?: boolean;
   botId: string;
   pendingSignal?: PendingSignal | null;
   crossedSignals: TriggerSignal[];
@@ -104,7 +105,7 @@ export class GridDecisionService {
 
   resolvePendingSignal(input: PendingSignalInput): PendingSignal | null {
     const boundaryLevel = input.levels[0];
-    const boundary: TriggerSignal | null = boundaryLevel && this.priceStillConfirms(TradeSide.Buy, boundaryLevel.price, input.currentPrice)
+    const boundary: TriggerSignal | null = input.allowBoundaryCatchUp !== false && boundaryLevel && this.priceStillConfirms(TradeSide.Buy, boundaryLevel.price, input.currentPrice)
       ? { levelIndex: boundaryLevel.index, side: TradeSide.Buy, levelPrice: boundaryLevel.price,
           observedPrice: input.currentPrice, idempotencyKey: `probe:${input.botId}:boundary`, triggeredAt: input.now }
       : null;
