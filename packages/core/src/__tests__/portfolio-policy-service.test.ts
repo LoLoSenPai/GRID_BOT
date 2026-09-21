@@ -61,4 +61,3 @@ describe("portfolio policy", () => {
     expect(prioritizeAssetAllocation([{ assetSymbol: "SOL", historicalAllocatedCapitalUsd: 300, idleAssignedCapitalUsd: 100, initialTargetUsd: 500 }, { assetSymbol: "BTC", historicalAllocatedCapitalUsd: 100, idleAssignedCapitalUsd: 50, initialTargetUsd: 500 }]).map((a) => a.assetSymbol)).toEqual(["BTC", "SOL"]);
   });
 });
-

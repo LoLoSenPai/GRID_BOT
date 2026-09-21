@@ -55,4 +55,3 @@ describe("portfolio manager", () => {
     expect(restarted.history.getHistory).not.toHaveBeenCalled();
   });
 });
-
