@@ -24,4 +24,12 @@ The 14-day comparison starts both alternatives with exactly the same total capit
 
 ## Checks
 
+### Live preparation (read-only)
+
+Authenticated `POST /api/portfolios/live-preflight` accepts `totalCapital`, `baseAllocation` (equal BTC/SOL amounts, minimum 100 USDC each), and an explicit positive `feeSol`. It reads the configured wallet and a repeatable database snapshot. It does not create bots, reserve funds, submit quotes/swaps, or enable adaptation. `activationAllowed` is always false; `capitalReady` only describes this short-lived capital observation.
+
+USDC claims include existing live portfolio free cash and band cash once (reservations already belong to band cash), plus legacy bot cash including profits and paused/stopped bots. Invested token cost is not spendable USDC. Native SOL holdings owned by bots are excluded from the fee envelope; wrapped/native ambiguities and archived residual inventory require reconciliation. Unknown executions, missing accounting and invalid/stale observations block readiness. No USDC percentage reserve is introduced.
+
+This endpoint prepares a **new cash-funded portfolio**, not conversion of a paper portfolio or reuse of historical budgets. A real activation still needs reviewed paper evidence, explicit funding, atomic wallet-wide reservation with the legacy allocation paths, live fee controls, and manager wiring. The existing live adaptation prohibition remains intact. A successful preflight is not a reservation and must never be used as one.
+
 Core tests cover policy causality, revision baselines and exits outside moved/parked grids. PostgreSQL integration tests cover reservations, concurrent allocations, uncertain outcomes, immutable commitments, partial sells, restart accounting and paper closure. Run database integration tests only against an isolated migrated database using `V2_TEST_DATABASE_URL` (and `DATABASE_URL` for engine integration); never against a live wallet database.
