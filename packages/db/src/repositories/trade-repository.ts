@@ -1,10 +1,13 @@
 import { BotStatus, DuplicateAssetExposureError, ExecutionStatus, TradeSide, type TradeRepository, type PendingExecutionAttempt, type ExecutionCommit } from "@grid-bot/core";
 import type { ExecutionReport, PositionLot } from "@grid-bot/core";
 import { Prisma } from "@prisma/client";
+import { getEnv } from "@grid-bot/common";
 
 import { prisma } from "../client";
 import { jsonValue, lotData, publicReport, stateSnapshotData } from "./execution-persistence-data";
 import { preserveOperatorStatus } from "./bot-state-repository";
+import { lockLiveWallet } from "./live-wallet-capital";
+import { resolveLiveNativeFeePolicy } from "./live-native-fees";
 import {
   releasePortfolioReservationInTransaction,
   reservePortfolioCapitalInTransaction,
@@ -41,14 +44,23 @@ export class PrismaTradeRepository implements TradeRepository {
       throw new Error("Invalid durable execution preparation.");
     }
     return prisma.$transaction(async (tx) => {
+      await lockLiveWallet(tx);
       const bots = await tx.$queryRaw<Array<{ status: BotStatus; mode: "paper" | "live"; executionProvider: "jupiter" | "paper" | "dflow";
         baseMint: string; quoteMint: string }>>(
         Prisma.sql`SELECT status, mode, "executionProvider", "baseMint", "quoteMint" FROM bots WHERE id = ${input.botId} AND archived_at IS NULL FOR UPDATE`
       );
       const bot = bots[0];
       if (!bot) throw new Error("Bot no longer exists or has been archived.");
+      if (bot.mode === "live" && await tx.executionAttempt.count({ where: { botId: { not: input.botId }, bot: { mode: "live" } } }))
+        throw new Error("Another live wallet execution is unsettled; retry after reconciliation.");
       const existing = await tx.executionAttempt.findUnique({ where: { botId: input.botId } });
       if (existing) return restoreAttempt(existing);
+      if (bot.mode === "live") {
+        const policy = await resolveLiveNativeFeePolicy(input.executionParams, tx);
+        const estimated = input.preparedExecution!.nativeFeeAmount;
+        if (input.preparedExecution!.nativeFeeSymbol !== "SOL" || estimated === undefined || !Number.isFinite(estimated) || estimated < 0 || estimated > policy.maxFeeAmount)
+          throw new Error("Prepared execution exceeds current wallet native fee availability.");
+      }
       const latestSnapshot = await tx.botStateSnapshot.findFirst({ where: { botId: input.botId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
       if ((bot.mode === "live" && input.expectedSnapshotId === undefined) ||
         (input.expectedSnapshotId !== undefined && input.expectedSnapshotId !== (latestSnapshot?.id ?? null))) {
@@ -78,7 +90,7 @@ export class PrismaTradeRepository implements TradeRepository {
       await tx.executionAttempt.create({ data: { botId: input.botId, executionId: execution.id, orderId: order.id,
         payload: jsonValue({ ...attempt, result: undefined, wasUncertain: undefined }) } });
       return attempt;
-    });
+    }, { timeout: 15000 });
   }
 
   async saveExecutionResult(attempt: PendingExecutionAttempt, report: ExecutionReport, uncertain: boolean): Promise<void> {
@@ -123,6 +135,7 @@ export class PrismaTradeRepository implements TradeRepository {
       throw new Error("Only a matching terminal execution can be committed.");
     }
     return prisma.$transaction(async (tx) => {
+      await lockLiveWallet(tx);
       const bots = await tx.$queryRaw<Array<{ status: BotStatus }>>(
         Prisma.sql`SELECT status FROM bots WHERE id = ${input.botId} FOR UPDATE`
       );
@@ -146,6 +159,19 @@ export class PrismaTradeRepository implements TradeRepository {
       } });
       if (!changed.count) return false;
       const durableAttempt = stored.payload as unknown as DurableAttempt;
+      if (execution.mode === "live" && durableAttempt.portfolioContext) {
+        const portfolioId = durableAttempt.portfolioContext.portfolioId;
+        await tx.$queryRaw`SELECT id FROM portfolios WHERE id = ${portfolioId} FOR UPDATE`;
+        const portfolio = await tx.portfolio.findUniqueOrThrow({ where: { id: portfolioId } });
+        const fee = input.report.nativeFeeSymbol === "SOL" ? input.report.nativeFeeAmount ?? 0 : 0;
+        if (!Number.isFinite(fee) || fee < 0) throw new Error("Invalid settled native fee.");
+        const remaining = Prisma.Decimal.max(0, new Prisma.Decimal(portfolio.nativeFeeReserveSol).minus(new Prisma.Decimal(fee))).toNumber();
+        await tx.portfolio.update({ where: { id: portfolioId }, data: { nativeFeeReserveSol: remaining,
+          ...(remaining === 0 ? { autoLive: false } : {}) } });
+        await tx.capitalLedgerEntry.create({ data: { portfolioId, entryType: "RECONCILIATION",
+          idempotencyKey: `native-fee:${input.executionId}`, reason: "Settled wallet-attributable native fee",
+          metadata: { executionId: input.executionId, nativeFeeSol: fee, remainingFeeSol: remaining } } });
+      }
       const settlement = durableAttempt.portfolioContext
         ? await settlePortfolioExecution(tx, durableAttempt, input)
         : null;
@@ -324,6 +350,8 @@ async function preparePortfolioContext(
   const revision = band.revisions[0];
   if (!revision) throw new Error("Portfolio grid band has no active revision.");
   const portfolio = band.assetStrategy.portfolio;
+  if (bot.mode === "live" && (!getEnv().V2_LIVE_ENABLED || !portfolio.autoLive || Number(portfolio.nativeFeeReserveSol) <= 0))
+    throw new Error("Live portfolio execution is locked or its fee envelope is exhausted.");
   await tx.$queryRaw(Prisma.sql`SELECT id FROM portfolios WHERE id = ${portfolio.id} FOR UPDATE`);
   if (portfolio.mode !== bot.mode || portfolio.quoteMint !== bot.quoteMint || band.assetStrategy.baseMint !== bot.baseMint) {
     throw new Error("Bot assets or mode no longer match the attached portfolio.");

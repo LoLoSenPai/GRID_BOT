@@ -683,6 +683,13 @@ export type ExecutionPolicy =
   | { transactionSlippage: "provider_auto" }
   | { transactionSlippage: "bounded_manual"; transactionSlippageBps: number };
 
+export interface NativeFeePolicy {
+  /** Maximum native SOL that this execution may consume outside swap principal. */
+  maxFeeAmount: number;
+  /** SOL balance that must remain after input principal and the estimated fee envelope. */
+  minimumPostExecutionBalance?: number;
+}
+
 export interface ExecuteSwapParams {
   botId: string;
   inputMint: string;
@@ -695,6 +702,8 @@ export interface ExecuteSwapParams {
   slippageBps: number;
   /** Live transaction policy. Omitted means provider-managed auto mode. */
   executionPolicy?: ExecutionPolicy;
+  /** Optional wallet-level native fee reservation supplied by the execution coordinator. */
+  nativeFeePolicy?: NativeFeePolicy;
   clientOrderId: string;
   walletPublicKey?: string;
   referencePrice?: number;

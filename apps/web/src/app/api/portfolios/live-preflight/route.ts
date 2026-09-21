@@ -45,6 +45,7 @@ export async function POST(request: Request) {
         continue;
       }
       quoteClaims += claim(portfolio.freeQuoteAmount);
+      solClaims += claim(portfolio.nativeFeeReserveSol ?? 0);
       for (const strategy of portfolio.assetStrategies) for (const band of strategy.bands) {
         // available includes reserved cash: adding reserved again would double-count it.
         if (band.status !== "CLOSED") {

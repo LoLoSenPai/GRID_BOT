@@ -439,6 +439,7 @@ model Portfolio {
   freeQuoteAmount Decimal  @default(0) @map("free_quote_amount") @db.Decimal(30, 10)
   version         Int      @default(1)
   autoLive        Boolean  @default(false) @map("auto_live")
+  nativeFeeReserveSol Decimal @default(0) @map("native_fee_reserve_sol") @db.Decimal(30, 10)
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 

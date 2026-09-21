@@ -5,6 +5,7 @@ import { BotStatus, ExecutionProvider, ExecutionStatus, OrderStatus, TradeSide, 
 
 const mocked = vi.hoisted(() => ({ prisma: {} as Record<string, unknown>, pool: { connect: vi.fn() } }));
 vi.mock("../client", () => ({ prisma: mocked.prisma, botLockPool: mocked.pool }));
+vi.mock("../repositories/live-native-fees", () => ({ resolveLiveNativeFeePolicy: async () => ({ maxFeeAmount: 1 }) }));
 import { PrismaTradeRepository } from "../repositories/trade-repository";
 import { PrismaBotStateRepository } from "../repositories/bot-state-repository";
 
@@ -96,6 +97,7 @@ function makeClient(read: () => State) {
       }),
     },
     executionAttempt: {
+      count: vi.fn(async () => 0),
       findUnique: vi.fn(async ({ where }) => read().attempts.find((r) => r.botId === where.botId) ?? null),
       findMany: vi.fn(async () => read().attempts.map((row) => ({ payload: row.payload }))),
       create: mutate("attempt.create", ({ data }) => { const row = { result: null, uncertain: false, ...data }; read().attempts.push(row); return row; }),
@@ -140,7 +142,7 @@ function preparation(): Omit<PendingExecutionAttempt, "executionId" | "orderId">
   executionParams: { botId: "bot-1", clientOrderId: "order-key-1", inputMint: "USDC", outputMint: "SOL", amount: 100,
     inputDecimals: 6, outputDecimals: 9, slippageBps: 50 },
   preparedExecution: { provider: ExecutionProvider.Jupiter, inputMint: "USDC", outputMint: "SOL", inputAmount: 100,
-    expectedOutputAmount: 1, estimatedFeeAmount: 0, expectedPrice: 100, priceImpactPct: 0, requestId: "request-1",
+    expectedOutputAmount: 1, nativeFeeAmount: 0, nativeFeeSymbol: "SOL", estimatedFeeAmount: 0, expectedPrice: 100, priceImpactPct: 0, requestId: "request-1",
     rawQuote: { kind: "jupiter-prepared-v1", txId: "signature-1", signedTransaction: "PRIVATE-AUTHORIZATION" } } };
 }
 function result(status = ExecutionStatus.Filled): ExecutionReport {
@@ -169,7 +171,7 @@ function portfolioPreparation(side = TradeSide.Buy): Omit<PendingExecutionAttemp
     orderIntent: { ...buy.orderIntent, levelIndex: 1, targetPrice: 100, requestedQuoteAmount: 40 },
     executionParams: { ...buy.executionParams, amount: 40, tradeSide: TradeSide.Buy },
     preparedExecution: { ...buy.preparedExecution!, provider: ExecutionProvider.Paper, inputAmount: 40,
-      expectedOutputAmount: 0.4, estimatedFeeAmount: 0.5, expectedPrice: 100 },
+      nativeFeeSymbol: undefined, nativeFeeAmount: undefined, expectedOutputAmount: 0.4, estimatedFeeAmount: 0.5, expectedPrice: 100 },
   };
   return {
     ...buy, expectedSnapshotId: "snapshot-1",
@@ -309,6 +311,24 @@ describe("durable execution persistence", () => {
 });
 
 describe("V2 portfolio execution persistence", () => {
+  it("settles a paid native fee once even on failure and locks an exhausted envelope", async () => {
+    seedPortfolioBand();
+    const repository = new PrismaTradeRepository();
+    const attempt = await repository.prepareExecutionAttempt(portfolioPreparation());
+    // Isolate confirmed live fee accounting from adapter/authorization tests.
+    state.executions[0]!.mode = "live";
+    state.portfolios[0]!.nativeFeeReserveSol = 0.00001;
+    state.portfolios[0]!.autoLive = true;
+    const report: ExecutionReport = { provider: ExecutionProvider.Jupiter, status: ExecutionStatus.Failed,
+      executionId: attempt.executionId, txId: "signature-1", inputAmount: 0, outputAmount: 0,
+      effectivePrice: 0, feeAmount: 0, nativeFeeSymbol: "SOL", nativeFeeAmount: 0.00002 };
+    await repository.saveExecutionResult(attempt, report, false);
+    const input = commit(report); input.executionId = attempt.executionId; input.orderId = attempt.orderId;
+    expect(await repository.commitExecution(input)).toBe(true);
+    expect(await repository.commitExecution(input)).toBe(false);
+    expect(state.portfolios[0]).toMatchObject({ nativeFeeReserveSol: 0, autoLive: false });
+    expect(state.ledger.filter(e => e.idempotencyKey === `native-fee:${attempt.executionId}`)).toHaveLength(1);
+  });
   it("reserves a buy once, binds it to the execution, and creates the immutable exit on paper settlement", async () => {
     seedPortfolioBand();
     const repository = new PrismaTradeRepository();

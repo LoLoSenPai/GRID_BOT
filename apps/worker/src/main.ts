@@ -20,6 +20,7 @@ import {
   PrismaAlertRepository,
   PrismaMarketCandleRepository,
   PrismaPortfolioManagerStore,
+  resolveLiveNativeFeePolicy,
   PrismaBotStateRepository,
   PrismaPriceSnapshotRepository,
   PrismaSystemLogRepository,
@@ -47,7 +48,7 @@ async function main() {
   const marketPriceService = new MarketPriceService();
   const executionService = new ExecutionService(
     {
-      [ExecutionProvider.Jupiter]: new JupiterExecutionAdapter(),
+    [ExecutionProvider.Jupiter]: new JupiterExecutionAdapter({ resolveNativeFeePolicy: resolveLiveNativeFeePolicy }),
       [ExecutionProvider.Paper]: new PaperExecutionAdapter(),
       [ExecutionProvider.Dflow]: new DflowAdapter()
     },

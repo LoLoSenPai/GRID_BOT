@@ -1,9 +1,9 @@
 import { getEnv, MINTS } from "@grid-bot/common";
-import { Keypair, VersionedTransaction } from "@solana/web3.js";
+import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { Decimal } from "decimal.js";
 
 import { ExecutionProvider, ExecutionStatus } from "../domain/enums";
-import type { ExecuteSwapParams, ExecutionEstimate, ExecutionPolicy, ExecutionQuote, ExecutionReport } from "../domain/types";
+import type { ExecuteSwapParams, ExecutionEstimate, ExecutionPolicy, ExecutionQuote, ExecutionReport, NativeFeePolicy } from "../domain/types";
 import { loadExecutionWallet } from "../services/wallet-service";
 import type { ExecutionAdapter } from "./execution-adapter";
 
@@ -65,6 +65,7 @@ export interface JupiterExecutionAdapterOptions {
   fetchFn?: typeof fetch;
   quoteTimeoutMs?: number;
   executeTimeoutMs?: number;
+  resolveNativeFeePolicy?: (params: ExecuteSwapParams) => Promise<NativeFeePolicy>;
 }
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -101,6 +102,16 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
     const order = await this.fetchOrder({ ...params, taker: walletPublicKey });
     if (!order.transaction || !order.requestId || order.errorCode !== undefined) {
       throw new Error(order.errorMessage ?? "Jupiter did not return an executable transaction.");
+    }
+    // A fresh coordinator policy supersedes any persisted parameter snapshot.
+    const nativeFeePolicy = this.options.resolveNativeFeePolicy
+      ? await this.options.resolveNativeFeePolicy(params)
+      : params.nativeFeePolicy;
+    if (params.nativeFeePolicy !== undefined || this.options.resolveNativeFeePolicy) {
+      if (!nativeFeePolicy || typeof nativeFeePolicy !== "object") {
+        throw new Error("Native fee policy resolver did not return a policy.");
+      }
+      await this.assertNativeFeeCapacity(params, order, walletPublicKey, nativeFeePolicy);
     }
     const transaction = VersionedTransaction.deserialize(Buffer.from(order.transaction, "base64"));
     transaction.sign([wallet]);
@@ -363,6 +374,53 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       (paidByTaker(order.rentFeePayer) ? lamports(order.rentFeeLamports) : 0)) / LAMPORTS_PER_SOL;
   }
 
+  private async assertNativeFeeCapacity(
+    params: ExecuteSwapParams,
+    order: JupiterOrderResponse,
+    walletPublicKey: string,
+    policy: NativeFeePolicy
+  ) {
+    assertNonnegativeAmount(policy.maxFeeAmount, "native fee budget");
+    const minimumPostExecutionBalance = policy.minimumPostExecutionBalance ?? 0;
+    assertNonnegativeAmount(minimumPostExecutionBalance, "minimum post-execution SOL balance");
+
+    const feeEnvelopeLamports = strictWalletFeeEnvelopeLamports(order, walletPublicKey);
+    const maxFeeLamports = solToLamports(policy.maxFeeAmount, "native fee budget");
+    if (feeEnvelopeLamports.gt(maxFeeLamports)) {
+      throw new Error(
+        `Jupiter wallet-attributable native fee envelope ${feeEnvelopeLamports.toFixed(0)} lamports exceeds ` +
+        `the reserved budget ${maxFeeLamports.toFixed(0)} lamports.`
+      );
+    }
+
+    const inputPrincipalLamports = params.inputMint === MINTS.SOL ? rawTokenUnits(order.inAmount) : new Decimal(0);
+    const minimumRemainingLamports = solToLamports(minimumPostExecutionBalance, "minimum post-execution SOL balance");
+    const requiredLamports = inputPrincipalLamports.plus(feeEnvelopeLamports).plus(minimumRemainingLamports);
+    const availableLamports = new Decimal(await this.getWalletSolBalanceLamports(walletPublicKey));
+    if (availableLamports.lt(requiredLamports)) {
+      throw new Error(
+        `Execution wallet has insufficient native SOL: ${availableLamports.toFixed(0)} lamports available, ` +
+        `${requiredLamports.toFixed(0)} required for swap principal, fees and protected balance.`
+      );
+    }
+  }
+
+  private async getWalletSolBalanceLamports(walletPublicKey: string): Promise<number> {
+    if (!this.env.RPC_HTTP_URL) throw new Error("Native SOL reserve check requires RPC_HTTP_URL.");
+    const response = await this.fetchJson<{ result?: { value?: unknown } }>(
+      this.env.RPC_HTTP_URL,
+      { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getBalance",
+          params: [walletPublicKey, { commitment: "confirmed" }] }) },
+      this.options.quoteTimeoutMs ?? 5_000
+    );
+    const value = response.result?.value;
+    if (!Number.isSafeInteger(value) || (value as number) < 0) {
+      throw new Error("Native SOL reserve check returned an invalid wallet balance.");
+    }
+    return value as number;
+  }
+
   private reportOrder(order: JupiterOrderResponse) {
     const { transaction: _transaction, ...safeOrder } = order;
     return safeOrder;
@@ -413,6 +471,38 @@ function lamports(value: number | undefined): number {
   if (value === undefined) return 0;
   if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid network fee lamports.");
   return value;
+}
+
+function strictWalletFeeEnvelopeLamports(order: JupiterOrderResponse, walletPublicKey: string): Decimal {
+  const entries = [
+    ["signature", order.signatureFeeLamports, order.signatureFeePayer],
+    ["priority", order.prioritizationFeeLamports, order.prioritizationFeePayer],
+    ["rent", order.rentFeeLamports, order.rentFeePayer]
+  ] as const;
+  return entries.reduce((total, [label, amount, payer]) => {
+    let normalizedPayer = walletPublicKey;
+    if (payer !== undefined && payer !== null) {
+      try { normalizedPayer = new PublicKey(payer).toBase58(); }
+      catch { throw new Error(`Jupiter returned an invalid ${label} fee payer.`); }
+    }
+    if (normalizedPayer !== walletPublicKey) return total;
+    if (amount === undefined) {
+      throw new Error(`Jupiter omitted the wallet-attributable ${label} fee estimate.`);
+    }
+    return total.plus(lamports(amount));
+  }, new Decimal(0));
+}
+
+function assertNonnegativeAmount(value: number, label: string) {
+  if (!Number.isFinite(value) || value < 0) throw new Error(`Invalid ${label}.`);
+}
+
+function solToLamports(value: number, label: string): Decimal {
+  const result = new Decimal(value).mul(LAMPORTS_PER_SOL);
+  if (!result.isInteger() || result.gt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`${label} must be an exact safe lamport amount.`);
+  }
+  return result;
 }
 
 function rawTokenUnits(value: string): Decimal {
