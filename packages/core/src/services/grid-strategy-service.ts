@@ -3,6 +3,7 @@ import { PAPER_EXECUTION_FEE_RATE } from "../adapters/paper-execution-adapter";
 import type { BotAggregate, GridCycle, GridLevel, OrderIntent, PositionLot, TriggerSignal } from "../domain/types";
 import { round } from "../utils/math";
 import { priceMoveTouchesLevel } from "../utils/price-trigger";
+import { Decimal } from "decimal.js";
 
 const PRICE_EPSILON = 0.00000001;
 
@@ -191,6 +192,27 @@ export class GridStrategyService {
   ): { requestedBaseAmount: number; requestedQuoteAmount: number; matchedLotIds: string[] } | null {
     if (!this.isOpenLotSellable(eligibleLot)) {
       return null;
+    }
+
+    // A live accumulate-base sell is sized from the prepared executable quote in
+    // BotEngineService. Start with the complete trading lot here so the quote can
+    // establish the real surplus; applying the configured slippage ceiling before
+    // that quote can make a profitable tight-grid cycle permanently ineligible.
+    if (bot.bot.mode === BotMode.Live && bot.bot.strategyMode === StrategyMode.AccumulateBase) {
+      const baseAtoms = new Decimal(eligibleLot.remainingBaseAmount)
+        .mul(new Decimal(10).pow(bot.bot.baseDecimals))
+        .floor();
+      const requestedBaseAmount = baseAtoms.div(new Decimal(10).pow(bot.bot.baseDecimals)).toNumber();
+      const currentNotional = round(requestedBaseAmount * executionPrice, 8);
+      if (requestedBaseAmount <= 0 || currentNotional <= eligibleLot.costQuote) {
+        return null;
+      }
+
+      return {
+        requestedBaseAmount,
+        requestedQuoteAmount: round(requestedBaseAmount * executionPrice, 2),
+        matchedLotIds: [eligibleLot.id]
+      };
     }
 
     const slippage = Math.min(0.99, Math.max(0, bot.config.maxSlippageBps) / 10_000);

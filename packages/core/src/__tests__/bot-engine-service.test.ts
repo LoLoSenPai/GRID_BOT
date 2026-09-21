@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
+import { Decimal } from "decimal.js";
 
 import type { AlertRepository, AlertSink, BotStateRepository, MarketPricePort, PendingExecutionAttempt, PriceSnapshotRepository, SystemLogRepository, TradeRepository } from "../domain/contracts";
 import { AlertType, BotMode, BotStatus, ExecutionProvider, ExecutionStatus, GridType, LogLevel, OrderStatus, RecenterMode, StrategyMode, TradeSide } from "../domain/enums";
@@ -1174,6 +1175,7 @@ describe("BotEngineService", () => {
         outputMint: "USDC",
         inputAmount: 0.3408,
         expectedOutputAmount: 30.08,
+        minimumOutputAmount: 30.08,
         estimatedFeeAmount: 0,
         nativeFeeAmount: 0.00205,
         nativeFeeSymbol: "SOL",
@@ -1194,7 +1196,7 @@ describe("BotEngineService", () => {
       expect.objectContaining({
         level: LogLevel.Warn,
         category: "execution_guard",
-        message: expect.stringContaining("expected net output")
+        message: expect.stringContaining("minimum net output")
       })
     );
     expect(botRepository.createStateSnapshot).toHaveBeenCalledWith(
@@ -1209,7 +1211,7 @@ describe("BotEngineService", () => {
     );
   });
 
-  it("blocks a live BTC accumulation sell whose prepared quote can fall below principal within slippage", async () => {
+  it("blocks a live BTC accumulation sell when the complete-lot executable quote is below principal", async () => {
     const aggregate = createBtcAccumulationSellAggregate();
     const { engine, tradeRepository, executionAdapter, logRepository } = createEngine({
       aggregate,
@@ -1226,7 +1228,7 @@ describe("BotEngineService", () => {
         provider: ExecutionProvider.Jupiter,
         inputMint: "BTC",
         outputMint: "USDC",
-        inputAmount: 0.00052726,
+        inputAmount: 0.001,
         expectedOutputAmount: 39.83,
         estimatedFeeAmount: 0,
         priceImpactPct: 0,
@@ -1244,20 +1246,18 @@ describe("BotEngineService", () => {
     expect(executionAdapter.executePreparedSwap).not.toHaveBeenCalled();
     expect(logRepository.writeLog).toHaveBeenCalledWith(expect.objectContaining({
       category: "execution_guard",
-      message: expect.stringContaining("minimum net output"),
+      message: expect.stringContaining("complete lot quote"),
       metadata: expect.objectContaining({
         expectedOutputAmount: 39.83,
-        minimumGrossQuoteOutput: 39.63085,
-        minimumNetQuoteOutput: 39.63085,
-        soldCostQuote: 40.01,
-        slippageToleranceBps: 50
+        fullNetOutput: 39.83,
+        wholeLotCostQuote: 40.01
       })
     }));
   });
 
-  it("floors the live BTC minimum output to quote decimals before checking principal", async () => {
+  it("rejects a resized live BTC quote whose prepared input differs from the authorized atoms", async () => {
     const aggregate = createBtcAccumulationSellAggregate(40.0100005);
-    const { engine, tradeRepository, logRepository } = createEngine({
+    const { engine, tradeRepository, logRepository, executionAdapter } = createEngine({
       aggregate,
       marketPrice: {
         symbol: "BTC",
@@ -1272,8 +1272,8 @@ describe("BotEngineService", () => {
         provider: ExecutionProvider.Jupiter,
         inputMint: "BTC",
         outputMint: "USDC",
-        inputAmount: 0.00052726,
-        expectedOutputAmount: 40.21105618,
+        inputAmount: 0.001,
+        expectedOutputAmount: 76.26667,
         estimatedFeeAmount: 0,
         priceImpactPct: 0,
         expectedPrice: 76_266.67,
@@ -1281,22 +1281,40 @@ describe("BotEngineService", () => {
       },
       liveTradingEnabled: true
     });
+    const mismatchedResizedQuote = {
+      provider: ExecutionProvider.Jupiter,
+      inputMint: "BTC",
+      outputMint: "USDC",
+      inputAmount: 0.00052726,
+      expectedOutputAmount: 40.21105618,
+      estimatedFeeAmount: 0,
+      priceImpactPct: 0,
+      expectedPrice: 76_266.67,
+      requestId: "prepared-btc-rounding"
+    } satisfies ExecutionEstimate;
+    executionAdapter.prepareExecution
+      .mockResolvedValueOnce({
+        ...mismatchedResizedQuote,
+        inputAmount: 0.001,
+        expectedOutputAmount: 76.26667,
+        minimumOutputAmount: 75.88533665,
+        requestId: "complete-lot-probe"
+      })
+      .mockResolvedValueOnce({ ...mismatchedResizedQuote, minimumOutputAmount: 40.01 });
 
     await engine.runBot(aggregate.bot.id);
 
     expect(tradeRepository.prepareExecutionAttempt).not.toHaveBeenCalled();
     expect(logRepository.writeLog).toHaveBeenCalledWith(expect.objectContaining({
       category: "execution_guard",
+      message: expect.stringContaining("prepared input amount differs"),
       metadata: expect.objectContaining({
-        expectedNetQuoteOutput: 40.21105618,
-        minimumGrossQuoteOutput: 40.01,
-        minimumNetQuoteOutput: 40.01,
-        soldCostQuote: 40.0100005
+        preparedInputAmount: 0.00052726
       })
     }));
   });
 
-  it("authorizes the prepared live BTC order when its slippage-floor output covers principal", async () => {
+  it("persists and executes only the resized prepared BTC order with adaptive slippage", async () => {
     const aggregate = createBtcAccumulationSellAggregate(40.0100005);
     const preparedEstimate: ExecutionEstimate = {
       provider: ExecutionProvider.Jupiter,
@@ -1324,16 +1342,147 @@ describe("BotEngineService", () => {
       executionError: new Error("429 temporary rate limit"),
       liveTradingEnabled: true
     });
+    executionAdapter.prepareExecution.mockImplementation(async (params: ExecuteSwapParams) => ({
+      ...preparedEstimate,
+      inputAmount: params.amount,
+      expectedOutputAmount: params.amount * 76_266.67,
+      minimumOutputAmount: params.amount * 76_266.67 * 0.995,
+      expectedPrice: 76_266.67,
+      requestId: params.amount === 0.001 ? "full-lot-never-execute" : "resized-final"
+    }));
 
     await engine.runBot(aggregate.bot.id);
 
-    expect(tradeRepository.prepareExecutionAttempt).toHaveBeenCalledWith(expect.objectContaining({
-      preparedExecution: preparedEstimate
-    }));
-    expect(executionAdapter.prepareExecution).toHaveBeenCalledOnce();
+    expect(executionAdapter.prepareExecution).toHaveBeenCalledTimes(2);
+    const finalParams = executionAdapter.prepareExecution.mock.calls[1]![0];
+    const persisted = tradeRepository.prepareExecutionAttempt.mock.calls[0]![0];
+    expect(finalParams.amount).toBeLessThan(0.001);
+    expect(finalParams.executionPolicy).toEqual({ transactionSlippage: "provider_auto" });
+    expect(persisted.executionParams).toEqual(finalParams);
+    expect(persisted.orderIntent.requestedBaseAmount).toBe(finalParams.amount);
+    expect(persisted.preparedExecution!.requestId).toBe("resized-final");
     expect(executionAdapter.estimateExecution).not.toHaveBeenCalled();
-    expect(executionAdapter.executePreparedSwap).toHaveBeenCalledWith(expect.any(Object), preparedEstimate, undefined);
+    expect(executionAdapter.executePreparedSwap).toHaveBeenCalledWith(finalParams, persisted.preparedExecution, undefined);
     expect(logRepository.writeLog).not.toHaveBeenCalledWith(expect.objectContaining({ category: "execution_guard" }));
+  });
+
+  it("executes the tight 78k-83k BTC cycle by sizing from the actual full-lot quote", async () => {
+    const aggregate = createBtcAccumulationSellAggregate(57.14062369);
+    aggregate.config.lowPrice = 78_000;
+    aggregate.config.highPrice = 83_000;
+    aggregate.config.levelCount = 15;
+    aggregate.config.gridType = GridType.Geometric;
+    aggregate.latestState!.currentPrice = 81_100;
+    aggregate.latestState!.availableBaseAmount = 0.00070585;
+    aggregate.latestState!.deployedQuoteAmount = 57.14062369;
+    aggregate.latestState!.metadata.gridCycles = {
+      "8": { buyLevelIndex: 8, sellLevelIndex: 9, lotId: "lot-btc", openedAt: aggregate.openLots[0]!.openedAt.toISOString() }
+    };
+    aggregate.position!.baseAmount = 0.00070585;
+    aggregate.position!.quoteSpent = 57.14062369;
+    aggregate.openLots[0]!.originalBaseAmount = 0.00070585;
+    aggregate.openLots[0]!.remainingBaseAmount = 0.00070585;
+    aggregate.openLots[0]!.entryPrice = 80_952.927;
+    aggregate.openLots[0]!.costQuote = 57.14062369;
+
+    const fullOutput = 57.261962;
+    const unitRate = fullOutput / 0.00070585;
+    const { engine, executionAdapter, tradeRepository } = createEngine({
+      aggregate,
+      marketPrice: {
+        symbol: "BTC", pair: "BTC/USDC", price: 81_274.59, confidence: 0.1,
+        source: "test-market", timestamp: new Date("2026-09-21T00:00:00.000Z"), feedId: "feed-btc"
+      },
+      executionError: new Error("429 temporary rate limit"),
+      liveTradingEnabled: true
+    });
+    executionAdapter.prepareExecution.mockImplementation(async (params: ExecuteSwapParams) => {
+      const output = params.amount * unitRate;
+      const transactionBps = params.executionPolicy?.transactionSlippage === "bounded_manual"
+        ? params.executionPolicy.transactionSlippageBps : 50;
+      return {
+        provider: ExecutionProvider.Jupiter,
+        inputMint: "BTC",
+        outputMint: "USDC",
+        inputAmount: params.amount,
+        expectedOutputAmount: output,
+        minimumOutputAmount: output * (1 - transactionBps / 10_000),
+        estimatedFeeAmount: 0.005,
+        priceImpactPct: 0,
+        expectedPrice: unitRate,
+        requestId: params.amount === 0.00070585 ? "actual-full-probe" : "actual-resized-final"
+      };
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(executionAdapter.prepareExecution).toHaveBeenCalledTimes(2);
+    expect(executionAdapter.prepareExecution.mock.calls[0]![0]).toMatchObject({ amount: 0.00070585, slippageBps: 50 });
+    const finalParams = executionAdapter.prepareExecution.mock.calls[1]![0];
+    expect(finalParams.slippageBps).toBe(50);
+    expect(finalParams.executionPolicy).toEqual({ transactionSlippage: "bounded_manual", transactionSlippageBps: 10 });
+    expect(finalParams.amount).toBeLessThan(0.00070585);
+    expect(new Decimal(0.00070585).minus(finalParams.amount).toNumber()).toBeGreaterThanOrEqual(0.00000001);
+    expect(tradeRepository.prepareExecutionAttempt.mock.calls[0]![0]).toMatchObject({
+      executionParams: finalParams,
+      preparedExecution: { requestId: "actual-resized-final", inputAmount: finalParams.amount }
+    });
+  });
+
+  it("uses one bounded third preparation when the resized quote reports a higher network fee", async () => {
+    const aggregate = createBtcAccumulationSellAggregate(40.01);
+    const { engine, executionAdapter, tradeRepository } = createEngine({
+      aggregate,
+      marketPrice: { symbol: "BTC", pair: "BTC/USDC", price: 76_266.67, confidence: 0.1,
+        source: "test-market", timestamp: new Date(), feedId: "feed-btc" },
+      executionError: new Error("429 temporary rate limit"),
+      liveTradingEnabled: true
+    });
+    let preparation = 0;
+    executionAdapter.prepareExecution.mockImplementation(async (params: ExecuteSwapParams) => {
+      preparation += 1;
+      return {
+        provider: ExecutionProvider.Jupiter, inputMint: "BTC", outputMint: "USDC",
+        inputAmount: params.amount, expectedOutputAmount: params.amount * 76_266.67,
+        minimumOutputAmount: params.amount * 76_266.67 *
+          (1 - (params.executionPolicy?.transactionSlippage === "bounded_manual" ? params.executionPolicy.transactionSlippageBps : 50) / 10_000),
+        estimatedFeeAmount: preparation === 1 ? 0 : 0.2, priceImpactPct: 0,
+        expectedPrice: 76_266.67, requestId: `fee-reprice-${preparation}`
+      };
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(executionAdapter.prepareExecution).toHaveBeenCalledTimes(3);
+    expect(tradeRepository.prepareExecutionAttempt.mock.calls[0]![0].preparedExecution?.requestId).toBe("fee-reprice-3");
+  });
+
+  it("fails closed immediately when the live auto quote omits the provider floor", async () => {
+    const aggregate = createBtcAccumulationSellAggregate(40.01);
+    const { engine, executionAdapter, tradeRepository, logRepository } = createEngine({
+      aggregate,
+      marketPrice: { symbol: "BTC", pair: "BTC/USDC", price: 76_266.67, confidence: 0.1,
+        source: "test-market", timestamp: new Date(), feedId: "feed-btc" },
+      liveTradingEnabled: true
+    });
+    let preparation = 0;
+    executionAdapter.prepareExecution.mockImplementation(async (params: ExecuteSwapParams) => {
+      preparation += 1;
+      const output = params.amount * 76_266.67;
+      return {
+        provider: ExecutionProvider.Jupiter, inputMint: "BTC", outputMint: "USDC",
+        inputAmount: params.amount, expectedOutputAmount: output, minimumOutputAmount: undefined,
+        estimatedFeeAmount: 0, priceImpactPct: 0, expectedPrice: 76_266.67, requestId: `floor-${preparation}`
+      };
+    });
+
+    await engine.runBot(aggregate.bot.id);
+
+    expect(executionAdapter.prepareExecution).toHaveBeenCalledOnce();
+    expect(tradeRepository.prepareExecutionAttempt).not.toHaveBeenCalled();
+    expect(logRepository.writeLog).toHaveBeenCalledWith(expect.objectContaining({
+      category: "execution_guard", message: expect.stringContaining("omitted Jupiter's authoritative minimum output")
+    }));
   });
 
   it("does not apply live slippage a second time to a paper accumulation estimate", async () => {
@@ -1520,6 +1669,7 @@ describe("BotEngineService", () => {
       outputMint: "USDC",
       inputAmount: 0.3457,
       expectedOutputAmount: 30.16,
+      minimumOutputAmount: 30.10,
       estimatedFeeAmount: 0,
       priceImpactPct: 0,
       expectedPrice: 87.05,

@@ -644,6 +644,8 @@ export interface BacktestRecommendation {
 }
 
 export interface ExecutionQuote {
+  /** Provider's minimum output in output-token units, when supplied. */
+  minimumOutputAmount?: number;
   provider: ExecutionProvider;
   inputMint: string;
   outputMint: string;
@@ -663,6 +665,14 @@ export interface ExecutionEstimate extends ExecutionQuote {
   expectedPrice: number;
 }
 
+/**
+ * Controls transaction-level slippage independently from the strategy's
+ * quote-to-rail drift guard (`ExecuteSwapParams.slippageBps`).
+ */
+export type ExecutionPolicy =
+  | { transactionSlippage: "provider_auto" }
+  | { transactionSlippage: "bounded_manual"; transactionSlippageBps: number };
+
 export interface ExecuteSwapParams {
   botId: string;
   inputMint: string;
@@ -671,7 +681,10 @@ export interface ExecuteSwapParams {
   tradeSide?: TradeSide;
   inputDecimals: number;
   outputDecimals: number;
+  /** Strategy quote-to-rail drift limit, and the synthetic paper slippage. */
   slippageBps: number;
+  /** Live transaction policy. Omitted means provider-managed auto mode. */
+  executionPolicy?: ExecutionPolicy;
   clientOrderId: string;
   walletPublicKey?: string;
   referencePrice?: number;

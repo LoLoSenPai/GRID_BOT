@@ -406,18 +406,22 @@ export class BotEngineService {
       return "handled_no_execution";
     }
 
+    const guardedOrderIntent = quoteGuard.orderIntent ?? orderIntent;
+    const guardedExecutionParams = quoteGuard.executionParams ?? executionParams;
+
     await this.persistPriceSnapshot(botId, marketPrice, now);
     if (aggregate.bot.mode === BotMode.Live) {
       if (!this.tradeRepository.prepareExecutionAttempt || !this.tradeRepository.saveExecutionResult || !this.tradeRepository.commitExecution || !quoteGuard.preparedExecution) {
         throw new Error("Live execution requires durable preparation and atomic accounting.");
       }
       const attempt = await this.tradeRepository.prepareExecutionAttempt({
-        botId, signal, orderIntent, executionParams, preparedExecution: quoteGuard.preparedExecution,
+        botId, signal, orderIntent: guardedOrderIntent, executionParams: guardedExecutionParams,
+        preparedExecution: quoteGuard.preparedExecution,
         expectedSnapshotId: aggregate.latestState?.id ?? null
       });
       return this.resumeExecutionAttempt(aggregate, attempt, now, marketPrice.price);
     }
-    const order = await this.tradeRepository.createOrder(orderIntent);
+    const order = await this.tradeRepository.createOrder(guardedOrderIntent);
     const execution = await this.tradeRepository.createExecution({
       orderId: order.id,
       botId,
@@ -447,7 +451,7 @@ export class BotEngineService {
       crossedSignals,
       execution.id,
       order.id,
-      executionParams,
+      guardedExecutionParams,
       quoteGuard.preparedExecution
     );
     if (!report) {
@@ -696,6 +700,7 @@ export class BotEngineService {
       inputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.quoteDecimals : aggregate.bot.baseDecimals,
       outputDecimals: signal.side === TradeSide.Buy ? aggregate.bot.baseDecimals : aggregate.bot.quoteDecimals,
       slippageBps: aggregate.config.maxSlippageBps,
+      executionPolicy: { transactionSlippage: "provider_auto" },
       clientOrderId: orderIntent.orderKey,
       referencePrice: signal.observedPrice
     };
@@ -796,6 +801,8 @@ export class BotEngineService {
     message: string;
     metadata?: Record<string, unknown>;
     preparedExecution?: ExecutionEstimate;
+    orderIntent?: OrderIntent;
+    executionParams?: ExecuteSwapParams;
   }> {
     const targetPrice = orderIntent.targetPrice;
     const maxAdverseDriftBps = Math.max(0, aggregate.config.maxSlippageBps);
@@ -842,6 +849,12 @@ export class BotEngineService {
             checkedAt: now.toISOString()
           }
         };
+      }
+
+      if (this.isLiveAccumulateBaseSell(aggregate, signal)) {
+        return await this.prepareQuoteSizedAccumulateBaseSell(
+          aggregate, signal, orderIntent, executionParams, estimate, now
+        );
       }
 
       const netProfitGuard = await this.validateNetSellQuote(aggregate, signal, orderIntent, estimate, estimatedPrice, now);
@@ -899,11 +912,13 @@ export class BotEngineService {
     const expectedNetQuoteOutput = round(estimate.expectedOutputAmount - estimatedFeeQuote, 8);
     const expectedNetPnl = calculateNetSellPnl(aggregate.openLots, orderIntent.matchedLotIds,
       orderIntent.requestedBaseAmount, estimate.expectedOutputAmount, estimatedFeeQuote, aggregate.bot.strategyMode);
-    const appliesLiveSlippageFloor = aggregate.bot.mode === BotMode.Live &&
-      aggregate.bot.strategyMode !== StrategyMode.AccumulateUsdc;
+    const appliesLiveSlippageFloor = aggregate.bot.mode === BotMode.Live;
+    if (appliesLiveSlippageFloor && (estimate.minimumOutputAmount === undefined ||
+      !Number.isFinite(estimate.minimumOutputAmount) || estimate.minimumOutputAmount <= 0)) {
+      return { allowed: false, message: "Live sell omitted a valid provider minimum output; profitability cannot be protected." };
+    }
     const minimumGrossQuoteOutput = appliesLiveSlippageFloor
-      ? new Decimal(estimate.expectedOutputAmount)
-          .mul(new Decimal(1).minus(new Decimal(Math.max(0, aggregate.config.maxSlippageBps)).div(10_000)))
+      ? new Decimal(Math.min(estimate.expectedOutputAmount, estimate.minimumOutputAmount!))
           .toDecimalPlaces(aggregate.bot.quoteDecimals, Decimal.ROUND_DOWN)
           .toNumber()
       : estimate.expectedOutputAmount;
@@ -918,7 +933,7 @@ export class BotEngineService {
       return {
         allowed: true,
         message: appliesLiveSlippageFloor
-          ? "Sell quote remains net profitable at the configured slippage floor."
+          ? "Sell quote remains net profitable at the provider minimum output."
           : "Sell quote is expected to be net profitable."
       };
     }
@@ -948,6 +963,216 @@ export class BotEngineService {
         checkedAt: now.toISOString()
       }
     };
+  }
+
+  private isLiveAccumulateBaseSell(aggregate: BotAggregate, signal: TriggerSignal): boolean {
+    return aggregate.bot.mode === BotMode.Live &&
+      aggregate.bot.strategyMode === StrategyMode.AccumulateBase &&
+      signal.side === TradeSide.Sell;
+  }
+
+  private async prepareQuoteSizedAccumulateBaseSell(
+    aggregate: BotAggregate,
+    signal: TriggerSignal,
+    orderIntent: OrderIntent,
+    executionParams: ExecuteSwapParams,
+    fullEstimate: ExecutionEstimate,
+    now: Date
+  ): Promise<{
+    allowed: boolean;
+    message: string;
+    metadata?: Record<string, unknown>;
+    preparedExecution?: ExecutionEstimate;
+    orderIntent?: OrderIntent;
+    executionParams?: ExecuteSwapParams;
+  }> {
+    const matchedLot = this.getWholeMatchedTradingLot(aggregate.openLots, orderIntent, aggregate.bot.baseDecimals);
+    const wholeLotCostQuote = matchedLot?.costQuote ?? 0;
+    const fullFeeQuote = await this.estimateQuoteFeeAmount(aggregate, fullEstimate, fullEstimate.expectedPrice);
+    const fullNetOutput = new Decimal(fullEstimate.expectedOutputAmount).minus(fullFeeQuote);
+    const positiveMargin = fullNetOutput.minus(wholeLotCostQuote);
+    const baseAtom = new Decimal(10).pow(-aggregate.bot.baseDecimals);
+    const quoteAtom = new Decimal(10).pow(-aggregate.bot.quoteDecimals);
+    const fullAmount = new Decimal(executionParams.amount).toDecimalPlaces(aggregate.bot.baseDecimals, Decimal.ROUND_DOWN);
+
+    if (!this.amountsMatchAtDecimals(fullEstimate.inputAmount, executionParams.amount, aggregate.bot.baseDecimals)) {
+      return {
+        allowed: false,
+        message: "Quote guard blocked sell: the complete-lot prepared input differs from the requested trading lot.",
+        metadata: { preparedInputAmount: fullEstimate.inputAmount, requestedInputAmount: executionParams.amount }
+      };
+    }
+
+    if (wholeLotCostQuote <= 0 || !positiveMargin.isPositive()) {
+      return {
+        allowed: false,
+        message: "Quote guard blocked sell: the complete lot quote does not cover the complete lot cost and estimated network fees.",
+        metadata: {
+          expectedOutputAmount: fullEstimate.expectedOutputAmount,
+          estimatedFeeQuote: fullFeeQuote,
+          wholeLotCostQuote,
+          fullNetOutput: fullNetOutput.toNumber(),
+          checkedAt: now.toISOString()
+        }
+      };
+    }
+
+    if (fullEstimate.minimumOutputAmount === undefined) {
+      return {
+        allowed: false,
+        message: "Quote guard blocked sell: the live auto order omitted Jupiter's authoritative minimum output.",
+        metadata: { expectedOutputAmount: fullEstimate.expectedOutputAmount, checkedAt: now.toISOString() }
+      };
+    }
+
+    let sizingEstimate = fullEstimate;
+    let sizingFeeQuote = fullFeeQuote;
+    let priorAmountAtoms: string | null = null;
+    for (let preparation = 2; preparation <= 3; preparation += 1) {
+      const unitQuoteRate = new Decimal(sizingEstimate.expectedOutputAmount).div(sizingEstimate.inputAmount);
+      const providerFloor = sizingEstimate.minimumOutputAmount;
+      if (providerFloor === undefined) {
+        break;
+      }
+      const actualSlippageBps = new Decimal(1).minus(new Decimal(providerFloor).div(sizingEstimate.expectedOutputAmount))
+        .mul(10_000).ceil().clamp(0, 10_000).toNumber();
+      const availableMarginBps = new Decimal(sizingEstimate.expectedOutputAmount)
+        .minus(sizingFeeQuote).minus(wholeLotCostQuote).minus(quoteAtom)
+        .div(sizingEstimate.expectedOutputAmount).mul(10_000).div(2).floor().clamp(0, 10_000).toNumber();
+      const useManualFallback = preparation === 3 || actualSlippageBps > availableMarginBps;
+      const transactionSlippageBps = Math.max(0, availableMarginBps);
+      const protectedUnitRate = useManualFallback
+        ? unitQuoteRate.mul(new Decimal(1).minus(new Decimal(transactionSlippageBps).div(10_000)))
+        : new Decimal(providerFloor).div(sizingEstimate.inputAmount);
+      if (!protectedUnitRate.isPositive()) {
+        break;
+      }
+
+      const amountAtoms = new Decimal(wholeLotCostQuote)
+        .plus(sizingFeeQuote)
+        .plus(quoteAtom)
+        .div(protectedUnitRate)
+        .div(baseAtom)
+        .ceil();
+      const resizedAmount = amountAtoms.mul(baseAtom);
+      if (!resizedAmount.isPositive() || resizedAmount.greaterThanOrEqualTo(fullAmount) || amountAtoms.toString() === priorAmountAtoms) {
+        break;
+      }
+      priorAmountAtoms = amountAtoms.toString();
+
+      const finalParams: ExecuteSwapParams = {
+        ...executionParams,
+        amount: resizedAmount.toNumber(),
+        executionPolicy: useManualFallback
+          ? { transactionSlippage: "bounded_manual", transactionSlippageBps }
+          : { transactionSlippage: "provider_auto" }
+      };
+      const finalIntent: OrderIntent = {
+        ...orderIntent,
+        requestedBaseAmount: resizedAmount.toNumber(),
+        requestedQuoteAmount: round(resizedAmount.mul(signal.observedPrice).toNumber(), 2)
+      };
+      const finalEstimate = await this.executionService.prepareExecution(aggregate.bot, finalParams);
+      const driftFailure = this.validatePreparedQuoteDrift(aggregate, signal, finalIntent, finalEstimate, now);
+      if (driftFailure) {
+        return driftFailure;
+      }
+
+      if (!this.amountsMatchAtDecimals(finalEstimate.inputAmount, finalParams.amount, aggregate.bot.baseDecimals)) {
+        return {
+          allowed: false,
+          message: "Quote guard blocked sell: the prepared input amount differs from the authorized quote-sized amount.",
+          metadata: { preparedInputAmount: finalEstimate.inputAmount, authorizedInputAmount: finalParams.amount }
+        };
+      }
+
+      const finalFeeQuote = await this.estimateQuoteFeeAmount(aggregate, finalEstimate, finalEstimate.expectedPrice);
+      const minimumGrossOutput = this.minimumPreparedQuoteOutput(finalEstimate, aggregate.bot.quoteDecimals);
+      if (minimumGrossOutput === null) {
+        break;
+      }
+      const minimumNetOutput = new Decimal(minimumGrossOutput).minus(finalFeeQuote);
+      const retainedBase = fullAmount.minus(resizedAmount);
+      if (minimumNetOutput.greaterThanOrEqualTo(wholeLotCostQuote) && retainedBase.greaterThanOrEqualTo(baseAtom)) {
+        return {
+          allowed: true,
+          message: "Quote-sized accumulate-base sell covers the complete lot cost and fees while retaining base.",
+          preparedExecution: finalEstimate,
+          orderIntent: finalIntent,
+          executionParams: finalParams
+        };
+      }
+
+      sizingEstimate = finalEstimate;
+      sizingFeeQuote = finalFeeQuote;
+    }
+
+    return {
+      allowed: false,
+      message: "Quote guard blocked sell: no quote-sized amount covered the complete lot cost and fees while retaining base within three preparations.",
+      metadata: {
+        wholeLotCostQuote,
+        fullInputAmount: fullAmount.toNumber(),
+        initialProviderSlippageBps: new Decimal(1)
+          .minus(new Decimal(fullEstimate.minimumOutputAmount).div(fullEstimate.expectedOutputAmount))
+          .mul(10_000).ceil().clamp(0, 10_000).toNumber(),
+        checkedAt: now.toISOString()
+      }
+    };
+  }
+
+  private validatePreparedQuoteDrift(
+    aggregate: BotAggregate,
+    signal: TriggerSignal,
+    orderIntent: OrderIntent,
+    estimate: ExecutionEstimate,
+    now: Date
+  ): { allowed: false; message: string; metadata: Record<string, unknown> } | null {
+    const estimatedPrice = estimate.expectedPrice;
+    const targetPrice = orderIntent.targetPrice;
+    const adverseDriftBps = ((targetPrice - estimatedPrice) / targetPrice) * 10_000;
+    const maxAdverseDriftBps = Math.max(0, aggregate.config.maxSlippageBps);
+    if (Number.isFinite(estimatedPrice) && estimatedPrice > 0 && adverseDriftBps <= maxAdverseDriftBps) {
+      return null;
+    }
+    return {
+      allowed: false,
+      message: `Quote guard blocked sell: resized quote is outside the ${maxAdverseDriftBps} bps rail-drift limit.`,
+      metadata: { targetPrice, estimatedPrice, adverseDriftBps, maxAdverseDriftBps, checkedAt: now.toISOString() }
+    };
+  }
+
+  private amountsMatchAtDecimals(left: number, right: number, decimals: number): boolean {
+    const scale = new Decimal(10).pow(decimals);
+    const leftAtoms = new Decimal(left).mul(scale);
+    const rightAtoms = new Decimal(right).mul(scale);
+    return leftAtoms.isInteger() && rightAtoms.isInteger() && leftAtoms.equals(rightAtoms);
+  }
+
+  private minimumPreparedQuoteOutput(estimate: ExecutionEstimate, quoteDecimals: number): number | null {
+    const providerFloor = estimate.minimumOutputAmount;
+    return providerFloor === undefined
+      ? null
+      : new Decimal(providerFloor).toDecimalPlaces(quoteDecimals, Decimal.ROUND_DOWN).toNumber();
+  }
+
+  private getWholeMatchedTradingLot(
+    openLots: PositionLot[],
+    orderIntent: OrderIntent,
+    baseDecimals: number
+  ): PositionLot | null {
+    const matchedIds = [...new Set(orderIntent.matchedLotIds ?? [])];
+    if (matchedIds.length !== 1) {
+      return null;
+    }
+    const lot = openLots.find((candidate) => candidate.id === matchedIds[0] && isTradingLot(candidate));
+    if (!lot || lot.closedAt || lot.costQuote <= 0 || lot.remainingBaseAmount <= 0) {
+      return null;
+    }
+    const scale = new Decimal(10).pow(baseDecimals);
+    const sellableLotAtoms = new Decimal(lot.remainingBaseAmount).mul(scale).floor();
+    const requestedAtoms = new Decimal(orderIntent.requestedBaseAmount).mul(scale);
+    return requestedAtoms.isInteger() && requestedAtoms.equals(sellableLotAtoms) ? lot : null;
   }
 
   private estimateSoldCostQuote(openLots: PositionLot[], orderIntent: OrderIntent): number {

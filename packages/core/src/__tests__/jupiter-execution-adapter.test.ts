@@ -14,7 +14,7 @@ import { ExecutionStatus, TradeSide } from "../domain/enums";
 import type { ExecuteSwapParams } from "../domain/types";
 
 const params: ExecuteSwapParams = { botId: "bot-1", clientOrderId: "client-1", inputMint: MINTS.USDC,
-  outputMint: MINTS.SOL, amount: 100, inputDecimals: 6, outputDecimals: 9, tradeSide: TradeSide.Buy, slippageBps: 50 };
+  outputMint: "output-token", amount: 100, inputDecimals: 6, outputDecimals: 9, tradeSide: TradeSide.Buy, slippageBps: 50 };
 const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200 });
 
 describe("JupiterExecutionAdapter", () => {
@@ -26,6 +26,7 @@ describe("JupiterExecutionAdapter", () => {
     const transaction = new VersionedTransaction(new TransactionMessage({ payerKey: wallet.publicKey,
       recentBlockhash: Keypair.generate().publicKey.toBase58(), instructions: [] }).compileToV0Message());
     order = { inputMint: params.inputMint, outputMint: params.outputMint, inAmount: "100000000", outAmount: "1000000000",
+      otherAmountThreshold: "995000000", slippageBps: 50, mode: "ultra",
       transaction: Buffer.from(transaction.serialize()).toString("base64"), requestId: "request-1",
       signatureFeeLamports: 5000, prioritizationFeeLamports: 20000, rentFeeLamports: 2039280 };
   });
@@ -39,10 +40,24 @@ describe("JupiterExecutionAdapter", () => {
     return { fetchFn, adapter, input, estimate, prepared: estimate.rawQuote as PreparedJupiterExecution };
   }
 
-  function confirmedTransaction(prepared: PreparedJupiterExecution, fee = 12000, err: unknown = null) {
+  function confirmedTransaction(
+    prepared: PreparedJupiterExecution,
+    fee = 12000,
+    err: unknown = null,
+    walletCost = fee,
+    solBalances?: { preNative?: number; postNative?: number; preWrapped?: string; postWrapped?: string }
+  ) {
     const tx = VersionedTransaction.deserialize(Buffer.from(prepared.signedTransaction, "base64"));
     const keys = tx.message.staticAccountKeys.map((key) => key.toBase58());
-    return { result: { meta: { fee, err }, transaction: {
+    const signerIndex = keys.indexOf(prepared.walletPublicKey);
+    const preBalances = keys.map(() => solBalances?.preNative ?? 1_000_000_000);
+    const postBalances = [...preBalances];
+    postBalances[signerIndex] = solBalances?.postNative ?? preBalances[signerIndex]! - walletCost;
+    const tokenBalance = (amount: string) => ({ accountIndex: keys.length, mint: MINTS.SOL,
+      owner: prepared.walletPublicKey, uiTokenAmount: { amount } });
+    const preTokenBalances = solBalances?.preWrapped === undefined ? [] : [tokenBalance(solBalances.preWrapped)];
+    const postTokenBalances = solBalances?.postWrapped === undefined ? [] : [tokenBalance(solBalances.postWrapped)];
+    return { result: { meta: { fee, err, preBalances, postBalances, preTokenBalances, postTokenBalances }, transaction: {
       signatures: keys.slice(0, tx.message.header.numRequiredSignatures).map((key) => key === prepared.walletPublicKey ? prepared.signerSignature : prepared.txId),
       message: { accountKeys: keys }
     } } };
@@ -51,8 +66,10 @@ describe("JupiterExecutionAdapter", () => {
   it("signs and serializes the exact durable authorization before execute, without posting", async () => {
     const { fetchFn, estimate, prepared } = await prepare();
     expect(fetchFn).toHaveBeenCalledOnce();
-    expect(String(fetchFn.mock.calls[0]?.[0])).toContain("priorityFeeLamports=50000");
-    expect(String(fetchFn.mock.calls[0]?.[0])).toContain("broadcastFeeType=maxCap");
+    const url = String(fetchFn.mock.calls[0]?.[0]);
+    expect(url).not.toContain("slippageBps=");
+    expect(url).not.toContain("priorityFeeLamports=");
+    expect(url).not.toContain("broadcastFeeType=");
     expect(prepared.kind).toBe("jupiter-prepared-v1");
     expect(prepared.txId).toMatch(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/);
     expect(prepared.signerSignature).toBe(prepared.txId);
@@ -60,35 +77,119 @@ describe("JupiterExecutionAdapter", () => {
     expect(VersionedTransaction.deserialize(Buffer.from(prepared.signedTransaction, "base64")).signatures[0]?.some(Boolean)).toBe(true);
   });
 
-  it("uses actual wallet totals including swap fees once, with network fees and rent separate", async () => {
+  it("uses wallet totals once and captures transaction fees, tips and rent in the SOL balance delta", async () => {
     const { fetchFn, adapter, estimate, prepared } = await prepare();
     fetchFn.mockResolvedValueOnce(json({ status: "Success", code: 0, signature: prepared.txId,
       totalInputAmount: "100100000", totalOutputAmount: "995000000", inputAmountResult: "100000000", outputAmountResult: "1000000000" }));
-    fetchFn.mockResolvedValueOnce(json(confirmedTransaction(prepared)));
+    fetchFn.mockResolvedValueOnce(json(confirmedTransaction(prepared, 12000, null, 21000)));
     const result = await adapter.executePreparedSwap(params, estimate);
     expect(result.status).toBe(ExecutionStatus.Filled);
     expect(result.inputAmount).toBe(100.1);
     expect(result.outputAmount).toBe(0.995);
     expect(result.effectivePrice).toBeCloseTo(100.1 / 0.995);
     expect(result.feeAmount).toBe(0);
-    expect(result.nativeFeeAmount).toBe(0.000012);
-    expect(result.rawReport).toMatchObject({ nativeFeeBasis: "confirmed-transaction-meta", rentFeeEstimateLamports: 2039280 });
+    expect(result.nativeFeeAmount).toBe(0.000021);
+    expect(result.rawReport).toMatchObject({ nativeFeeBasis: "confirmed-wallet-sol-delta", totalNetworkFeeLamports: 12000,
+      totalWalletNativeCostLamports: 21000, rentFeeEstimateLamports: 2039280 });
     expect(JSON.stringify(result.rawReport)).not.toContain(prepared.signedTransaction);
   });
 
+  it("keeps the provider minimum output and requests the tighter swap tolerance", async () => {
+    order = { ...order, mode: "manual", slippageBps: 10, otherAmountThreshold: "999000000" };
+    const { estimate, fetchFn, prepared } = await prepare({
+      executionPolicy: { transactionSlippage: "bounded_manual", transactionSlippageBps: 10 }
+    });
+    expect(estimate.minimumOutputAmount).toBe(0.999);
+    expect(String(fetchFn.mock.calls[0]?.[0])).toContain("slippageBps=10");
+    expect(prepared.order.otherAmountThreshold).toBe("999000000");
+  });
+
+  it("accepts a provider tolerance stricter than the requested maximum", async () => {
+    order = { ...order, mode: "manual", slippageBps: 0, otherAmountThreshold: "1000000000" };
+    expect((await prepare({ executionPolicy: { transactionSlippage: "bounded_manual", transactionSlippageBps: 10 } })).estimate.minimumOutputAmount).toBe(1);
+  });
+
+  it.each([
+    { slippageBps: 50 },
+    { slippageBps: -1 },
+    { otherAmountThreshold: "1000000001" },
+    { otherAmountThreshold: "invalid" }
+  ])("rejects an unsafe provider slippage/minimum response %j", async (extra) => {
+    order = { ...order, mode: "manual", ...extra };
+    await expect(prepare({ executionPolicy: { transactionSlippage: "bounded_manual", transactionSlippageBps: 10 } })).rejects.toThrow();
+  });
+
+  it("fails closed when a live order omits the provider minimum output", async () => {
+    delete order.otherAmountThreshold;
+    await expect(prepare()).rejects.toThrow("authoritative minimum output");
+  });
+
   it("converts sell totals with each mint's decimals and reports quote per base", async () => {
-    order = { ...order, inputMint: MINTS.SOL, outputMint: MINTS.USDC, inAmount: "150000000", outAmount: "12810000" };
-    const { fetchFn, adapter, estimate, prepared, input } = await prepare({ inputMint: MINTS.SOL, outputMint: MINTS.USDC,
-      amount: 0.15, inputDecimals: 9, outputDecimals: 6, tradeSide: TradeSide.Sell });
+    order = { ...order, inputMint: MINTS.BTC, outputMint: MINTS.USDC, inAmount: "15000000", outAmount: "12810000",
+      otherAmountThreshold: "12700000" };
+    const { fetchFn, adapter, estimate, prepared, input } = await prepare({ inputMint: MINTS.BTC, outputMint: MINTS.USDC,
+      amount: 0.15, inputDecimals: 8, outputDecimals: 6, tradeSide: TradeSide.Sell });
     expect(estimate.inputAmount).toBe(0.15);
     expect(estimate.expectedPrice).toBeCloseTo(85.4);
     fetchFn.mockResolvedValueOnce(json({ status: "Success", code: 0, signature: prepared.txId,
-      totalInputAmount: "150000000", totalOutputAmount: "12800000" }));
-    fetchFn.mockResolvedValueOnce(json(confirmedTransaction(prepared)));
+      totalInputAmount: "15000000", totalOutputAmount: "12800000" }));
+    fetchFn.mockResolvedValueOnce(json(confirmedTransaction(prepared, 12000, null, 0)));
     const result = await adapter.executePreparedSwap(input, estimate);
     expect(result.inputAmount).toBe(0.15);
     expect(result.outputAmount).toBe(12.8);
     expect(result.effectivePrice).toBeCloseTo(12.8 / 0.15);
+  });
+
+  it.each([
+    {
+      name: "native SOL input",
+      input: { inputMint: MINTS.SOL, outputMint: MINTS.USDC, amount: 0.15, inputDecimals: 9, outputDecimals: 6, tradeSide: TradeSide.Sell },
+      order: { inputMint: MINTS.SOL, outputMint: MINTS.USDC, inAmount: "150000000", outAmount: "12810000", otherAmountThreshold: "12700000" },
+      totals: { totalInputAmount: "150000000", totalOutputAmount: "12800000" },
+      balances: { preNative: 1_000_000_000, postNative: 849_978_000, preWrapped: "0", postWrapped: "0" }
+    },
+    {
+      name: "native SOL output",
+      input: { inputMint: MINTS.USDC, outputMint: MINTS.SOL, amount: 100, inputDecimals: 6, outputDecimals: 9, tradeSide: TradeSide.Buy },
+      order: { inputMint: MINTS.USDC, outputMint: MINTS.SOL, inAmount: "100000000", outAmount: "128000000", otherAmountThreshold: "127000000" },
+      totals: { totalInputAmount: "100000000", totalOutputAmount: "128000000" },
+      balances: { preNative: 1_000_000_000, postNative: 1_127_978_000, preWrapped: "0", postWrapped: "0" }
+    },
+    {
+      name: "wrapped SOL output",
+      input: { inputMint: MINTS.USDC, outputMint: MINTS.SOL, amount: 100, inputDecimals: 6, outputDecimals: 9, tradeSide: TradeSide.Buy },
+      order: { inputMint: MINTS.USDC, outputMint: MINTS.SOL, inAmount: "100000000", outAmount: "128000000", otherAmountThreshold: "127000000" },
+      totals: { totalInputAmount: "100000000", totalOutputAmount: "128000000" },
+      balances: { preNative: 1_000_000_000, postNative: 999_978_000, preWrapped: "0", postWrapped: "128000000" }
+    },
+    {
+      name: "wrapped SOL input",
+      input: { inputMint: MINTS.SOL, outputMint: MINTS.USDC, amount: 0.15, inputDecimals: 9, outputDecimals: 6, tradeSide: TradeSide.Sell },
+      order: { inputMint: MINTS.SOL, outputMint: MINTS.USDC, inAmount: "150000000", outAmount: "12810000", otherAmountThreshold: "12700000" },
+      totals: { totalInputAmount: "150000000", totalOutputAmount: "12800000" },
+      balances: { preNative: 1_000_000_000, postNative: 999_978_000, preWrapped: "150000000", postWrapped: "0" }
+    }
+  ])("reconciles $name principal separately from the complete wallet SOL cost", async ({ input: overrides, order: orderOverrides, totals, balances }) => {
+    order = { ...order, ...orderOverrides };
+    const { fetchFn, adapter, estimate, prepared, input } = await prepare(overrides);
+    fetchFn.mockResolvedValueOnce(json({ status: "Success", code: 0, signature: prepared.txId, ...totals }));
+    fetchFn.mockResolvedValueOnce(json(confirmedTransaction(prepared, 12000, null, 0, balances)));
+    const result = await adapter.executePreparedSwap(input, estimate);
+    expect(result.status).toBe(ExecutionStatus.Filled);
+    expect(result.nativeFeeAmount).toBe(0.000022);
+    expect(result.rawReport).toMatchObject({ totalNetworkFeeLamports: 12000, totalWalletNativeCostLamports: 22000,
+      walletNativeRefundLamports: 0 });
+  });
+
+  it("records a net wallet rent refund without turning it into a negative fee or unresolved execution", async () => {
+    const { fetchFn, adapter, estimate, prepared } = await prepare();
+    fetchFn.mockResolvedValueOnce(json({ status: "Success", code: 0, signature: prepared.txId,
+      totalInputAmount: "100000000", totalOutputAmount: "995000000" }));
+    fetchFn.mockResolvedValueOnce(json(confirmedTransaction(prepared, 12000, null, -5000)));
+    const result = await adapter.executePreparedSwap(params, estimate);
+    expect(result.status).toBe(ExecutionStatus.Filled);
+    expect(result.nativeFeeAmount).toBe(0);
+    expect(result.rawReport).toMatchObject({ totalWalletNativeCostLamports: 0, walletNativeRefundLamports: 5000 });
   });
 
   it.each([
@@ -166,13 +267,14 @@ describe("JupiterExecutionAdapter", () => {
     const { fetchFn, adapter, estimate, prepared } = await prepare();
     fetchFn.mockResolvedValueOnce(json({ status: "Success", code: 0, signature: prepared.txId,
       totalInputAmount: "100000000", totalOutputAmount: "995000000" }));
-    fetchFn.mockResolvedValueOnce(json(confirmedTransaction(prepared)));
+    fetchFn.mockResolvedValueOnce(json(confirmedTransaction(prepared, 12000, null, 0)));
     expect((await adapter.executePreparedSwap(params, estimate)).nativeFeeAmount).toBe(0);
   });
 
   it("uses token units consistently for legacy quotes", async () => {
+    order = { ...order, outputMint: MINTS.BTC, outAmount: "100000000", otherAmountThreshold: "99500000" };
     const adapter = new JupiterExecutionAdapter({ fetchFn: vi.fn<typeof fetch>().mockResolvedValue(json(order)) });
-    expect((await adapter.getQuote(MINTS.USDC, MINTS.SOL, 100, 50)).expectedOutputAmount).toBe(1);
+    expect((await adapter.getQuote(MINTS.USDC, MINTS.BTC, 100, 50)).expectedOutputAmount).toBe(1);
   });
 
   it("returns only independently confirmed RPC failures, never a fictitious submitted/fill report", async () => {

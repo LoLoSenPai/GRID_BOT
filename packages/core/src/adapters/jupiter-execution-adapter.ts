@@ -3,7 +3,7 @@ import { Keypair, VersionedTransaction } from "@solana/web3.js";
 import { Decimal } from "decimal.js";
 
 import { ExecutionProvider, ExecutionStatus } from "../domain/enums";
-import type { ExecuteSwapParams, ExecutionEstimate, ExecutionQuote, ExecutionReport } from "../domain/types";
+import type { ExecuteSwapParams, ExecutionEstimate, ExecutionPolicy, ExecutionQuote, ExecutionReport } from "../domain/types";
 import { loadExecutionWallet } from "../services/wallet-service";
 import type { ExecutionAdapter } from "./execution-adapter";
 
@@ -12,9 +12,12 @@ interface JupiterOrderResponse {
   outputMint: string;
   inAmount: string;
   outAmount: string;
+  otherAmountThreshold?: string;
+  slippageBps?: number;
   priceImpact?: number;
   transaction?: string | null;
   requestId?: string;
+  mode?: string;
   router?: string | null;
   taker?: string | null;
   signatureFeeLamports?: number;
@@ -22,6 +25,7 @@ interface JupiterOrderResponse {
   prioritizationFeeLamports?: number;
   prioritizationFeePayer?: string | null;
   rentFeeLamports?: number;
+  rentFeePayer?: string | null;
   errorCode?: number;
   errorMessage?: string;
   lastValidBlockHeight?: string;
@@ -36,6 +40,13 @@ interface JupiterExecuteResponse {
   totalOutputAmount?: string;
 }
 
+interface RpcTokenBalance {
+  accountIndex: number;
+  mint: string;
+  owner?: string;
+  uiTokenAmount?: { amount?: string };
+}
+
 /** Persist this entire object before sending it. It contains a transaction authorization. */
 export interface PreparedJupiterExecution {
   kind: "jupiter-prepared-v1";
@@ -46,6 +57,8 @@ export interface PreparedJupiterExecution {
   signerSignature: string;
   walletPublicKey: string;
   preparedAt: string;
+  /** Absent on durable preparations created before transaction policy separation. */
+  executionPolicy?: ExecutionPolicy;
 }
 
 export interface JupiterExecutionAdapterOptions {
@@ -100,7 +113,8 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       requestId: order.requestId,
       // A sponsored transaction can require the fee payer's signature from Jupiter.
       txId: encodeSignature(transaction.signatures[0]),
-      signerSignature, walletPublicKey, preparedAt: new Date().toISOString()
+      signerSignature, walletPublicKey, preparedAt: new Date().toISOString(),
+      executionPolicy: resolveExecutionPolicy(params)
     };
     return { ...this.buildEstimateFromOrder({ ...params, walletPublicKey }, order), rawQuote: prepared };
   }
@@ -151,7 +165,7 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
     try {
       const inputAmount = tokenAmount(response.totalInputAmount, params.inputDecimals);
       const outputAmount = tokenAmount(response.totalOutputAmount, params.outputDecimals);
-      const fees = await this.getActualNetworkFee(response.signature, prepared, false);
+      const fees = await this.getActualNetworkFee(response.signature, prepared, params, false, response);
       return {
         provider: ExecutionProvider.Jupiter, status: ExecutionStatus.Filled,
         executionId: prepared.requestId, txId: response.signature,
@@ -161,8 +175,10 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
         feeAmount: 0,
         nativeFeeAmount: fees.nativeFeeAmount, nativeFeeSymbol: "SOL",
         rawReport: { order: this.reportOrder(prepared.order), executeResponse: response,
-          nativeFeeBasis: "confirmed-transaction-meta", nativeFeePayer: fees.feePayer,
+          nativeFeeBasis: "confirmed-wallet-sol-delta", nativeFeePayer: fees.feePayer,
           totalNetworkFeeLamports: fees.feeLamports,
+          totalWalletNativeCostLamports: fees.walletCostLamports,
+          walletNativeRefundLamports: fees.walletRefundLamports,
           rentFeeEstimateLamports: prepared.order.rentFeeLamports ?? 0, rentCostBasis: "order-estimate-not-charged" }
       };
     } catch {
@@ -181,17 +197,26 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
     const status = payload.result?.value?.[0];
     if (!status || !status.err || !["confirmed", "finalized"].includes(status.confirmationStatus ?? "")) return null;
     try {
-      const fees = await this.getActualNetworkFee(id, prepared, true);
+      const fees = await this.getActualNetworkFee(id, prepared, undefined, true);
       return { provider: ExecutionProvider.Jupiter, status: ExecutionStatus.Failed, executionId: id, txId: id,
         inputAmount: 0, outputAmount: 0, effectivePrice: 0, feeAmount: 0,
         nativeFeeAmount: fees.nativeFeeAmount, nativeFeeSymbol: "SOL",
-        rawReport: { rpcStatus: status, nativeFeeBasis: "confirmed-transaction-meta", nativeFeePayer: fees.feePayer, totalNetworkFeeLamports: fees.feeLamports } };
+        rawReport: { rpcStatus: status, nativeFeeBasis: "confirmed-wallet-sol-delta", nativeFeePayer: fees.feePayer,
+          totalNetworkFeeLamports: fees.feeLamports, totalWalletNativeCostLamports: fees.walletCostLamports,
+          walletNativeRefundLamports: fees.walletRefundLamports } };
     } catch { return null; }
   }
 
-  private async getActualNetworkFee(signature: string, prepared: PreparedJupiterExecution, failed: boolean) {
+  private async getActualNetworkFee(
+    signature: string,
+    prepared: PreparedJupiterExecution,
+    params: ExecuteSwapParams | undefined,
+    failed: boolean,
+    executeResponse?: JupiterExecuteResponse
+  ) {
     if (!this.env.RPC_HTTP_URL) throw new Error("Confirmed transaction fee RPC is unavailable.");
-    const response = await this.fetchJson<{ result?: { meta?: { fee?: number; err?: unknown };
+    const response = await this.fetchJson<{ result?: { meta?: { fee?: number; err?: unknown; preBalances?: number[]; postBalances?: number[];
+        preTokenBalances?: RpcTokenBalance[] | null; postTokenBalances?: RpcTokenBalance[] | null };
       transaction?: { signatures?: string[]; message?: { accountKeys?: string[] } } } | null }>(
       this.env.RPC_HTTP_URL, { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getTransaction",
@@ -211,8 +236,38 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
         transaction.signatures[signerIndex] !== prepared.signerSignature) {
       throw new Error("Confirmed transaction metadata does not match the prepared authorization.");
     }
-    return { feePayer: keys[0], feeLamports: meta.fee!,
-      nativeFeeAmount: keys[0] === prepared.walletPublicKey ? meta.fee! / LAMPORTS_PER_SOL : 0 };
+    const preBalance = meta.preBalances?.[signerIndex];
+    const postBalance = meta.postBalances?.[signerIndex];
+    if (!Number.isSafeInteger(preBalance) || !Number.isSafeInteger(postBalance) || preBalance! < 0 || postBalance! < 0) {
+      throw new Error("Confirmed transaction does not expose the execution wallet SOL balance delta.");
+    }
+
+    if (!failed && (!params || !executeResponse?.totalInputAmount || !executeResponse.totalOutputAmount)) {
+      throw new Error("Confirmed execution is missing wallet totals required to isolate native costs.");
+    }
+    let walletCost = new Decimal(preBalance!).minus(postBalance!);
+    if (!failed && params && (params.inputMint === MINTS.SOL || params.outputMint === MINTS.SOL)) {
+      if (!Array.isArray(meta.preTokenBalances) || !Array.isArray(meta.postTokenBalances)) {
+        throw new Error("Confirmed native SOL execution omitted token balances required to reconcile wrapped SOL.");
+      }
+      const wrappedSolDelta = walletWrappedSolBalance(meta.postTokenBalances, prepared.walletPublicKey)
+        .minus(walletWrappedSolBalance(meta.preTokenBalances, prepared.walletPublicKey));
+      walletCost = walletCost.minus(wrappedSolDelta);
+      if (params.inputMint === MINTS.SOL) {
+        walletCost = walletCost.minus(rawTokenUnits(executeResponse!.totalInputAmount!));
+      }
+      if (params.outputMint === MINTS.SOL) {
+        walletCost = walletCost.plus(rawTokenUnits(executeResponse!.totalOutputAmount!));
+      }
+    }
+    if (!walletCost.isInteger() || walletCost.abs().gt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error("Confirmed wallet SOL delta cannot be reconciled safely.");
+    }
+    const signedWalletCostLamports = walletCost.toNumber();
+    const walletCostLamports = Math.max(0, signedWalletCostLamports);
+    const walletRefundLamports = Math.max(0, -signedWalletCostLamports);
+    return { feePayer: keys[0], feeLamports: meta.fee!, walletCostLamports,
+      walletRefundLamports, nativeFeeAmount: walletCostLamports / LAMPORTS_PER_SOL };
   }
 
   private unresolved(prepared: PreparedJupiterExecution, reason: string, response?: JupiterExecuteResponse): ExecutionReport {
@@ -222,17 +277,18 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       rawReport: { reason, executeResponse: response ?? null, reconciliationRequired: true } };
   }
 
-  private async fetchOrder(params: Pick<ExecuteSwapParams, "inputMint" | "outputMint" | "amount" | "inputDecimals" | "slippageBps"> & { taker?: string }): Promise<JupiterOrderResponse> {
+  private async fetchOrder(params: Pick<ExecuteSwapParams, "inputMint" | "outputMint" | "amount" | "inputDecimals" | "slippageBps" | "executionPolicy"> & { taker?: string }): Promise<JupiterOrderResponse> {
     const rawAmount = toRawAmount(params.amount, params.inputDecimals);
     if (!Number.isInteger(params.slippageBps) || params.slippageBps < 0 || params.slippageBps > 10_000) {
-      throw new Error("Invalid slippage basis points.");
+      throw new Error("Invalid quote-to-rail drift basis points.");
     }
-    const query = new URLSearchParams({ inputMint: params.inputMint, outputMint: params.outputMint,
-      amount: rawAmount, slippageBps: String(params.slippageBps), swapMode: "ExactIn" });
+    const policy = resolveExecutionPolicy(params);
+    const query = new URLSearchParams({ inputMint: params.inputMint, outputMint: params.outputMint, amount: rawAmount });
+    if (policy.transactionSlippage === "bounded_manual") {
+      query.set("slippageBps", String(policy.transactionSlippageBps));
+    }
     if (params.taker) {
       query.set("taker", params.taker);
-      query.set("priorityFeeLamports", String(this.env.JUPITER_PRIORITY_FEE_LAMPORTS ?? DEFAULT_PRIORITY_FEE_LAMPORTS));
-      query.set("broadcastFeeType", this.env.JUPITER_BROADCAST_FEE_TYPE ?? "maxCap");
     }
     const order = await this.fetchJson<JupiterOrderResponse>(`https://api.jup.ag/swap/v2/order?${query}`, {
       headers: { "x-api-key": this.requireApiKey() }
@@ -240,6 +296,28 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
     if (!order || order.inputMint !== params.inputMint || order.outputMint !== params.outputMint ||
       order.inAmount !== rawAmount) throw new Error("Jupiter order does not match requested mints and amount.");
     tokenAmount(order.outAmount, 0);
+    if (order.slippageBps !== undefined && (!Number.isInteger(order.slippageBps) || order.slippageBps < 0 || order.slippageBps > 10_000)) {
+      throw new Error("Jupiter returned invalid transaction slippage.");
+    }
+    if (policy.transactionSlippage === "bounded_manual" &&
+      (order.slippageBps === undefined || order.slippageBps > policy.transactionSlippageBps)) {
+      throw new Error("Jupiter slippage exceeds the bounded manual transaction tolerance.");
+    }
+    if (order.mode !== undefined && !["ultra", "manual"].includes(order.mode)) {
+      throw new Error("Jupiter returned an unknown order mode.");
+    }
+    if (order.mode === "manual" && policy.transactionSlippage === "provider_auto") {
+      throw new Error("Jupiter did not honor provider-managed auto execution.");
+    }
+    if (order.otherAmountThreshold !== undefined) {
+      tokenAmount(order.otherAmountThreshold, 0);
+      if (new Decimal(order.otherAmountThreshold).gt(order.outAmount)) {
+        throw new Error("Jupiter minimum output exceeds quoted output.");
+      }
+    }
+    if (params.taker && order.otherAmountThreshold === undefined) {
+      throw new Error("Jupiter executable order omitted its authoritative minimum output.");
+    }
     if (params.taker) {
       const priority = lamports(order.prioritizationFeeLamports);
       const cap = this.env.JUPITER_PRIORITY_FEE_LAMPORTS ?? DEFAULT_PRIORITY_FEE_LAMPORTS;
@@ -253,6 +331,7 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
     const expectedOutputAmount = tokenAmount(order.outAmount, params.outputDecimals);
     return { provider: ExecutionProvider.Jupiter, inputMint: params.inputMint, outputMint: params.outputMint,
       inputAmount, expectedOutputAmount, estimatedFeeAmount: 0, nativeFeeAmount: this.getNativeFeeSol(order, params.walletPublicKey),
+      ...(order.otherAmountThreshold !== undefined ? { minimumOutputAmount: tokenAmount(order.otherAmountThreshold, params.outputDecimals) } : {}),
       nativeFeeSymbol: "SOL", priceImpactPct: Number(order.priceImpact ?? 0), requestId: order.requestId,
       route: order.router ?? null, rawQuote: order,
       expectedPrice: this.calculateEffectivePrice(params, inputAmount, expectedOutputAmount) };
@@ -267,6 +346,9 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
       (params.walletPublicKey && params.walletPublicKey !== raw.walletPublicKey)) {
       throw new Error("Missing or mismatched durable Jupiter preparation; refusing to prepare a replacement.");
     }
+    if (raw.executionPolicy && !executionPoliciesEqual(raw.executionPolicy, resolveExecutionPolicy(params))) {
+      throw new Error("Prepared Jupiter transaction policy differs from the persisted execution parameters.");
+    }
     return raw as PreparedJupiterExecution;
   }
 
@@ -277,7 +359,8 @@ export class JupiterExecutionAdapter implements ExecutionAdapter {
   private getNativeFeeSol(order: JupiterOrderResponse, taker?: string): number {
     const paidByTaker = (payer?: string | null) => !payer || !taker || payer === taker;
     return ((paidByTaker(order.signatureFeePayer) ? lamports(order.signatureFeeLamports) : 0) +
-      (paidByTaker(order.prioritizationFeePayer) ? lamports(order.prioritizationFeeLamports) : 0)) / LAMPORTS_PER_SOL;
+      (paidByTaker(order.prioritizationFeePayer) ? lamports(order.prioritizationFeeLamports) : 0) +
+      (paidByTaker(order.rentFeePayer) ? lamports(order.rentFeeLamports) : 0)) / LAMPORTS_PER_SOL;
   }
 
   private reportOrder(order: JupiterOrderResponse) {
@@ -330,6 +413,35 @@ function lamports(value: number | undefined): number {
   if (value === undefined) return 0;
   if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid network fee lamports.");
   return value;
+}
+
+function rawTokenUnits(value: string): Decimal {
+  if (!/^\d+$/.test(value)) throw new Error("Invalid native token wallet total.");
+  return new Decimal(value);
+}
+
+function walletWrappedSolBalance(balances: RpcTokenBalance[], walletPublicKey: string): Decimal {
+  return balances.reduce((total, balance) => {
+    if (balance.mint !== MINTS.SOL || balance.owner !== walletPublicKey) return total;
+    const rawAmount = balance.uiTokenAmount?.amount;
+    if (typeof rawAmount !== "string") throw new Error("Wrapped SOL balance omitted its raw token amount.");
+    return total.plus(rawTokenUnits(rawAmount));
+  }, new Decimal(0));
+}
+
+function resolveExecutionPolicy(params: Pick<ExecuteSwapParams, "executionPolicy">): ExecutionPolicy {
+  const policy = params.executionPolicy ?? { transactionSlippage: "provider_auto" as const };
+  if (policy.transactionSlippage === "bounded_manual" &&
+    (!Number.isInteger(policy.transactionSlippageBps) || policy.transactionSlippageBps < 0 || policy.transactionSlippageBps > 10_000)) {
+    throw new Error("Invalid bounded manual transaction slippage.");
+  }
+  return policy;
+}
+
+function executionPoliciesEqual(left: ExecutionPolicy, right: ExecutionPolicy): boolean {
+  return left.transactionSlippage === right.transactionSlippage &&
+    (left.transactionSlippage !== "bounded_manual" ||
+      (right.transactionSlippage === "bounded_manual" && left.transactionSlippageBps === right.transactionSlippageBps));
 }
 function isSignature(value: unknown): value is string {
   return typeof value === "string" && /^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(value);
