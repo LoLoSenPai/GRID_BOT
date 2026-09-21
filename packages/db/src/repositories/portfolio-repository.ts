@@ -21,6 +21,8 @@ import {
 import { Prisma, type PrismaClient } from "@prisma/client";
 
 import { prisma } from "../client";
+import { assertLiveWalletCapital, lockLiveWallet } from "./live-wallet-capital";
+import { getEnv } from "@grid-bot/common";
 
 type Tx = Prisma.TransactionClient;
 type DbClient = PrismaClient | Tx;
@@ -38,6 +40,7 @@ export class PrismaPortfolioRepository implements PortfolioRepository {
       throw new Error("A portfolio cannot be created with automatic live execution enabled.");
     }
     const row = await this.client.$transaction(async (tx) => {
+      if (input.mode === "live") await lockLiveWallet(tx);
       const existing = await tx.portfolio.findUnique({
         where: { mode_walletIdentity_quoteMint: { mode: input.mode as never, walletIdentity: input.walletIdentity, quoteMint: input.quoteMint } },
       });
@@ -50,6 +53,10 @@ export class PrismaPortfolioRepository implements PortfolioRepository {
         }
         return existing;
       }
+      if (input.mode === "live") {
+        const wallet = await assertLiveWalletCapital(tx, input.initialFreeQuoteAmount);
+        if (wallet.pubkey !== input.walletIdentity) throw new Error("Live portfolio wallet mismatch.");
+      }
       const created = await tx.portfolio.create({
         data: {
           ...(input.id ? { id: input.id } : {}), mode: input.mode as never, walletIdentity: input.walletIdentity,
@@ -61,7 +68,7 @@ export class PrismaPortfolioRepository implements PortfolioRepository {
         portfolioFreeQuoteDelta: input.initialFreeQuoteAmount, reason: "Explicit initial unassigned quote funding",
       } });
       return created;
-    });
+    }, { timeout: 15000 });
     return mapPortfolio(row);
   }
 
@@ -191,7 +198,9 @@ export class PrismaPortfolioRepository implements PortfolioRepository {
       const lock = await tx.$queryRaw<Array<{ locked: boolean }>>`SELECT pg_try_advisory_xact_lock(hashtextextended(${preflightBand.botId}, 0)) AS locked`;
       if (!lock[0]?.locked) throw new Error("Bot execution is observing this revision; adaptation deferred.");
       await lockBot(tx, preflightBand.botId);
-      await lockPortfolio(tx, input.portfolioId);
+      const activePortfolio = await lockPortfolio(tx, input.portfolioId);
+      if (activePortfolio.mode === "live" && (!getEnv().V2_LIVE_ENABLED || !activePortfolio.autoLive || Number(activePortfolio.nativeFeeReserveSol) <= 0))
+        throw new Error("Live adaptation is locked.");
       await assertPortfolioUnblocked(tx, input.portfolioId);
       const band = await tx.gridBand.findFirst({
         where: { id: input.bandId, assetStrategy: { portfolioId: input.portfolioId } }, include: { bot: true },

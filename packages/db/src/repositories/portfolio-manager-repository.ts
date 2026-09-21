@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { MINTS } from "@grid-bot/common";
+import { MINTS, getEnv } from "@grid-bot/common";
 import { BotMode, GridType, DEFAULT_PORTFOLIO_POLICY, type BandExecutionContext, type BotAggregate,
   type PortfolioManagerStore, type PortfolioPolicyDecision } from "@grid-bot/core";
 import { Prisma, type PrismaClient } from "@prisma/client";
@@ -37,14 +37,15 @@ export async function createPaperPortfolio(input: { totalCapitalUsd: number; bas
   });
 }
 
-async function createPaperBand(tx: Tx, input: { strategyId: string; symbol: "BTC" | "SOL"; envelope: Envelope;
-  budget: number; now: Date; reason: string }) {
+export async function createPaperBand(tx: Tx, input: { strategyId: string; symbol: "BTC" | "SOL"; envelope: Envelope;
+  budget: number; now: Date; reason: string; livePaused?: boolean }) {
   validateEnvelope(input.envelope);
   const envelope = { lowPrice: input.envelope.lowPrice, highPrice: input.envelope.highPrice, levelCount: input.envelope.levelCount };
   const bot = await tx.bot.create({ data: { key: `v2-${input.symbol.toLowerCase()}-${randomUUID()}`,
-    name: `${input.symbol} / USDC · V2 paper`, baseMint: MINTS[input.symbol], quoteMint: MINTS.USDC,
+    name: `${input.symbol} / USDC · V2 ${input.livePaused ? "live" : "paper"}`, baseMint: MINTS[input.symbol], quoteMint: MINTS.USDC,
     baseSymbol: input.symbol, quoteSymbol: "USDC", baseDecimals: input.symbol === "BTC" ? 8 : 9, quoteDecimals: 6,
-    strategyMode: input.symbol === "BTC" ? "accumulate_base" : "accumulate_usdc", mode: "paper", status: "running", executionProvider: "paper" } });
+    strategyMode: input.symbol === "BTC" ? "accumulate_base" : "accumulate_usdc", mode: input.livePaused ? "live" : "paper",
+    status: input.livePaused ? "paused" : "running", executionProvider: input.livePaused ? "jupiter" : "paper" } });
   await tx.botConfig.create({ data: { botId: bot.id, totalBudgetUsd: input.budget, maxDeployableUsd: input.budget,
     reserveQuoteAmount: 0, ...envelope, gridType: "arithmetic", minOrderQuoteAmount: 25, maxSlippageBps: 50,
     cooldownMs: 5_000, maxOrdersPerHour: 30, maxDrawdownPct: 100, maxConsecutiveFailures: 5,
@@ -57,7 +58,7 @@ async function createPaperBand(tx: Tx, input: { strategyId: string; symbol: "BTC
     gridType: "arithmetic", reason: input.reason, observedAt: input.now } });
   await tx.position.create({ data: { botId: bot.id, baseAmount: 0, quoteSpent: 0, averageEntryPrice: 0,
     realizedPnlUsd: 0, unrealizedPnlUsd: 0, totalFeesQuote: 0 } });
-  await tx.botStateSnapshot.create({ data: { botId: bot.id, status: "running", availableQuoteAmount: input.budget,
+  await tx.botStateSnapshot.create({ data: { botId: bot.id, status: input.livePaused ? "paused" : "running", availableQuoteAmount: input.budget,
     availableBaseAmount: 0, deployedQuoteAmount: 0, realizedPnlUsd: 0, unrealizedPnlUsd: 0, totalEquityUsd: input.budget,
     lastProcessedAt: input.now, metadata: { gridRevisionId: revision.id, revisionBaselinePending: true, gridCycles: {},
       pendingSignal: null, levelLocks: {}, recenterHistory: [], recentExecutions: [] } } });
@@ -79,7 +80,8 @@ export class PrismaPortfolioManagerStore implements PortfolioManagerStore {
   }
   getContext(botId: string) { return this.portfolios.getBandContext(botId); }
   async applyDecision(context: BandExecutionContext, bot: BotAggregate, decision: PortfolioPolicyDecision, now: Date) {
-    if (context.portfolio.mode !== BotMode.Paper) throw new Error("Autonomous live adaptation awaits paper validation.");
+    if (context.portfolio.mode !== BotMode.Paper && (!getEnv().V2_LIVE_ENABLED || !context.portfolio.autoLive))
+      throw new Error("Autonomous live adaptation awaits paper validation.");
     if (decision.action === "revise") {
       await this.portfolios.reviseBand({ portfolioId: context.portfolio.id, bandId: context.band.id,
         expectedRevisionId: context.band.activeRevision.id, expectedSnapshotId: bot.latestState?.id ?? null,
@@ -97,6 +99,9 @@ export class PrismaPortfolioManagerStore implements PortfolioManagerStore {
         stateSnapshots: { orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 } } });
       const band = await tx.gridBand.findUniqueOrThrow({ where: { id: context.band.id }, include: {
         revisions: { orderBy: { sequence: "desc" }, take: 1 }, assetStrategy: { include: { portfolio: true } } } });
+      if (band.assetStrategy.portfolio.mode === "live" && (!getEnv().V2_LIVE_ENABLED ||
+        !band.assetStrategy.portfolio.autoLive || Number(band.assetStrategy.portfolio.nativeFeeReserveSol) <= 0))
+        throw new Error("Live portfolio adaptation is locked.");
       if (current.archivedAt || ["paused", "stopped"].includes(current.status) || current.executionAttempt ||
         current.stateSnapshots[0]?.id !== bot.latestState?.id || band.revisions[0]?.id !== context.band.activeRevision.id ||
         band.status !== context.band.status) throw new Error("Band changed while evaluating policy.");
@@ -121,10 +126,14 @@ export class PrismaPortfolioManagerStore implements PortfolioManagerStore {
           throw new Error("Lower-band capital or exposure constraints changed.");
         }
         const newBand = await createPaperBand(tx, { strategyId: strategy.id, symbol: strategy.baseSymbol as "BTC" | "SOL",
-          envelope: c, budget: c.requestedCapitalUsd, now, reason: decision.reason });
+          envelope: c, budget: c.requestedCapitalUsd, now, reason: decision.reason, livePaused: context.portfolio.mode === BotMode.Live });
         await allocatePortfolioCapitalInTransaction(tx, { portfolioId: context.portfolio.id, bandId: newBand.id,
           quoteAmount: c.requestedCapitalUsd, idempotencyKey: `fallback:${band.id}:${band.revisions[0]!.id}`,
           reason: decision.reason });
+        if (context.portfolio.mode === BotMode.Live) {
+          await tx.bot.update({ where: { id: newBand.botId }, data: { status: "running" } });
+          await tx.botStateSnapshot.updateMany({ where: { botId: newBand.botId }, data: { status: "running" } });
+        }
         await tx.gridBand.update({ where: { id: band.id }, data: { status: "PARKED_BELOW" } });
       }
       await tx.portfolio.update({ where: { id: context.portfolio.id }, data: { version: { increment: 1 } } });

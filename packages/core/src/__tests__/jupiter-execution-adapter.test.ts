@@ -253,6 +253,67 @@ describe("JupiterExecutionAdapter", () => {
     await expect(prepare()).rejects.toThrow("exceeds configured cap");
   });
 
+  it("fails closed when a wallet-attributable fee estimate is unknown", async () => {
+    delete order.prioritizationFeeLamports;
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(json(order));
+    const adapter = new JupiterExecutionAdapter({ fetchFn });
+    await expect(adapter.prepareExecution({ ...params,
+      nativeFeePolicy: { maxFeeAmount: 0.01, minimumPostExecutionBalance: 0.001 }
+    })).rejects.toThrow("wallet-attributable priority fee estimate");
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
+  it("uses the fresh resolver policy instead of a stale execution-parameter snapshot", async () => {
+    const resolveNativeFeePolicy = vi.fn(async () => ({ maxFeeAmount: 0.001, minimumPostExecutionBalance: 0 }));
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(json(order));
+    const adapter = new JupiterExecutionAdapter({ fetchFn, resolveNativeFeePolicy });
+    const input = { ...params, nativeFeePolicy: { maxFeeAmount: 0.01, minimumPostExecutionBalance: 0 } };
+    await expect(adapter.prepareExecution(input)).rejects.toThrow("exceeds the reserved budget");
+    expect(resolveNativeFeePolicy).toHaveBeenCalledWith(input);
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
+  it("rejects before signing when SOL cannot cover principal, fee envelope and protected inventory", async () => {
+    order = { ...order, inputMint: MINTS.SOL, outputMint: MINTS.USDC,
+      inAmount: "100000000", outAmount: "8500000", otherAmountThreshold: "8400000" };
+    const policy = { maxFeeAmount: 0.003, minimumPostExecutionBalance: 0.01 };
+    const resolveNativeFeePolicy = vi.fn(async () => policy);
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json(order))
+      .mockResolvedValueOnce(json({ result: { value: 112_064_279 } }));
+    const adapter = new JupiterExecutionAdapter({ fetchFn, resolveNativeFeePolicy });
+    const input = { ...params, inputMint: MINTS.SOL, outputMint: MINTS.USDC,
+      amount: 0.1, inputDecimals: 9, outputDecimals: 6, tradeSide: TradeSide.Sell };
+    await expect(adapter.prepareExecution(input)).rejects.toThrow("insufficient native SOL");
+    expect(resolveNativeFeePolicy).toHaveBeenCalledWith(input);
+    expect(JSON.parse(String(fetchFn.mock.calls[1]?.[1]?.body))).toMatchObject({ method: "getBalance",
+      params: [wallet.publicKey.toBase58(), { commitment: "confirmed" }] });
+  });
+
+  it("does not reserve wallet SOL for fee components paid by a verified third party", async () => {
+    const sponsor = Keypair.generate();
+    const tx = new VersionedTransaction(new TransactionMessage({ payerKey: sponsor.publicKey,
+      recentBlockhash: Keypair.generate().publicKey.toBase58(),
+      instructions: [new TransactionInstruction({ programId: SystemProgram.programId,
+        keys: [{ pubkey: wallet.publicKey, isSigner: true, isWritable: true }], data: Buffer.alloc(0) })]
+    }).compileToV0Message());
+    tx.sign([sponsor]);
+    order = { ...order, transaction: Buffer.from(tx.serialize()).toString("base64"),
+      signatureFeePayer: sponsor.publicKey.toBase58(), prioritizationFeePayer: sponsor.publicKey.toBase58(),
+      rentFeePayer: sponsor.publicKey.toBase58() };
+    delete order.signatureFeeLamports;
+    delete order.prioritizationFeeLamports;
+    delete order.rentFeeLamports;
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json(order))
+      .mockResolvedValueOnce(json({ result: { value: 0 } }));
+    const adapter = new JupiterExecutionAdapter({ fetchFn,
+      resolveNativeFeePolicy: async () => ({ maxFeeAmount: 0, minimumPostExecutionBalance: 0 }) });
+    const estimate = await adapter.prepareExecution(params);
+    expect(estimate.nativeFeeAmount).toBe(0);
+    expect((estimate.rawQuote as PreparedJupiterExecution).txId).toBeTruthy();
+  });
+
   it("does not charge sponsored fees to the taker", async () => {
     const sponsor = Keypair.generate();
     const tx = new VersionedTransaction(new TransactionMessage({ payerKey: sponsor.publicKey,

@@ -1,3 +1,4 @@
+import { assertLiveWalletCapital } from "@grid-bot/db";
 import { NextResponse } from "next/server";
 import { getEnv } from "@grid-bot/common";
 import {
@@ -149,6 +150,7 @@ export async function PATCH(
       : null;
 
     await prisma.$transaction(async (tx) => {
+      if (bot.mode === "live" && budgetDeltaUsd > 0) await assertLiveWalletCapital(tx, budgetDeltaUsd);
       await tx.$queryRaw`SELECT id FROM bots WHERE id = ${id} FOR UPDATE`;
       const currentBot = await tx.bot.findUnique({ where: { id } });
       const attempt = await tx.executionAttempt.findUnique({ where: { botId: id } });
@@ -276,7 +278,7 @@ export async function PATCH(
           },
         },
       });
-    });
+    }, { timeout: 15000 });
 
     return NextResponse.json({ ok: true });
   } catch (error) {

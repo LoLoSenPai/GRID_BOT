@@ -6,4 +6,7 @@ export * from "./repositories/latest-state-snapshots";
 export * from "./repositories/market-candle-repository";
 export * from "./repositories/portfolio-repository";
 export * from "./repositories/portfolio-manager-repository";
+export * from "./repositories/live-wallet-capital";
+export * from "./repositories/live-portfolio-repository";
+export * from "./repositories/live-native-fees";
 export * from "./repositories/trade-repository";

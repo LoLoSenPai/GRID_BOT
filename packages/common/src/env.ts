@@ -35,6 +35,7 @@ export const envSchema = z.object({
     .string()
     .optional()
     .transform((value) => value === "true"),
+  V2_LIVE_ENABLED: z.string().optional().transform(value => value === "true"),
   DEFAULT_CLUSTER: z.enum(["devnet", "mainnet-beta"]).default("mainnet-beta"),
   RPC_HTTP_URL: z.string().url(),
   RPC_WS_URL: z.string().url(),

@@ -1,6 +1,6 @@
 # Adaptive portfolio paper pilot
 
-The Portfolio page creates virtual BTC/SOL bands with equal initial allocations and an explicitly funded shared surplus. It never creates live bots. The manager also rejects automatic live adaptation even if a database flag is changed: paper validation and a reviewed live activation change are required first.
+The Portfolio page creates virtual BTC/SOL bands with equal initial allocations and an explicitly funded shared surplus. It never creates live bots. Live execution and adaptation require both LIVE_TRADING_ENABLED and V2_LIVE_ENABLED, plus the portfolio activation state and a funded native fee envelope. V2_LIVE_ENABLED defaults to false; deployment never starts staged bots.
 
 ## Execution and capital
 
@@ -30,6 +30,22 @@ Authenticated `POST /api/portfolios/live-preflight` accepts `totalCapital`, `bas
 
 USDC claims include existing live portfolio free cash and band cash once (reservations already belong to band cash), plus legacy bot cash including profits and paused/stopped bots. Invested token cost is not spendable USDC. Native SOL holdings owned by bots are excluded from the fee envelope; wrapped/native ambiguities and archived residual inventory require reconciliation. Unknown executions, missing accounting and invalid/stale observations block readiness. No USDC percentage reserve is introduced.
 
-This endpoint prepares a **new cash-funded portfolio**, not conversion of a paper portfolio or reuse of historical budgets. A real activation still needs reviewed paper evidence, explicit funding, atomic wallet-wide reservation with the legacy allocation paths, live fee controls, and manager wiring. The existing live adaptation prohibition remains intact. A successful preflight is not a reservation and must never be used as one.
+This endpoint prepares a **new cash-funded portfolio**, not conversion of a paper portfolio or reuse of historical budgets. The operator workflow below implements funding and activation. Its deployment gate remains off until paper review and explicit user authorization. A successful preflight is not a reservation and must never be used as one.
 
 Core tests cover policy causality, revision baselines and exits outside moved/parked grids. PostgreSQL integration tests cover reservations, concurrent allocations, uncertain outcomes, immutable commitments, partial sells, restart accounting and paper closure. Run database integration tests only against an isolated migrated database using `V2_TEST_DATABASE_URL` (and `DATABASE_URL` for engine integration); never against a live wallet database.
+
+
+## Operator live workflow (not run automatically)
+
+The implementation is for one configured execution wallet. Legacy creates/clones/budget increases and live portfolio staging acquire the same PostgreSQL advisory lock; durable preparation and settlement coordinate with that lock. Existing uncertain attempts prevent new funding. Wallet reads happen inside the allocation transaction with a bounded timeout. External manual wallet spending cannot be locked by PostgreSQL and requires reconciliation.
+
+Use `pnpm --filter @grid-bot/db live:portfolio` on the configured host:
+
+1. `review <paperId> <reviewReference>` records the operator's review. It requires settled BTC and SOL cycles and an old lot sold after a revision with open inventory. The reference identifies inspected ledger evidence and regression results; this is a functioning check, not proof of profits.
+2. `stage <input.json>` reserves fresh real cash and an explicit SOL fee envelope, creates equal BTC/SOL bands **paused**, with `autoLive=false`. Input fields: `totalCapital`, `baseAllocation`, `feeSol`, `observedAt` (fresh closed-observation timestamp), `envelopes.BTC` and `envelopes.SOL` (`lowPrice`, `highPrice`, `levelCount`). Prepare those envelopes from the same closed-candle policy used by paper, after review. Staging is an explicit capital allocation, not a preview. Repeating it cannot allocate a second portfolio for the wallet.
+3. Only after authorization, enable `V2_LIVE_ENABLED=true` alongside `LIVE_TRADING_ENABLED=true`, then `activate <portfolioId> <reviewId>`. Both staged bands and their policy review are checked again under the wallet lock. Archived, stopped or operator-changed bots are not resumed. The new baseline prevents a synthetic crossing. No deployment script executes this command.
+4. `fees <portfolioId> <SOL> <requestId>` explicitly attributes additional existing native SOL once. It neither buys SOL nor changes activation.
+
+The Jupiter adapter enforces wallet-attributable signature/priority/rent estimates before signing. A current resolver overrides stale saved policies. Unknown estimates or insufficient native SOL fail closed. The trade repository checks current fee availability again under the wallet lock before saving an attempt. Confirmed fees, including failed transaction costs, decrement the persistent envelope once at accounting commit; exhaustion disables the portfolio. Existing inventory and other portfolios' fee capital cannot be used as its fee budget. No simulated paper fee assumption replaces the existing Jupiter minimum-output and lot-profitability guards.
+
+The command path and six PostgreSQL live-wiring tests use stubbed wallet balances and submit no transactions. Real RPC/Jupiter behavior is covered separately by adapter fixtures and must be checked at actual pilot launch. The mainnet activation itself has not been performed.
