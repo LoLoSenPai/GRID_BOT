@@ -1,4 +1,4 @@
-import { BotStatus, ExecutionStatus, TradeSide, type TradeRepository, type PendingExecutionAttempt, type ExecutionCommit } from "@grid-bot/core";
+import { BotStatus, DuplicateAssetExposureError, ExecutionStatus, TradeSide, type TradeRepository, type PendingExecutionAttempt, type ExecutionCommit } from "@grid-bot/core";
 import type { ExecutionReport, PositionLot } from "@grid-bot/core";
 import { Prisma } from "@prisma/client";
 
@@ -400,7 +400,7 @@ async function assertNoDuplicateAssetExposure(tx: Prisma.TransactionClient, asse
     const oldTarget = Number(commitment.buyTargetPrice);
     const oldSpacing = commitment.sellTargetPrice === null ? 0 : Math.abs(Number(commitment.sellTargetPrice) - oldTarget);
     if (Math.abs(targetPrice - oldTarget) <= Math.max(currentSpacing, oldSpacing) / 2 + 1e-8) {
-      throw new Error("A trading lot already occupies this asset price zone across a revision or band.");
+      throw new DuplicateAssetExposureError("A trading lot already occupies this asset price zone across a revision or band.");
     }
   }
   const pendingAttempts = await tx.executionAttempt.findMany({
@@ -414,7 +414,7 @@ async function assertNoDuplicateAssetExposure(tx: Prisma.TransactionClient, asse
     if (!reservation || (reservation.status !== "RESERVED" && reservation.status !== "UNKNOWN")) continue;
     const pendingSpacing = context.sellTargetPrice === null ? 0 : Math.abs(context.sellTargetPrice - context.buyTargetPrice);
     if (Math.abs(targetPrice - context.buyTargetPrice) <= Math.max(currentSpacing, pendingSpacing) / 2 + 1e-8) {
-      throw new Error("A pending buy already reserves this asset price zone across another band.");
+      throw new DuplicateAssetExposureError("A pending buy already reserves this asset price zone across another band.");
     }
   }
 }

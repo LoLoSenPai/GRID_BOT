@@ -36,6 +36,7 @@ import { ExecutionService } from "./execution-service";
 import { GridDecisionService } from "./grid-decision-service";
 import { GridStrategyService } from "./grid-strategy-service";
 import { isMarketDataUnavailableError } from "./market-price-service";
+import { DuplicateAssetExposureError } from "../domain/portfolio-errors";
 import { shouldPersistPassivePriceSnapshot, shouldPersistPassiveState } from "./passive-runtime-throttle";
 import { RiskManagerService } from "./risk-manager-service";
 import { round } from "../utils/math";
@@ -223,6 +224,13 @@ export class BotEngineService {
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown bot engine error";
+        if (error instanceof DuplicateAssetExposureError) {
+          const observedPrice = this.lastObservedPriceByBotId.get(botId) ?? aggregate.latestState?.currentPrice;
+          if (observedPrice !== null && observedPrice !== undefined) {
+            await this.persistPassiveState(aggregate, observedPrice, now, { pendingSignal: null });
+          }
+          return;
+        }
         if (isMarketDataUnavailableError(error)) {
           await this.handleMarketDataUnavailable(aggregate, now, message);
           return;

@@ -12,6 +12,7 @@ import { MarketDataUnavailableError } from "../services/market-price-service";
 import { RiskManagerService } from "../services/risk-manager-service";
 import { PaperExecutionAdapter } from "../adapters/paper-execution-adapter";
 import type { BandExecutionContext } from "../domain/portfolio-types";
+import { DuplicateAssetExposureError } from "../domain/portfolio-errors";
 
 function attachPortfolio(aggregate: BotAggregate, lot?: PositionLot) {
   const now = new Date();
@@ -34,6 +35,32 @@ function attachPortfolio(aggregate: BotAggregate, lot?: PositionLot) {
 }
 
 describe("V2 execution independent from current grid", () => {
+  it("treats a concurrent occupied price zone as a skipped buy, without a critical alert", async () => {
+    const lot: PositionLot = { id: "older-lot", botId: "bot-1", kind: "trading", originalBaseAmount: 1,
+      remainingBaseAmount: 1, costQuote: 90, entryPrice: 90, openedByExecutionId: "older-buy",
+      closedByExecutionId: null, openedAt: new Date("2026-01-01"), closedAt: null };
+    const aggregate = attachPortfolio(createAggregate({
+      bot: { strategyMode: StrategyMode.AccumulateUsdc },
+      config: { priceConfirmationWindowMs: 0, lowPrice: 100, highPrice: 160 },
+      latestState: { currentPrice: 115, metadata: { levelLocks: {}, pendingSignal: null,
+        gridCycles: {}, recenterHistory: [], recentExecutions: [], gridRevisionId: "revision-new",
+        revisionBaselinePending: false } }, openLots: [lot]
+    }), lot);
+    aggregate.portfolio!.exitCommitments[0]!.buyTargetPrice = 110;
+    aggregate.portfolio!.exitCommitments[0]!.sellTargetPrice = 150;
+    const marketPrice = { symbol: "SOL/USDC", pair: "SOL/USDC", price: 115,
+      confidence: 0, source: "test", feedId: "test", timestamp: new Date() };
+    const setup = createEngine({ aggregate, marketPrice });
+    await setup.engine.runBot("bot-1"); // Establish the current revision's observation baseline.
+    setup.tradeRepository.prepareExecutionAttempt.mockRejectedValueOnce(
+      new DuplicateAssetExposureError("A trading lot already occupies this asset price zone across a revision or band."));
+    marketPrice.price = 109;
+    await setup.engine.runBot("bot-1");
+    expect(setup.tradeRepository.prepareExecutionAttempt).toHaveBeenCalledOnce();
+    expect(setup.botRepository.updateBotStatus).not.toHaveBeenCalledWith("bot-1", BotStatus.Error);
+    expect(setup.alert.createAlert).not.toHaveBeenCalled();
+    expect(setup.botRepository.createStateSnapshot.mock.calls.at(-1)?.[0].metadata.pendingSignal).toBeNull();
+  });
   it("sells an old absolute commitment outside a moved, parked envelope using durable paper accounting", async () => {
     const lot: PositionLot = { id: "old-lot", botId: "bot-1", kind: "trading", originalBaseAmount: 1, openedByExecutionId: "old-buy", closedByExecutionId: null,
       remainingBaseAmount: 1, costQuote: 100, entryPrice: 100, openedAt: new Date("2026-01-01"), closedAt: null };
