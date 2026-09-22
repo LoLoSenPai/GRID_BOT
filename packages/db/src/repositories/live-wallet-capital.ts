@@ -8,6 +8,20 @@ export async function lockLiveWallet(tx: Tx) {
   await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended('grid-bot:live-wallet', 0))::text`;
 }
 
+/** Legacy live bots and a V2 live portfolio have separate exposure controls: run only one model per wallet. */
+export async function assertLegacyLiveAdmission(tx: Tx) {
+  await lockLiveWallet(tx);
+  if (await tx.portfolio.count({ where: { mode: "live" } }))
+    throw new Error("Legacy live bots cannot run while a V2 live portfolio exists.");
+}
+
+export async function assertNoActiveLegacyLiveBots(tx: Tx) {
+  await lockLiveWallet(tx);
+  if (await tx.bot.count({ where: { mode: "live", archivedAt: null, gridBand: { is: null },
+    status: { notIn: ["paused", "stopped"] } } }))
+    throw new Error("Pause or stop every legacy live bot before staging or activating V2.");
+}
+
 export async function assertLiveWalletCapital(tx: Tx, additionalUsdc: number, feeSol = 0,
   observe = () => WalletService.fromEnv().getBalances()) {
   if (![additionalUsdc, feeSol].every(n => Number.isFinite(n) && n >= 0)) throw new Error("Invalid funding request.");

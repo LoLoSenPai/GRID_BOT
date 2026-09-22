@@ -1,7 +1,7 @@
 import { getEnv, MINTS } from "@grid-bot/common";
 import { DEFAULT_PORTFOLIO_POLICY } from "@grid-bot/core";
 import { prisma } from "../client";
-import { assertLiveWalletCapital, lockLiveWallet } from "./live-wallet-capital";
+import { assertLiveWalletCapital, assertNoActiveLegacyLiveBots, lockLiveWallet } from "./live-wallet-capital";
 import { createPaperBand } from "./portfolio-manager-repository";
 import { allocatePortfolioCapitalInTransaction } from "./portfolio-repository";
 
@@ -37,6 +37,7 @@ export async function stageLivePortfolio(input: { totalCapital: number; baseAllo
     throw new Error("Invalid live allocation or stale grid observation.");
   return prisma.$transaction(async tx => {
     const wallet = await assertLiveWalletCapital(tx, input.totalCapital, input.feeSol);
+    await assertNoActiveLegacyLiveBots(tx);
     if (await tx.portfolio.findFirst({ where: { mode: "live", walletIdentity: wallet.pubkey } }))
       throw new Error("A live portfolio already exists; do not allocate it twice.");
     const p = await tx.portfolio.create({ data: { mode: "live", walletIdentity: wallet.pubkey, quoteMint: MINTS.USDC,
@@ -76,6 +77,7 @@ export async function activateLivePortfolio(portfolioId: string, reviewId: strin
   if (!getEnv().LIVE_TRADING_ENABLED || !getEnv().V2_LIVE_ENABLED) throw new Error("Live activation is deployment-locked.");
   return prisma.$transaction(async tx => {
     await lockLiveWallet(tx);
+    await assertNoActiveLegacyLiveBots(tx);
     const p = await tx.portfolio.findUniqueOrThrow({ where: { id: portfolioId }, include: {
       assetStrategies: { include: { bands: { include: { bot: true } } } } } });
     const review = await tx.systemLog.findUnique({ where: { id: reviewId } });

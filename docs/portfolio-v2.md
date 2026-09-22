@@ -39,6 +39,8 @@ Core tests cover policy causality, revision baselines and exits outside moved/pa
 
 The implementation is for one configured execution wallet. Legacy creates/clones/budget increases and live portfolio staging acquire the same PostgreSQL advisory lock; durable preparation and settlement coordinate with that lock. Existing uncertain attempts prevent new funding. Wallet reads happen inside the allocation transaction with a bounded timeout. External manual wallet spending cannot be locked by PostgreSQL and requires reconciliation.
 
+Legacy live bots and V2 live bands do not share an entry-zone inventory model. Staging and activation therefore require every legacy live bot to be paused or stopped. Once a V2 live portfolio exists, legacy live creation, cloning, resumption and durable execution preparation are blocked for this wallet. A staged V2 band also cannot be resumed through the ordinary bot endpoint before explicit portfolio activation.
+
 Use `pnpm --filter @grid-bot/db live:portfolio` on the configured host:
 
 1. `review <paperId> <reviewReference>` records the operator's review. It requires settled BTC and SOL cycles and an old lot sold after a revision with open inventory. The reference identifies inspected ledger evidence and regression results; this is a functioning check, not proof of profits.
