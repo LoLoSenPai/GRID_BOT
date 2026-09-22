@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ session: vi.fn(), balances: vi.fn(), bots: vi.fn(), portfolios: vi.fn(), pending: vi.fn() }));
+const mocks = vi.hoisted(() => ({ session: vi.fn(), balances: vi.fn(), bots: vi.fn(), portfolios: vi.fn(), pending: vi.fn(), unresolved: vi.fn() }));
 vi.mock("@/lib/auth", () => ({ readSession: mocks.session }));
 vi.mock("@grid-bot/core", () => ({ WalletService: { fromEnv: () => ({ getBalances: mocks.balances, getPubkey: () => "wallet" }) } }));
-vi.mock("@grid-bot/db", () => ({ prisma: { $transaction: (fn: (tx: unknown) => unknown) => fn({
+vi.mock("@grid-bot/db", () => ({ ACTIONABLE_LIVE_EXECUTION_WHERE: { mode: "live" }, prisma: { $transaction: (fn: (tx: unknown) => unknown) => fn({
   bot: { findMany: mocks.bots }, portfolio: { findMany: mocks.portfolios }, executionAttempt: { count: mocks.pending },
+  execution: { count: mocks.unresolved },
 }) } }));
 import { MINTS } from "@grid-bot/common";
 import { POST } from "./route";
@@ -12,7 +13,8 @@ const request = () => new Request("http://localhost/api/portfolios/live-prefligh
 beforeEach(() => {
   vi.clearAllMocks(); mocks.session.mockResolvedValue({});
   mocks.balances.mockResolvedValue({ pubkey: "wallet", usdc: 1500, sol: 2 });
-  mocks.bots.mockResolvedValue([]); mocks.portfolios.mockResolvedValue([]); mocks.pending.mockResolvedValue(0);
+  mocks.bots.mockResolvedValue([]); mocks.portfolios.mockResolvedValue([]);
+  mocks.pending.mockResolvedValue(0); mocks.unresolved.mockResolvedValue(0);
 });
 describe("live preflight route", () => {
   it("requires authentication before wallet access", async () => {
@@ -39,6 +41,12 @@ describe("live preflight route", () => {
     expect(body.capitalReady).toBe(false); expect(body.blockers).toHaveLength(1);
     mocks.pending.mockResolvedValue(0);
     expect(await (await POST(request())).json()).toMatchObject({ capitalReady: true, quoteClaims: 0, solClaims: 0 });
+  });
+  it("blocks an unresolved live execution even without a durable attempt", async () => {
+    mocks.unresolved.mockResolvedValue(1);
+    const body = await (await POST(request())).json();
+    expect(body.capitalReady).toBe(false);
+    expect(body.blockers).toContain("Pending or uncertain live executions require reconciliation.");
   });
   it("fails closed on RPC failure", async () => {
     mocks.balances.mockRejectedValue(new Error("private RPC details"));

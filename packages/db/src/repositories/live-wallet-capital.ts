@@ -3,6 +3,13 @@ import { Prisma } from "@prisma/client";
 import { WalletService } from "@grid-bot/core";
 
 type Tx = Prisma.TransactionClient;
+
+/** Archived pre-durable `pending` rows without a tx id cannot execute and are kept as history. */
+export const ACTIONABLE_LIVE_EXECUTION_WHERE: Prisma.ExecutionWhereInput = {
+  mode: "live", completedAt: null, status: { in: ["pending", "submitted", "unknown"] },
+  OR: [{ status: { in: ["submitted", "unknown"] } }, { txId: { not: null } }, { bot: { archivedAt: null } }],
+};
+
 export async function lockLiveWallet(tx: Tx) {
   // One configured execution wallet. Also acquired before durable live order preparation.
   await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended('grid-bot:live-wallet', 0))::text`;
@@ -27,7 +34,7 @@ export async function assertLiveWalletCapital(tx: Tx, additionalUsdc: number, fe
   if (![additionalUsdc, feeSol].every(n => Number.isFinite(n) && n >= 0)) throw new Error("Invalid funding request.");
   await lockLiveWallet(tx);
   if (await tx.executionAttempt.count({ where: { bot: { mode: "live" } } }) ||
-    await tx.execution.count({ where: { mode: "live", completedAt: null, status: { in: ["pending", "submitted", "unknown"] } } }))
+    await tx.execution.count({ where: ACTIONABLE_LIVE_EXECUTION_WHERE }))
     throw new Error("Live execution awaiting settlement; retry allocation afterwards.");
   let timer: ReturnType<typeof setTimeout> | undefined;
   const wallet = await Promise.race([observe(), new Promise<never>((_, reject) => {

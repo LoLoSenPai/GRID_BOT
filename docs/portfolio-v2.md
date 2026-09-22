@@ -30,6 +30,8 @@ Authenticated `POST /api/portfolios/live-preflight` accepts `totalCapital`, `bas
 
 USDC claims include existing live portfolio free cash and band cash once (reservations already belong to band cash), plus legacy bot cash including profits and paused/stopped bots. Invested token cost is not spendable USDC. Native SOL holdings owned by non-archived bots are excluded from the fee envelope. Archived lots remain historical, cannot execute, and are not treated as claims against current wallet balances; they may no longer match current holdings. Unknown executions, missing accounting and invalid/stale observations block readiness. No USDC percentage reserve is introduced.
 
+Legacy executions with a durable attempt, a transaction id, or `submitted`/`unknown` status still block funding until reconciled. Old `pending` rows without a transaction id on archived bots remain historical records and do not block a fresh portfolio.
+
 This endpoint prepares a **new cash-funded portfolio**, not conversion of a paper portfolio or reuse of historical budgets. The operator workflow below implements funding and activation. Its deployment gate remains off until paper review and explicit user authorization. A successful preflight is not a reservation and must never be used as one.
 
 Core tests cover policy causality, revision baselines and exits outside moved/parked grids. PostgreSQL integration tests cover reservations, concurrent allocations, uncertain outcomes, immutable commitments, partial sells, restart accounting and paper closure. Run database integration tests only against an isolated migrated database using `V2_TEST_DATABASE_URL` (and `DATABASE_URL` for engine integration); never against a live wallet database.
