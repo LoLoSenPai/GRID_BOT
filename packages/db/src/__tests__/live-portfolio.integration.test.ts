@@ -38,6 +38,15 @@ import { resumePortfolioBand } from "../repositories/portfolio-manager-repositor
     await prisma.positionLot.create({ data: { id: "archived-history-lot", botId: archived.id, kind: "trading",
       originalBaseAmount: 15, remainingBaseAmount: 15, entryPrice: 100, costQuote: 1500,
       openedByExecutionId: "historical-execution", openedAt: new Date() } });
+    const order = await prisma.order.create({ data: { botId: archived.id, orderKey: "archived-history-order",
+      side: "buy", levelIndex: 1, targetPrice: 100, requestedBaseAmount: 1,
+      requestedQuoteAmount: 100, status: "created", reason: "Historical fixture" } });
+    const execution = await prisma.execution.create({ data: { botId: archived.id, orderId: order.id,
+      provider: "jupiter", mode: "live", status: "pending", executionRef: "historical-execution", txId: "tx-must-reconcile" } });
+    await expect(stageLivePortfolio({ totalCapital: 1000, baseAllocation: 400, feeSol: 0.1,
+      observedAt: new Date(), envelopes: { BTC: { lowPrice: 80, highPrice: 100, levelCount: 3 },
+        SOL: { lowPrice: 80, highPrice: 100, levelCount: 3 } } })).rejects.toThrow("Live execution awaiting settlement");
+    await prisma.execution.update({ where: { id: execution.id }, data: { txId: null } });
   });
   it("stages equal real allocations paused, reserving capital once", async () => {
     portfolioId = await stageLivePortfolio({ totalCapital: 1000, baseAllocation: 400, feeSol: 0.1,

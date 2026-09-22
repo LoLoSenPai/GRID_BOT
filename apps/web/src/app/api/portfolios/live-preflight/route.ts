@@ -1,6 +1,6 @@
 import { MINTS } from "@grid-bot/common";
 import { WalletService } from "@grid-bot/core";
-import { prisma } from "@grid-bot/db";
+import { ACTIONABLE_LIVE_EXECUTION_WHERE, prisma } from "@grid-bot/db";
 import { NextResponse } from "next/server";
 import { readSession } from "@/lib/auth";
 import { evaluateLivePreflight } from "@/lib/portfolio-live-preflight";
@@ -28,15 +28,16 @@ export async function POST(request: Request) {
     };
     if (balances.pubkey !== wallet.getPubkey()) blockers.push("Wallet identity changed.");
     // Repeatable DB snapshot; chain observation remains advisory until atomic activation/reconciliation.
-    const { bots, portfolios, pending } = await prisma.$transaction(async tx => ({
+    const { bots, portfolios, pending, unresolved } = await prisma.$transaction(async tx => ({
       bots: await tx.bot.findMany({ where: { mode: "live" }, include: {
         gridBand: true, positionLots: { where: { closedAt: null } },
         stateSnapshots: { orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 } } }),
       portfolios: await tx.portfolio.findMany({ where: { mode: "live" }, include: {
         assetStrategies: { include: { bands: true } } } }),
       pending: await tx.executionAttempt.count({ where: { bot: { mode: "live" } } }),
+      unresolved: await tx.execution.count({ where: ACTIONABLE_LIVE_EXECUTION_WHERE }),
     }), { isolationLevel: "RepeatableRead" });
-    if (pending) blockers.push("Pending or uncertain live executions require reconciliation.");
+    if (pending || unresolved) blockers.push("Pending or uncertain live executions require reconciliation.");
     let quoteClaims = 0;
     let solClaims = 0;
     for (const portfolio of portfolios) {
