@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getEnv } from "@grid-bot/common";
 import { BotMode, BotStatus } from "@grid-bot/core";
-import { findLatestBotStateSnapshot, prisma, resumePortfolioBand } from "@grid-bot/db";
+import { assertLegacyLiveAdmission, findLatestBotStateSnapshot, prisma, resumePortfolioBand } from "@grid-bot/db";
 
 import { readSession } from "@/lib/auth";
 import {
@@ -69,22 +69,37 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
           openLots: bot.positionLots
         });
 
-  await prisma.$transaction([
-    prisma.bot.update({
-      where: { id },
-      data: { status: BotStatus.Running as never }
-    }),
-    prisma.botStateSnapshot.create({ data: snapshotData }),
-    prisma.systemLog.create({
-      data: {
+  if (bot.mode === BotMode.Live) {
+    await prisma.$transaction(async tx => {
+      await assertLegacyLiveAdmission(tx);
+      await tx.bot.update({ where: { id }, data: { status: BotStatus.Running as never } });
+      await tx.botStateSnapshot.create({ data: snapshotData });
+      await tx.systemLog.create({ data: {
         botId: id,
         level: "info",
         category: "bot_status",
         message: `Bot resumed by ${session.username}.`,
         metadata: { actor: session.username }
-      }
-    })
-  ]);
+      } });
+    }, { timeout: 15000 });
+  } else {
+    await prisma.$transaction([
+      prisma.bot.update({
+        where: { id },
+        data: { status: BotStatus.Running as never }
+      }),
+      prisma.botStateSnapshot.create({ data: snapshotData }),
+      prisma.systemLog.create({
+        data: {
+          botId: id,
+          level: "info",
+          category: "bot_status",
+          message: `Bot resumed by ${session.username}.`,
+          metadata: { actor: session.username }
+        }
+      })
+    ]);
+  }
 
   return NextResponse.json({ ok: true });
 }

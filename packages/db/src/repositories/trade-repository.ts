@@ -6,7 +6,7 @@ import { getEnv } from "@grid-bot/common";
 import { prisma } from "../client";
 import { jsonValue, lotData, publicReport, stateSnapshotData } from "./execution-persistence-data";
 import { preserveOperatorStatus } from "./bot-state-repository";
-import { lockLiveWallet } from "./live-wallet-capital";
+import { assertLegacyLiveAdmission, lockLiveWallet } from "./live-wallet-capital";
 import { resolveLiveNativeFeePolicy } from "./live-native-fees";
 import {
   releasePortfolioReservationInTransaction,
@@ -69,6 +69,7 @@ export class PrismaTradeRepository implements TradeRepository {
       await assertNoLegacyPending(tx, input.botId);
       if ([BotStatus.Paused, BotStatus.Stopped].includes(bot.status)) throw new Error("Bot paused or stopped before execution preparation.");
       const portfolioContext = await preparePortfolioContext(tx, input, bot);
+      if (bot.mode === "live" && !portfolioContext) await assertLegacyLiveAdmission(tx);
       const { matchedLotIds: _matchedLotIds, ...orderData } = input.orderIntent;
       const order = await tx.order.create({ data: { ...orderData, side: orderData.side as never, status: "created" } });
       const raw = input.preparedExecution!.rawQuote as { txId?: unknown } | undefined;

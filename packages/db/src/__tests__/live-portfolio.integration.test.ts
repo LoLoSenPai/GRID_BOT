@@ -1,14 +1,16 @@
 import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
-import { getEnv } from "@grid-bot/common";
+import { getEnv, MINTS } from "@grid-bot/common";
 import { DEFAULT_PORTFOLIO_POLICY, WalletService } from "@grid-bot/core";
 import { prisma } from "../client";
 import { stageLivePortfolio, activateLivePortfolio, recordLivePaperReview, topUpLiveFeeEnvelope } from "../repositories/live-portfolio-repository";
-import { assertLiveWalletCapital } from "../repositories/live-wallet-capital";
+import { assertLegacyLiveAdmission, assertLiveWalletCapital } from "../repositories/live-wallet-capital";
 import { resolveLiveNativeFeePolicy } from "../repositories/live-native-fees";
+import { resumePortfolioBand } from "../repositories/portfolio-manager-repository";
 
 // Use a fresh dedicated LOCAL database; this suite deliberately shares one configured wallet.
 (process.env.LIVE_PREFLIGHT_TEST_DATABASE === "true" ? describe : describe.skip)("live wallet wiring PostgreSQL", () => {
   let portfolioId: string;
+  let legacyBotId: string;
   beforeAll(() => {
     const url = new URL(getEnv().DATABASE_URL);
     if (url.hostname !== "127.0.0.1" || !url.pathname.includes("live_readiness")) throw new Error("Dedicated local DB required.");
@@ -16,6 +18,20 @@ import { resolveLiveNativeFeePolicy } from "../repositories/live-native-fees";
       sol: 1, wbtc: 0, hype: 0 }), getPubkey: () => "test-wallet" } as WalletService);
   });
   afterAll(async () => { vi.restoreAllMocks(); getEnv().V2_LIVE_ENABLED = false; await prisma.$disconnect(); });
+  it("refuses staging while a legacy live bot can trade", async () => {
+    const legacy = await prisma.bot.create({ data: { key: "legacy-live-admission-test", name: "Legacy fixture",
+      baseMint: MINTS.SOL, quoteMint: MINTS.USDC, baseSymbol: "SOL", quoteSymbol: "USDC",
+      baseDecimals: 9, quoteDecimals: 6, strategyMode: "accumulate_usdc", mode: "live",
+      status: "running", executionProvider: "jupiter" } });
+    legacyBotId = legacy.id;
+    await prisma.botStateSnapshot.create({ data: { botId: legacy.id, status: "running",
+      availableQuoteAmount: 0, availableBaseAmount: 0, deployedQuoteAmount: 0,
+      realizedPnlUsd: 0, unrealizedPnlUsd: 0, totalEquityUsd: 0, lastProcessedAt: new Date(), metadata: {} } });
+    await expect(stageLivePortfolio({ totalCapital: 1000, baseAllocation: 400, feeSol: 0.1,
+      observedAt: new Date(), envelopes: { BTC: { lowPrice: 80, highPrice: 100, levelCount: 3 },
+        SOL: { lowPrice: 80, highPrice: 100, levelCount: 3 } } })).rejects.toThrow("Pause or stop every legacy live bot");
+    await prisma.bot.update({ where: { id: legacy.id }, data: { status: "stopped" } });
+  });
   it("stages equal real allocations paused, reserving capital once", async () => {
     portfolioId = await stageLivePortfolio({ totalCapital: 1000, baseAllocation: 400, feeSol: 0.1,
       observedAt: new Date(), envelopes: { BTC: { lowPrice: 80, highPrice: 100, levelCount: 3 }, SOL: { lowPrice: 80, highPrice: 100, levelCount: 3 } } });
@@ -23,6 +39,9 @@ import { resolveLiveNativeFeePolicy } from "../repositories/live-native-fees";
     expect(Number(p.freeQuoteAmount)).toBe(200); expect(Number(p.nativeFeeReserveSol)).toBe(0.1);
     expect(p.autoLive).toBe(false);
     expect(p.assetStrategies.flatMap(s => s.bands).every(b => b.bot.mode === "live" && b.bot.status === "paused" && Number(b.availableQuoteAmount) === 400)).toBe(true);
+    await expect(prisma.$transaction(tx => assertLegacyLiveAdmission(tx))).rejects.toThrow("Legacy live bots cannot run");
+    const stagedBot = p.assetStrategies[0]!.bands[0]!.bot;
+    await expect(resumePortfolioBand(stagedBot.id)).rejects.toThrow("before explicit portfolio activation");
   });
   it("serializes two competing funding requests using the same remaining wallet cash", async () => {
     const allocate = () => prisma.$transaction(async tx => {
@@ -46,6 +65,9 @@ import { resolveLiveNativeFeePolicy } from "../repositories/live-native-fees";
     // Trusted operator evidence fixture; public APIs cannot create this record.
     const review = await prisma.systemLog.create({ data: { category: "portfolio_live_review", level: "info", message: "fixture",
       metadata: { policyFingerprint: JSON.stringify(DEFAULT_PORTFOLIO_POLICY) } } });
+    await prisma.bot.update({ where: { id: legacyBotId }, data: { status: "running" } });
+    await expect(activateLivePortfolio(portfolioId, review.id)).rejects.toThrow("Pause or stop every legacy live bot");
+    await prisma.bot.update({ where: { id: legacyBotId }, data: { status: "stopped" } });
     await activateLivePortfolio(portfolioId, review.id);
     const bot = await prisma.bot.findFirstOrThrow({ where: { gridBand: { assetStrategy: { portfolioId } } } });
     expect(bot.status).toBe("running");

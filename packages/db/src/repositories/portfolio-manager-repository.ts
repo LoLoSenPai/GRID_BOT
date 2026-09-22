@@ -6,6 +6,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../client";
 import { mapAggregate } from "../mappers";
 import { PrismaPortfolioRepository, allocatePortfolioCapitalInTransaction } from "./portfolio-repository";
+import { assertNoActiveLegacyLiveBots, lockLiveWallet } from "./live-wallet-capital";
 
 type Envelope = { lowPrice: number; highPrice: number; levelCount: number };
 type Tx = Prisma.TransactionClient;
@@ -157,11 +158,20 @@ function validateEnvelope(e: Envelope) {
 /** Operator resume preserves accounting and exits; only the next entry observation is reset. */
 export async function resumePortfolioBand(botId: string, client: PrismaClient = prisma) {
   await client.$transaction(async tx => {
+    await lockLiveWallet(tx);
     await tx.$queryRaw`SELECT id FROM bots WHERE id = ${botId} FOR UPDATE`;
-    const bot = await tx.bot.findUniqueOrThrow({ where: { id: botId }, include: { gridBand: true, executionAttempt: true,
+    const bot = await tx.bot.findUniqueOrThrow({ where: { id: botId }, include: {
+      gridBand: { include: { assetStrategy: { include: { portfolio: true } } } }, executionAttempt: true,
       stateSnapshots: { orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 } } });
     if (!bot.gridBand || bot.gridBand.status === "CLOSED" || bot.archivedAt || bot.executionAttempt || !bot.stateSnapshots[0]) {
       throw new Error("Band cannot resume before pending execution/accounting is reconciled.");
+    }
+    if (bot.mode === "live") {
+      const portfolio = bot.gridBand.assetStrategy.portfolio;
+      if (!getEnv().LIVE_TRADING_ENABLED || !getEnv().V2_LIVE_ENABLED || !portfolio.autoLive ||
+        Number(portfolio.nativeFeeReserveSol) <= 0)
+        throw new Error("Live V2 band cannot resume before explicit portfolio activation and fee funding.");
+      await assertNoActiveLegacyLiveBots(tx);
     }
     const { id: _id, createdAt: _at, ...snapshot } = bot.stateSnapshots[0];
     await tx.bot.update({ where: { id: botId }, data: { status: "running" } });

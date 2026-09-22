@@ -1,4 +1,4 @@
-import { assertLiveWalletCapital } from "@grid-bot/db";
+import { assertLegacyLiveAdmission, assertLiveWalletCapital } from "@grid-bot/db";
 import { NextResponse } from "next/server";
 import { getEnv } from "@grid-bot/common";
 import { BotMode, BotStatus, ExecutionProvider } from "@grid-bot/core/enums";
@@ -58,7 +58,8 @@ export async function POST(
   const key = await createUniqueBotKey(buildBotKeyForMode(baseKey, BotMode.Live));
 
   const clonedBot = await prisma.$transaction(async (tx) => {
-      await assertLiveWalletCapital(tx, Number(sourceConfig.totalBudgetUsd));
+    await assertLiveWalletCapital(tx, Number(sourceConfig.totalBudgetUsd));
+    await assertLegacyLiveAdmission(tx);
     const createdBot = await tx.bot.create({
       data: {
         key,
