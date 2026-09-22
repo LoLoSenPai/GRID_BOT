@@ -11,6 +11,7 @@ export * from "./services/portfolio-policy-replay-service";
 export * from "./domain/contracts";
 export * from "./domain/enums";
 export * from "./domain/portfolio-types";
+export * from "./domain/portfolio-errors";
 export * from "./domain/types";
 export * from "./services/alert-service";
 export * from "./services/backtest-lab-service";
