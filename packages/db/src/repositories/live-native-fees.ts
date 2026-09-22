@@ -22,9 +22,8 @@ export async function resolveLiveNativeFeePolicy(params: ExecuteSwapParams, db: 
     return n;
   };
   for (const bot of bots) {
-    if (bot.baseMint !== MINTS.SOL) continue;
+    if (bot.baseMint !== MINTS.SOL || bot.archivedAt) continue;
     const lotSol = bot.positionLots.reduce((n, l) => n + amount(l.remainingBaseAmount), 0);
-    if (bot.archivedAt) { protectedSol += lotSol; continue; }
     const state = bot.stateSnapshots[0];
     if (!state) throw new Error("SOL ownership snapshot missing.");
     protectedSol += Math.max(amount(state.availableBaseAmount), lotSol);

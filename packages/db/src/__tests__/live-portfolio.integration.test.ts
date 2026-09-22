@@ -31,6 +31,13 @@ import { resumePortfolioBand } from "../repositories/portfolio-manager-repositor
       observedAt: new Date(), envelopes: { BTC: { lowPrice: 80, highPrice: 100, levelCount: 3 },
         SOL: { lowPrice: 80, highPrice: 100, levelCount: 3 } } })).rejects.toThrow("Pause or stop every legacy live bot");
     await prisma.bot.update({ where: { id: legacy.id }, data: { status: "stopped" } });
+    const archived = await prisma.bot.create({ data: { key: "archived-history-test", name: "Archived history fixture",
+      baseMint: MINTS.SOL, quoteMint: MINTS.USDC, baseSymbol: "SOL", quoteSymbol: "USDC",
+      baseDecimals: 9, quoteDecimals: 6, strategyMode: "accumulate_usdc", mode: "live",
+      status: "stopped", executionProvider: "jupiter", archivedAt: new Date() } });
+    await prisma.positionLot.create({ data: { id: "archived-history-lot", botId: archived.id, kind: "trading",
+      originalBaseAmount: 15, remainingBaseAmount: 15, entryPrice: 100, costQuote: 1500,
+      openedByExecutionId: "historical-execution", openedAt: new Date() } });
   });
   it("stages equal real allocations paused, reserving capital once", async () => {
     portfolioId = await stageLivePortfolio({ totalCapital: 1000, baseAllocation: 400, feeSol: 0.1,

@@ -57,10 +57,8 @@ export async function POST(request: Request) {
     }
     for (const bot of bots) {
       const snapshot = bot.stateSnapshots[0];
-      if (bot.archivedAt) {
-        if (bot.positionLots.length) blockers.push("Archived live inventory requires explicit ownership reconciliation.");
-        continue;
-      }
+      // Archived positions are history; their former balances are not active bot claims.
+      if (bot.archivedAt) continue;
       if (!snapshot) { blockers.push("A live bot has no accounting snapshot."); continue; }
       // Paused/stopped is not released. Never subtract realized profit from another bot's cash.
       if (!bot.gridBand) quoteClaims += claim(snapshot.availableQuoteAmount);

@@ -53,10 +53,8 @@ export async function assertLiveWalletCapital(tx: Tx, additionalUsdc: number, fe
   const bots = await tx.bot.findMany({ where: { mode: "live" }, include: { gridBand: true,
     positionLots: { where: { closedAt: null } }, stateSnapshots: { orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1 } } });
   for (const b of bots) {
-    if (b.archivedAt) {
-      if (b.positionLots.some(l => amount(l.remainingBaseAmount).gt(0))) throw new Error("Archived inventory needs ownership reconciliation.");
-      continue;
-    }
+    // Archived lots remain historical records. They cannot execute, and may no longer match current wallet holdings.
+    if (b.archivedAt) continue;
     const s = b.stateSnapshots[0];
     if (!s) throw new Error("Live bot lacks an accounting snapshot.");
     if (!b.gridBand) cash = cash.plus(amount(s.availableQuoteAmount));

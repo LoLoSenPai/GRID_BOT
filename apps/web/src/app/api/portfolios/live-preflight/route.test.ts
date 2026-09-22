@@ -32,11 +32,13 @@ describe("live preflight route", () => {
       stateSnapshots: [{ availableQuoteAmount: 300, availableBaseAmount: 0.01 }] }]);
     expect(await (await POST(request())).json()).toMatchObject({ quoteClaims: 500, capitalReady: true, activationAllowed: false });
   });
-  it("blocks pending transactions and unresolved archived inventory", async () => {
+  it("blocks pending transactions while keeping archived lots as history", async () => {
     mocks.pending.mockResolvedValue(1);
     mocks.bots.mockResolvedValue([{ archivedAt: new Date(), positionLots: [{}], stateSnapshots: [] }]);
     const body = await (await POST(request())).json();
-    expect(body.capitalReady).toBe(false); expect(body.blockers).toHaveLength(2);
+    expect(body.capitalReady).toBe(false); expect(body.blockers).toHaveLength(1);
+    mocks.pending.mockResolvedValue(0);
+    expect(await (await POST(request())).json()).toMatchObject({ capitalReady: true, quoteClaims: 0, solClaims: 0 });
   });
   it("fails closed on RPC failure", async () => {
     mocks.balances.mockRejectedValue(new Error("private RPC details"));
