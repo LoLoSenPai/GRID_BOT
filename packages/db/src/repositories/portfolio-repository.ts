@@ -81,6 +81,15 @@ export class PrismaPortfolioRepository implements PortfolioRepository {
     return row ? mapPortfolio(row) : null;
   }
 
+  async setShadowJevEnabled(portfolioId: string, enabled: boolean): Promise<PortfolioRecord> {
+    requireText(portfolioId, "portfolioId");
+    const row = await this.client.portfolio.update({
+      where: { id: portfolioId },
+      data: { shadowJevEnabled: enabled },
+    });
+    return mapPortfolio(row);
+  }
+
   async listBandContexts(portfolioId?: string): Promise<BandExecutionContext[]> {
     const bands = await this.client.gridBand.findMany({
       where: portfolioId ? { assetStrategy: { portfolioId } } : undefined,
@@ -648,10 +657,10 @@ async function getReservation(tx: Tx, portfolioId: string, reservationId: string
 }
 
 function mapPortfolio(row: { id: string; mode: unknown; walletIdentity: string; quoteMint: string; freeQuoteAmount: unknown;
-  version: number; autoLive: boolean; createdAt: Date; updatedAt: Date }): PortfolioRecord {
+  version: number; autoLive: boolean; shadowJevEnabled: boolean; createdAt: Date; updatedAt: Date }): PortfolioRecord {
   return { id: row.id, mode: row.mode as PortfolioRecord["mode"], walletIdentity: row.walletIdentity,
     quoteMint: row.quoteMint, freeQuoteAmount: toNumber(row.freeQuoteAmount), version: row.version,
-    autoLive: row.autoLive, createdAt: row.createdAt, updatedAt: row.updatedAt };
+    autoLive: row.autoLive, shadowJevEnabled: row.shadowJevEnabled, createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
 
 function mapStrategy(row: { id: string; portfolioId: string; baseMint: string; baseSymbol: string; objective: unknown;

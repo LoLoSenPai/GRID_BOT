@@ -22,6 +22,7 @@ export interface PortfolioRecord {
   freeQuoteAmount: number;
   version: number;
   autoLive: boolean;
+  shadowJevEnabled: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

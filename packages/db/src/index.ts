@@ -1,4 +1,5 @@
 export * from "./client";
+export * from "./shadow-client";
 export * from "./mappers";
 export * from "./repositories/aux-repositories";
 export * from "./repositories/bot-state-repository";
@@ -6,6 +7,8 @@ export * from "./repositories/latest-state-snapshots";
 export * from "./repositories/market-candle-repository";
 export * from "./repositories/portfolio-repository";
 export * from "./repositories/portfolio-manager-repository";
+export * from "./repositories/shadow-observation-repository";
+export * from "./repositories/shadow-jev-outbox-repository";
 export * from "./repositories/live-wallet-capital";
 export * from "./repositories/live-portfolio-repository";
 export * from "./repositories/live-native-fees";

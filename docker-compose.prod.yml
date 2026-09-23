@@ -116,5 +116,22 @@ services:
     volumes:
       - ${EXECUTION_WALLET_HOST_PATH}:/run/secrets/execution-wallet.json:ro
 
+  shadow-jev:
+    profiles: ["shadow"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["pnpm", "--filter", "@grid-bot/worker", "shadow:start"]
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   postgres_data:

@@ -119,10 +119,29 @@ enum CapitalLedgerEntryType {
   RECONCILIATION
 }
 
+enum ShadowJevOutboxStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+enum ShadowEngineOutcomeStatus {
+  applied
+  wait
+  rejected
+  observed_only
+}
+
+enum ShadowJevAttemptStatus {
+  completed
+  failed
+}
+
 model Bot {
-  id                 String              @id @default(cuid())
-  key                String              @unique
-  clonedFromBotId    String?             @map("cloned_from_bot_id")
+  id                 String                 @id @default(cuid())
+  key                String                 @unique
+  clonedFromBotId    String?                @map("cloned_from_bot_id")
   name               String
   baseMint           String
   quoteMint          String
@@ -134,11 +153,11 @@ model Bot {
   mode               BotMode
   status             BotStatus
   executionProvider  ExecutionProvider
-  currentPrice       Decimal?            @db.Decimal(30, 10)
+  currentPrice       Decimal?               @db.Decimal(30, 10)
   lastHeartbeatAt    DateTime?
-  archivedAt         DateTime?           @map("archived_at")
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
+  archivedAt         DateTime?              @map("archived_at")
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
   config             BotConfig?
   stateSnapshots     BotStateSnapshot[]
   orders             Order[]
@@ -152,6 +171,7 @@ model Bot {
   priceSnapshots     PriceSnapshot[]
   executionAttempt   ExecutionAttempt?
   gridBand           GridBand?
+  shadowObservations ShadowJevObservation[]
 
   @@index([clonedFromBotId])
   @@index([mode, archivedAt])
@@ -432,39 +452,42 @@ model MarketCandle {
 }
 
 model Portfolio {
-  id              String   @id @default(cuid())
-  mode            BotMode
-  walletIdentity  String   @map("wallet_identity")
-  quoteMint       String   @map("quote_mint")
-  freeQuoteAmount Decimal  @default(0) @map("free_quote_amount") @db.Decimal(30, 10)
-  version         Int      @default(1)
-  autoLive        Boolean  @default(false) @map("auto_live")
-  nativeFeeReserveSol Decimal @default(0) @map("native_fee_reserve_sol") @db.Decimal(30, 10)
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id                  String   @id @default(cuid())
+  mode                BotMode
+  walletIdentity      String   @map("wallet_identity")
+  quoteMint           String   @map("quote_mint")
+  freeQuoteAmount     Decimal  @default(0) @map("free_quote_amount") @db.Decimal(30, 10)
+  version             Int      @default(1)
+  autoLive            Boolean  @default(false) @map("auto_live")
+  shadowJevEnabled    Boolean  @default(false) @map("shadow_jev_enabled")
+  nativeFeeReserveSol Decimal  @default(0) @map("native_fee_reserve_sol") @db.Decimal(30, 10)
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
 
   assetStrategies      AssetStrategy[]
   capitalReservations  CapitalReservation[]
   capitalLedgerEntries CapitalLedgerEntry[]
+  shadowObservations   ShadowJevObservation[]
 
   @@unique([mode, walletIdentity, quoteMint])
   @@map("portfolios")
 }
 
 model AssetStrategy {
-  id                   String               @id @default(cuid())
-  portfolioId          String               @map("portfolio_id")
-  baseMint             String               @map("base_mint")
-  baseSymbol           String               @map("base_symbol")
+  id                   String                 @id @default(cuid())
+  portfolioId          String                 @map("portfolio_id")
+  baseMint             String                 @map("base_mint")
+  baseSymbol           String                 @map("base_symbol")
   objective            StrategyMode
-  allocationPolicy     String               @default("equal") @map("allocation_policy")
-  allocatedQuoteAmount Decimal              @default(0) @map("allocated_quote_amount") @db.Decimal(30, 10)
-  retainedBaseAmount   Decimal              @default(0) @map("retained_base_amount") @db.Decimal(30, 10)
-  createdAt            DateTime             @default(now()) @map("created_at")
-  updatedAt            DateTime             @updatedAt @map("updated_at")
-  portfolio            Portfolio            @relation(fields: [portfolioId], references: [id], onDelete: Restrict)
+  allocationPolicy     String                 @default("equal") @map("allocation_policy")
+  allocatedQuoteAmount Decimal                @default(0) @map("allocated_quote_amount") @db.Decimal(30, 10)
+  retainedBaseAmount   Decimal                @default(0) @map("retained_base_amount") @db.Decimal(30, 10)
+  createdAt            DateTime               @default(now()) @map("created_at")
+  updatedAt            DateTime               @updatedAt @map("updated_at")
+  portfolio            Portfolio              @relation(fields: [portfolioId], references: [id], onDelete: Restrict)
   bands                GridBand[]
   capitalLedgerEntries CapitalLedgerEntry[]
+  shadowObservations   ShadowJevObservation[]
 
   @@unique([portfolioId, baseMint])
   @@index([portfolioId])
@@ -472,23 +495,24 @@ model AssetStrategy {
 }
 
 model GridBand {
-  id                   String               @id @default(cuid())
-  assetStrategyId      String               @map("asset_strategy_id")
-  botId                String               @unique @map("bot_id")
-  status               GridBandStatus       @default(ACTIVE)
-  allocatedQuoteAmount Decimal              @map("allocated_quote_amount") @db.Decimal(30, 10)
-  availableQuoteAmount Decimal              @map("available_quote_amount") @db.Decimal(30, 10)
-  reservedQuoteAmount  Decimal              @default(0) @map("reserved_quote_amount") @db.Decimal(30, 10)
-  deployedCostQuote    Decimal              @default(0) @map("deployed_cost_quote") @db.Decimal(30, 10)
-  realizedLossQuote    Decimal              @default(0) @map("realized_loss_quote") @db.Decimal(30, 10)
-  createdAt            DateTime             @default(now()) @map("created_at")
-  updatedAt            DateTime             @updatedAt @map("updated_at")
-  assetStrategy        AssetStrategy        @relation(fields: [assetStrategyId], references: [id], onDelete: Restrict)
-  bot                  Bot                  @relation(fields: [botId], references: [id], onDelete: Restrict)
+  id                   String                 @id @default(cuid())
+  assetStrategyId      String                 @map("asset_strategy_id")
+  botId                String                 @unique @map("bot_id")
+  status               GridBandStatus         @default(ACTIVE)
+  allocatedQuoteAmount Decimal                @map("allocated_quote_amount") @db.Decimal(30, 10)
+  availableQuoteAmount Decimal                @map("available_quote_amount") @db.Decimal(30, 10)
+  reservedQuoteAmount  Decimal                @default(0) @map("reserved_quote_amount") @db.Decimal(30, 10)
+  deployedCostQuote    Decimal                @default(0) @map("deployed_cost_quote") @db.Decimal(30, 10)
+  realizedLossQuote    Decimal                @default(0) @map("realized_loss_quote") @db.Decimal(30, 10)
+  createdAt            DateTime               @default(now()) @map("created_at")
+  updatedAt            DateTime               @updatedAt @map("updated_at")
+  assetStrategy        AssetStrategy          @relation(fields: [assetStrategyId], references: [id], onDelete: Restrict)
+  bot                  Bot                    @relation(fields: [botId], references: [id], onDelete: Restrict)
   revisions            GridRevision[]
   exitCommitments      LotExitCommitment[]
   capitalReservations  CapitalReservation[]
   capitalLedgerEntries CapitalLedgerEntry[]
+  shadowObservations   ShadowJevObservation[]
 
   @@index([assetStrategyId])
   @@map("grid_bands")
@@ -557,32 +581,150 @@ model CapitalReservation {
 }
 
 model CapitalLedgerEntry {
-  id                        String                 @id @default(cuid())
-  portfolioId               String                 @map("portfolio_id")
-  assetStrategyId           String?                @map("asset_strategy_id")
-  bandId                    String?                @map("band_id")
-  reservationId             String?                @map("reservation_id")
-  entryType                 CapitalLedgerEntryType @map("entry_type")
-  idempotencyKey            String                 @map("idempotency_key")
-  executionId               String?                @map("execution_id")
-  portfolioFreeQuoteDelta   Decimal                @default(0) @map("portfolio_free_quote_delta") @db.Decimal(30, 10)
-  strategyAllocatedQuoteDelta Decimal               @default(0) @map("strategy_allocated_quote_delta") @db.Decimal(30, 10)
-  bandAllocatedQuoteDelta   Decimal                @default(0) @map("band_allocated_quote_delta") @db.Decimal(30, 10)
-  bandAvailableQuoteDelta   Decimal                @default(0) @map("band_available_quote_delta") @db.Decimal(30, 10)
-  bandReservedQuoteDelta    Decimal                @default(0) @map("band_reserved_quote_delta") @db.Decimal(30, 10)
-  bandDeployedCostDelta     Decimal                @default(0) @map("band_deployed_cost_delta") @db.Decimal(30, 10)
-  strategyRetainedBaseDelta Decimal                @default(0) @map("strategy_retained_base_delta") @db.Decimal(30, 10)
-  externalFeeQuoteDelta     Decimal                @default(0) @map("external_fee_quote_delta") @db.Decimal(30, 10)
-  reason                    String
-  metadata                  Json?
-  createdAt                 DateTime               @default(now()) @map("created_at")
-  portfolio                 Portfolio              @relation(fields: [portfolioId], references: [id], onDelete: Restrict)
-  assetStrategy             AssetStrategy?         @relation(fields: [assetStrategyId], references: [id], onDelete: Restrict)
-  band                      GridBand?              @relation(fields: [bandId], references: [id], onDelete: Restrict)
-  reservation               CapitalReservation?    @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  id                          String                 @id @default(cuid())
+  portfolioId                 String                 @map("portfolio_id")
+  assetStrategyId             String?                @map("asset_strategy_id")
+  bandId                      String?                @map("band_id")
+  reservationId               String?                @map("reservation_id")
+  entryType                   CapitalLedgerEntryType @map("entry_type")
+  idempotencyKey              String                 @map("idempotency_key")
+  executionId                 String?                @map("execution_id")
+  portfolioFreeQuoteDelta     Decimal                @default(0) @map("portfolio_free_quote_delta") @db.Decimal(30, 10)
+  strategyAllocatedQuoteDelta Decimal                @default(0) @map("strategy_allocated_quote_delta") @db.Decimal(30, 10)
+  bandAllocatedQuoteDelta     Decimal                @default(0) @map("band_allocated_quote_delta") @db.Decimal(30, 10)
+  bandAvailableQuoteDelta     Decimal                @default(0) @map("band_available_quote_delta") @db.Decimal(30, 10)
+  bandReservedQuoteDelta      Decimal                @default(0) @map("band_reserved_quote_delta") @db.Decimal(30, 10)
+  bandDeployedCostDelta       Decimal                @default(0) @map("band_deployed_cost_delta") @db.Decimal(30, 10)
+  strategyRetainedBaseDelta   Decimal                @default(0) @map("strategy_retained_base_delta") @db.Decimal(30, 10)
+  externalFeeQuoteDelta       Decimal                @default(0) @map("external_fee_quote_delta") @db.Decimal(30, 10)
+  reason                      String
+  metadata                    Json?
+  createdAt                   DateTime               @default(now()) @map("created_at")
+  portfolio                   Portfolio              @relation(fields: [portfolioId], references: [id], onDelete: Restrict)
+  assetStrategy               AssetStrategy?         @relation(fields: [assetStrategyId], references: [id], onDelete: Restrict)
+  band                        GridBand?              @relation(fields: [bandId], references: [id], onDelete: Restrict)
+  reservation                 CapitalReservation?    @relation(fields: [reservationId], references: [id], onDelete: Restrict)
 
   @@unique([portfolioId, idempotencyKey])
   @@index([portfolioId, createdAt])
   @@index([bandId, createdAt])
   @@map("capital_ledger_entries")
+}
+
+model ShadowMarketSnapshot {
+  id           String                 @id @default(cuid())
+  contentHash  String                 @unique @map("content_hash")
+  candleCount  Int                    @map("candle_count")
+  candles      Json
+  provenance   Json
+  observedAt   DateTime               @map("observed_at")
+  createdAt    DateTime               @default(now()) @map("created_at")
+  observations ShadowJevObservation[]
+
+  @@map("shadow_market_snapshots")
+}
+
+model ShadowJevObservation {
+  id                 String               @id @default(cuid())
+  portfolioId        String               @map("portfolio_id")
+  strategyId         String               @map("strategy_id")
+  bandId             String               @map("band_id")
+  botId              String               @map("bot_id")
+  snapshotId         String               @map("snapshot_id")
+  observedAt         DateTime             @map("observed_at")
+  questionSetVersion String               @map("question_set_version")
+  modelRequested     String               @map("model_requested")
+  observationHash    String               @unique @map("observation_hash")
+  policyInput        Json                 @map("policy_input")
+  context            Json
+  botState           Json                 @map("bot_state")
+  marketMeta         Json                 @map("market_meta")
+  proposedDecision   Json                 @map("proposed_decision")
+  createdAt          DateTime             @default(now()) @map("created_at")
+  snapshot           ShadowMarketSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
+  portfolio          Portfolio            @relation(fields: [portfolioId], references: [id], onDelete: Restrict)
+  strategy           AssetStrategy        @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+  band               GridBand             @relation(fields: [bandId], references: [id], onDelete: Restrict)
+  bot                Bot                  @relation(fields: [botId], references: [id], onDelete: Restrict)
+  outcome            ShadowEngineOutcome?
+  outbox             ShadowJevOutbox?
+
+  @@index([portfolioId, bandId, observedAt, questionSetVersion])
+  @@index([snapshotId])
+  @@index([botId, observedAt(sort: Desc)])
+  @@map("shadow_jev_observations")
+}
+
+model ShadowEngineOutcome {
+  id                String                    @id @default(cuid())
+  observationId     String                    @unique @map("observation_id")
+  status            ShadowEngineOutcomeStatus
+  effectiveDecision Json?                     @map("effective_decision")
+  errorCode         String?                   @map("error_code")
+  errorMessage      String?                   @map("error_message")
+  errorDetails      Json?                     @map("error_details")
+  outcomeHash       String                    @map("outcome_hash")
+  createdAt         DateTime                  @default(now()) @map("created_at")
+  observation       ShadowJevObservation      @relation(fields: [observationId], references: [id], onDelete: Restrict)
+
+  @@map("shadow_engine_outcomes")
+}
+
+model ShadowJevOutbox {
+  id                 String                @id @default(cuid())
+  observationId      String                @unique @map("observation_id")
+  portfolioId        String                @map("portfolio_id")
+  bandId             String                @map("band_id")
+  observedAt         DateTime              @map("observed_at")
+  questionSetVersion String                @map("question_set_version")
+  status             ShadowJevOutboxStatus @default(pending)
+  terminal           Boolean               @default(false)
+  attemptCount       Int                   @default(0) @map("attempt_count")
+  availableAt        DateTime              @default(now()) @map("available_at")
+  claimedAt          DateTime?             @map("claimed_at")
+  leaseExpiresAt     DateTime?             @map("lease_expires_at")
+  claimedBy          String?               @map("claimed_by")
+  rawRequest         Json?                 @map("raw_request")
+  rawResponse        Json?                 @map("raw_response")
+  probabilities      Json?
+  modelVersion       String?               @map("model_version")
+  latencyMs          Int?                  @map("latency_ms")
+  errorCode          String?               @map("error_code")
+  errorMessage       String?               @map("error_message")
+  errorDetails       Json?                 @map("error_details")
+  completedAt        DateTime?             @map("completed_at")
+  failedAt           DateTime?             @map("failed_at")
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @updatedAt @map("updated_at")
+  observation        ShadowJevObservation  @relation(fields: [observationId], references: [id], onDelete: Restrict)
+  attempts           ShadowJevAttempt[]
+
+  @@index([portfolioId, bandId, observedAt, questionSetVersion])
+  @@index([status, availableAt])
+  @@index([status, leaseExpiresAt])
+  @@map("shadow_jev_outbox")
+}
+
+model ShadowJevAttempt {
+  id            String                 @id @default(cuid())
+  outboxId      String                 @map("outbox_id")
+  attemptNumber Int                    @map("attempt_number")
+  workerId      String                 @map("worker_id")
+  status        ShadowJevAttemptStatus
+  startedAt     DateTime               @map("started_at")
+  finishedAt    DateTime               @map("finished_at")
+  rawRequest    Json?                  @map("raw_request")
+  rawResponse   Json?                  @map("raw_response")
+  probabilities Json?
+  modelVersion  String?                @map("model_version")
+  latencyMs     Int?                   @map("latency_ms")
+  errorCode     String?                @map("error_code")
+  errorMessage  String?                @map("error_message")
+  errorDetails  Json?                  @map("error_details")
+  createdAt     DateTime               @default(now()) @map("created_at")
+  outbox        ShadowJevOutbox        @relation(fields: [outboxId], references: [id], onDelete: Restrict)
+
+  @@unique([outboxId, attemptNumber])
+  @@index([outboxId, finishedAt])
+  @@map("shadow_jev_attempts")
 }
