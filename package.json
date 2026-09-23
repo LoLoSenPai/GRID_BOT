@@ -18,6 +18,7 @@
     "db:repair-portfolio-history": "pnpm --filter @grid-bot/db repair:portfolio-history",
     "db:reconstruct-open-lots": "pnpm --filter @grid-bot/db reconstruct:open-lots",
     "db:repair-open-lots": "pnpm --filter @grid-bot/db repair:open-lots",
+    "db:shadow-portfolio": "pnpm --filter @grid-bot/db shadow:portfolio",
     "wallet:generate": "npx tsx scripts/generate-wallet.ts",
     "wallet:import": "npx tsx scripts/export-wallet-env.ts"
   },

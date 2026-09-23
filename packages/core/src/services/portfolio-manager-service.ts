@@ -1,5 +1,7 @@
+import { logger } from "@grid-bot/common";
 import type { CandleHistoryProvider } from "../domain/contracts";
 import type { BotAggregate } from "../domain/types";
+import type { CandleHistoryMeta } from "../domain/types";
 import type { BandExecutionContext } from "../domain/portfolio-types";
 import { BotMode, BotStatus } from "../domain/enums";
 import { evaluatePortfolioPolicy, type PortfolioPolicyDecision, type PortfolioPolicyInput,
@@ -19,16 +21,37 @@ export interface PortfolioPolicyInputFactory {
     candles: PortfolioPolicyInput["candles"], parameters: PortfolioPolicyParameters, peerBots?: BotAggregate[]): PortfolioPolicyInput;
 }
 
+/** Observation and policy outcome only. Shadow judgments never enter the decision path. */
+export interface PortfolioShadowCapture {
+  capture(input: {
+    context: BandExecutionContext;
+    bot: BotAggregate;
+    policyInput: PortfolioPolicyInput;
+    marketMeta: CandleHistoryMeta;
+    proposedDecision: PortfolioPolicyDecision;
+    observedAt: Date;
+  }): Promise<string | null>;
+  recordOutcome(observationId: string, outcome: {
+    status: "applied" | "wait" | "rejected" | "observed_only";
+    effectiveDecision?: PortfolioPolicyDecision;
+    error?: string;
+  }): Promise<void>;
+}
+
 /** Same pure policy is used in historical replay. This orchestrator only acquires observations and persists decisions. */
 export class PortfolioManagerService {
   private running = false;
   private observed = new Map<string, number>();
+  private shadowObserved = new Map<string, number>();
   constructor(private readonly store: PortfolioManagerStore, private readonly history: CandleHistoryProvider,
-    private readonly parameters: PortfolioPolicyParameters, private readonly inputFactory: PortfolioPolicyInputFactory) {}
+    private readonly parameters: PortfolioPolicyParameters, private readonly inputFactory: PortfolioPolicyInputFactory,
+    private readonly shadow?: PortfolioShadowCapture) {}
 
   async runCycle(now = new Date()): Promise<void> {
     if (this.running) return;
     this.running = true;
+    const pendingShadow: Array<{ input: Parameters<PortfolioShadowCapture["capture"]>[0];
+      outcome: Parameters<PortfolioShadowCapture["recordOutcome"]>[1]; botId: string; observedAt: Date }> = [];
     try {
       const contexts = await this.store.listBandContexts();
       // Less-funded assets get first access to surplus; marked token prices never affect this ordering.
@@ -36,10 +59,14 @@ export class PortfolioManagerService {
         a.strategy.baseSymbol.localeCompare(b.strategy.baseSymbol) || a.band.id.localeCompare(b.band.id));
       for (const initial of contexts) {
         const context = await this.store.getContext(initial.band.botId);
-        if (!context || context.band.status === "CLOSED" || context.capitalBlockedReason ||
-          (context.portfolio.mode === BotMode.Live && !context.portfolio.autoLive)) continue;
+        if (!context || context.band.status === "CLOSED" || context.capitalBlockedReason) continue;
+        const policyEnabled = context.portfolio.mode !== BotMode.Live || context.portfolio.autoLive;
+        const shadowEnabled = Boolean(this.shadow && context.portfolio.shadowJevEnabled);
+        if (!policyEnabled && !shadowEnabled) continue;
         const observedAt = new Date(Math.floor(+now / 3_600_000) * 3_600_000);
-        if (Math.max(this.observed.get(context.band.id) ?? 0, +(context.band.lastPolicyObservedAt ?? 0)) >= +observedAt) continue;
+        if (policyEnabled && Math.max(this.observed.get(context.band.id) ?? 0,
+          +(context.band.lastPolicyObservedAt ?? 0)) >= +observedAt) continue;
+        if (!policyEnabled && (this.shadowObserved.get(context.band.id) ?? 0) >= +observedAt) continue;
         const bot = await this.store.getBot(context.band.botId);
         if (!bot || [BotStatus.Paused, BotStatus.Stopped].includes(bot.bot.status)) continue;
         try {
@@ -55,18 +82,87 @@ export class PortfolioManagerService {
           const peers = await this.store.listBandContexts();
           const peerBots = (await Promise.all(peers.filter(p => p.portfolio.id === context.portfolio.id && p.strategy.id === context.strategy.id)
             .map(p => this.store.getBot(p.band.botId)))).filter((b): b is BotAggregate => b !== null);
-          const decision = evaluatePortfolioPolicy(this.inputFactory(context, bot, peers, observedAt, candles, this.parameters, peerBots));
-          if (decision.action !== "wait") await this.store.applyDecision(context, bot, decision, observedAt);
-          await this.store.recordDecision(bot.bot.id, decision, observedAt);
-          this.observed.set(context.band.id, +observedAt);
-        } catch {
+          const policyInput = this.inputFactory(context, bot, peers, observedAt, candles, this.parameters, peerBots);
+          const decision = evaluatePortfolioPolicy(policyInput);
+          const shadowInput = { context, bot, policyInput, marketMeta: result.meta, proposedDecision: decision, observedAt };
+          if (!policyEnabled) {
+            this.shadowObserved.set(context.band.id, +observedAt);
+            if (shadowEnabled) pendingShadow.push({ input: shadowInput, outcome: { status: "observed_only" },
+              botId: bot.bot.id, observedAt });
+            continue;
+          }
+          let applied = decision.action === "wait";
+          try {
+            if (decision.action !== "wait") {
+              await this.store.applyDecision(context, bot, decision, observedAt);
+              applied = true;
+            }
+            await this.store.recordDecision(bot.bot.id, decision, observedAt);
+            this.observed.set(context.band.id, +observedAt);
+            if (shadowEnabled) pendingShadow.push({ input: shadowInput,
+              outcome: { status: decision.action === "wait" ? "wait" : "applied", effectiveDecision: decision },
+              botId: bot.bot.id, observedAt });
+          } catch (error) {
+            if (shadowEnabled) pendingShadow.push({ input: shadowInput,
+              outcome: { status: applied ? "applied" : "rejected", effectiveDecision: applied ? decision : {
+              action: "wait", reason: "Observation unavailable or state changed; adaptation deferred.",
+              nextLowPrice: null, nextHighPrice: null, nextLevelCount: null, nextSpacing: null,
+              protectedLowPrice: null, protectedHighPrice: null },
+              error: error instanceof Error ? error.message : "Unknown policy application error" },
+              botId: bot.bot.id, observedAt });
+            throw error;
+          }
+        } catch (error) {
+          if (!policyEnabled) {
+            logger.warn({ error, botId: bot.bot.id, observedAt }, "Shadow-only portfolio observation failed");
+            continue;
+          }
           // A failed observation or optimistic-lock conflict must not move bands or stop existing exits.
           await this.store.recordDecision(bot.bot.id, { action: "wait", reason: "Observation unavailable or state changed; adaptation deferred.",
             nextLowPrice: null, nextHighPrice: null, nextLevelCount: null, nextSpacing: null,
             protectedLowPrice: null, protectedHighPrice: null }, observedAt, false);
         }
       }
-    } finally { this.running = false; }
+    } finally {
+      this.running = false;
+      for (const pending of pendingShadow) {
+        try {
+          setImmediate(() => {
+            const capture = this.scheduleShadowCapture(pending.input);
+            this.scheduleShadowOutcome(capture, pending.outcome, pending.botId, pending.observedAt);
+          });
+        } catch (error) {
+          logger.warn({ error, botId: pending.botId, observedAt: pending.observedAt },
+            "Shadow observation scheduling failed");
+        }
+      }
+    }
+  }
+
+  private scheduleShadowCapture(input: Parameters<PortfolioShadowCapture["capture"]>[0]): Promise<string | null> | null {
+    if (!this.shadow) return null;
+    try {
+      // No shadow DB or Jev promise is awaited by this cycle.
+      return new Promise<void>(resolve => setImmediate(resolve))
+        .then(() => this.shadow!.capture(input))
+        .catch(error => {
+          logger.warn({ error, botId: input.bot.bot.id, observedAt: input.observedAt }, "Shadow observation capture failed");
+          return null;
+        });
+    } catch (error) {
+      logger.warn({ error, botId: input.bot.bot.id, observedAt: input.observedAt }, "Shadow observation scheduling failed");
+      return null;
+    }
+  }
+
+  private scheduleShadowOutcome(capture: Promise<string | null> | null,
+    outcome: Parameters<PortfolioShadowCapture["recordOutcome"]>[1], botId: string, observedAt: Date): void {
+    if (!capture || !this.shadow) return;
+    void capture.then(async observationId => {
+      if (observationId) await this.shadow!.recordOutcome(observationId, outcome);
+    }).catch(error => {
+      logger.warn({ error, botId, observedAt }, "Shadow policy outcome persistence failed");
+    });
   }
 }
 

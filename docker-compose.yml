@@ -30,5 +30,16 @@ services:
     depends_on:
       - postgres
 
+  shadow-jev:
+    profiles: ["shadow"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["pnpm", "--filter", "@grid-bot/worker", "shadow:start"]
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+
 volumes:
   postgres_data:
