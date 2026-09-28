@@ -37,7 +37,13 @@ export async function evaluateStoredShadowV3(client: ReadClient, observationId: 
   provenance.decisionTiming = "hypothetical_at_candle_close";
   provenance.jevCompletedAt = observation.outbox?.completedAt?.toISOString() ?? null;
   provenance.jevLatencyMs = observation.outbox?.latencyMs ?? null;
-  if (observation.questionSetVersion !== "shadow-jev-v3") return censor("not_v3_observation");
+  const expectedCandidateVersion = observation.questionSetVersion === "shadow-jev-v3.1"
+    ? "shadow-grid-candidates-v3.1" : observation.questionSetVersion === "shadow-jev-v3"
+      ? "shadow-grid-candidates-v3" : null;
+  if (!expectedCandidateVersion) return censor("not_v3_observation");
+  if (object(observation.candidateSet)?.version !== expectedCandidateVersion) {
+    return censor("question_candidate_version_mismatch");
+  }
   if (!observation.outbox?.terminal || observation.outbox.status !== "completed") return censor("jev_not_completed");
   const context = object(observation.context);
   const replay = object(context?.shadowReplayV3);

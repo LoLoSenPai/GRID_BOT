@@ -228,7 +228,8 @@ function prepare(input: ShadowJevV3EvaluationRequest) {
   requireState(allocations.length > 0 && allocations.some(a => a.bandId === input.observation.bandId), "MISSING_TARGET_ALLOCATION");
   requireState(new Set(minimumOrders).size === 1, "HETEROGENEOUS_MINIMUM_ORDER");
   const set = record(input.observation.candidateSet, "candidateSet");
-  requireState(set.version === "shadow-grid-candidates-v3", "UNSUPPORTED_CANDIDATE_VERSION");
+  requireState(set.version === "shadow-grid-candidates-v3" || set.version === "shadow-grid-candidates-v3.1",
+    "UNSUPPORTED_CANDIDATE_VERSION");
   const candidates = array(set.candidates, "candidates").map(c => record(c, "candidate"));
   requireState(candidates.length > 0 && candidates.length <= 6 && new Set(candidates.map(c => c.id)).size === candidates.length, "INVALID_CANDIDATE_SET");
   const keep = candidates.find(c => c.id === "keep");

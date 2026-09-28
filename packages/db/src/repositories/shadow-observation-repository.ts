@@ -67,14 +67,14 @@ export class PrismaShadowObservationRepository {
     return this.client.$transaction(async (tx) => {
       // The replay state must come from one MVCC view of the shadow database. The
       // normal portfolio cycle has already returned before this transaction runs.
-      const context = input.questionSetVersion === "shadow-jev-v3"
+      const context = isV3Question(input.questionSetVersion)
         ? jsonValue({ ...(suppliedContext as object), shadowReplayV3:
           await readShadowReplayV3(tx, input.portfolioId, input.strategyId, input.bandId, input.botId) })
         : suppliedContext;
       // A V3 retry can read the same portfolio a few seconds later. Keep the
       // first immutable observation for that band/hour instead of enqueuing a
       // second judgment solely because capturedAt or a bot tick changed.
-      const observationHash = input.questionSetVersion === "shadow-jev-v3"
+      const observationHash = isV3Question(input.questionSetVersion)
         ? canonicalHash({ portfolioId: input.portfolioId, strategyId: input.strategyId,
           bandId: input.bandId, botId: input.botId, observedAt,
           questionSetVersion: input.questionSetVersion, modelRequested: input.modelRequested })
@@ -131,7 +131,7 @@ export class PrismaShadowObservationRepository {
         throw new Error("Shadow outbox idempotency collision.");
       }
       return { observationId: observation.id, snapshotId: snapshot.id };
-    }, input.questionSetVersion === "shadow-jev-v3"
+    }, isV3Question(input.questionSetVersion)
       ? { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
       : undefined);
   }
@@ -230,7 +230,8 @@ function validateCapture(input: CaptureShadowObservationInput): void {
   if (!Array.isArray(input.policyInput?.candles) || input.policyInput.candles.length === 0) {
     throw new Error("A shadow observation requires the complete effective candle series.");
   }
-  if (["shadow-jev-v2", "shadow-jev-v3"].includes(input.questionSetVersion) && input.candidateSet === undefined) {
+  if (["shadow-jev-v2", "shadow-jev-v3", "shadow-jev-v3.1"].includes(input.questionSetVersion) &&
+    input.candidateSet === undefined) {
     throw new Error("A V2/V3 shadow observation requires its immutable candidate set.");
   }
   for (const name of ["provider", "symbol", "quoteSymbol", "resolution"] as const) {
@@ -238,6 +239,10 @@ function validateCapture(input: CaptureShadowObservationInput): void {
       throw new Error(`Invalid marketMeta.${name}.`);
     }
   }
+}
+
+function isV3Question(version: string): boolean {
+  return version === "shadow-jev-v3" || version === "shadow-jev-v3.1";
 }
 
 function normalizeError(error: FinalizeShadowOutcomeInput["error"]): {

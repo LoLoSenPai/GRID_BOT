@@ -4,7 +4,7 @@
 
 La V3 reste exclusivement shadow. `PortfolioManagerService` et `BotEngineService` n'utilisent aucune réponse Jev. La capture est planifiée après le cycle normal, sur le client de base séparé ; toute erreur de génération, lecture, snapshot ou outbox est journalisée sans faire échouer le cycle. Le consommateur Jev est un processus séparé.
 
-Le modèle demandé reste `jev-1.13.0`. Le jeu de questions est `shadow-jev-v3` et le générateur est `shadow-grid-candidates-v3`. Les jobs V1/V2 gardent leurs questions d'origine. Toute modification ultérieure des questions, du modèle, des règles de génération ou de l'horizon impose une nouvelle version.
+Le modèle demandé reste `jev-1.13.0`. Le jeu de questions courant est `shadow-jev-v3.1` et le générateur est `shadow-grid-candidates-v3.1`. La V3 initiale reste lisible et rejouable ; V3.1 écarte une variante qui demandait une révision sans changer le range ni les niveaux. Les jobs V1/V2 gardent leurs questions d'origine. Toute modification ultérieure des questions, du modèle, des règles de génération ou de l'horizon impose une nouvelle version.
 
 ## Candidats et observation
 

@@ -128,11 +128,11 @@ describe("V3 portfolio replay capture", () => {
     const client = { $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)) };
     await new PrismaShadowObservationRepository(client as never).capture({
       portfolioId: "portfolio", strategyId: "strategy", bandId: "band", botId: "bot",
-      observedAt: new Date("2026-09-28T12:00:00.000Z"), questionSetVersion: "shadow-jev-v3",
+      observedAt: new Date("2026-09-28T12:00:00.000Z"), questionSetVersion: "shadow-jev-v3.1",
       modelRequested: "jev-1.13.0", policyInput: { candles: [{ close: 100 }] },
       context: { prior: true }, botState: {}, proposedDecision: { action: "wait" },
       marketMeta: { provider: "gecko", symbol: "BTC", quoteSymbol: "USDC", resolution: "1h" },
-      candidateSet: { candidates: [] },
+      candidateSet: { version: "shadow-grid-candidates-v3.1", candidates: [] },
     });
     expect(client.$transaction).toHaveBeenCalledWith(expect.any(Function),
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });

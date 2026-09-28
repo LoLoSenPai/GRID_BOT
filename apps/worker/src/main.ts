@@ -38,7 +38,7 @@ import { getPortfolioSnapshotIntervalMs, safeBackfillPortfolioSnapshots, safeCre
 import { getRuntimeMaintenanceIntervalMs, runRuntimeMaintenance } from "./runtime-maintenance";
 import { SymbolRunScheduler } from "./symbol-run-scheduler";
 import { ExecutionRecoveryPoller } from "./execution-recovery-poller";
-import { v3ModelRequested, v3QuestionSetVersion } from "./shadow-jev-v3-questions";
+import { v3ModelRequested, currentV3QuestionSetVersion } from "./shadow-jev-v3-questions";
 
 const env = getEnv();
 
@@ -115,7 +115,7 @@ async function main() {
           position: aggregate.position, latestState: aggregate.latestState, openLots: aggregate.openLots });
         const captured = await shadow.repository.capture({
           portfolioId: context.portfolio.id, strategyId: context.strategy.id, bandId: context.band.id,
-          botId: bot.bot.id, observedAt, questionSetVersion: v3QuestionSetVersion,
+          botId: bot.bot.id, observedAt, questionSetVersion: currentV3QuestionSetVersion,
           modelRequested: v3ModelRequested, policyInput,
           context: { ...context, shadowTiming: { marketClosedAt: observedAt, stateReadAt },
             shadowPreDecision: { bot: preDecisionBot(bot),
