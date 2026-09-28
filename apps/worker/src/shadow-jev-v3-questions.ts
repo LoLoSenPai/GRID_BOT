@@ -3,6 +3,7 @@ import type { ShadowGridCandidateSet } from "@grid-bot/core";
 import type { ShadowJevPolicyInput } from "./shadow-jev-questions";
 
 export const v3QuestionSetVersion = "shadow-jev-v3" as const;
+export const currentV3QuestionSetVersion = "shadow-jev-v3.1" as const;
 export const v3ModelRequested = "jev-1.13.0" as const;
 export const V3_EVALUATION_HORIZON_HOURS = 24;
 
@@ -60,7 +61,8 @@ export function buildJevV3Request(input: ShadowJevV3Input): ShadowJevV3PreparedR
   if (!policy?.parameters || !policy.band || !Array.isArray(policy.candles)) {
     throw new TypeError("Invalid V3 policy input.");
   }
-  if (set?.version !== "shadow-grid-candidates-v3" || !Array.isArray(set.candidates) ||
+  if ((set?.version !== "shadow-grid-candidates-v3" && set?.version !== "shadow-grid-candidates-v3.1") ||
+    !Array.isArray(set.candidates) ||
     set.candidates.length < 1 || set.candidates.length > 6 || set.candidates[0]?.id !== "keep") {
     throw new TypeError("Invalid V3 candidate set.");
   }
@@ -69,7 +71,9 @@ export function buildJevV3Request(input: ShadowJevV3Input): ShadowJevV3PreparedR
   // Balance option positions across observations so a fixed first-option bias
   // cannot masquerade as a preference for KEEP. The seed is reproducible.
   const ordered = set.candidates.map((candidate, originalIndex) => ({ candidate, originalIndex }));
-  const seed = createHash("sha256").update([v3QuestionSetVersion, observedAt, policy.assetSymbol,
+  const questionVersion = set.version === "shadow-grid-candidates-v3.1"
+    ? currentV3QuestionSetVersion : v3QuestionSetVersion;
+  const seed = createHash("sha256").update([questionVersion, observedAt, policy.assetSymbol,
     policy.band.id].join("|")).digest();
   for (let index = ordered.length - 1, byte = 0; index > 0; index--, byte++) {
     const other = seed[byte]! % (index + 1);

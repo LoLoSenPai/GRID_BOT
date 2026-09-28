@@ -119,11 +119,14 @@ describe("ShadowJevConsumer", () => {
     expect(outbox.fail).not.toHaveBeenCalled();
   });
 
-  it("keeps V3 strategy families shadow only and persists the complete choice distribution", async () => {
+  for (const [questionVersion, candidateVersion] of [
+    ["shadow-jev-v3", "shadow-grid-candidates-v3"],
+    ["shadow-jev-v3.1", "shadow-grid-candidates-v3.1"],
+  ] as const) it(`keeps ${questionVersion} strategy families shadow only and persists the complete choice distribution`, async () => {
     const original = job();
-    const v3 = job({ questionSetVersion: "shadow-jev-v3", observation: {
+    const v3 = job({ questionSetVersion: questionVersion, observation: {
       ...original.observation,
-      candidateSet: { version: "shadow-grid-candidates-v3", policyCandidateId: null, rejected: [],
+      candidateSet: { version: candidateVersion, policyCandidateId: null, rejected: [],
         candidates: [
           { id: "keep", kind: "keep", action: "keep", lowPrice: 90, highPrice: 110,
             levelCount: 10, spacing: 20 / 9, requestedCapitalUsd: 0, validation: "validated",

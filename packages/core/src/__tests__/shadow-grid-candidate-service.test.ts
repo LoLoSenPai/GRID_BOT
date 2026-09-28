@@ -106,6 +106,16 @@ describe("shadow grid candidate generator", () => {
     expect(result.candidates.filter(candidate => !candidate.currentlyPolicyEligible).length).toBeGreaterThan(0);
   });
 
+  it("does not offer a revision that leaves range and rails unchanged", () => {
+    const policyInput = input({ parameters: { ...parameters, minimumSpacingPct: 4 } });
+    const decision = { action: "wait" as const, reason: "wait", nextLowPrice: null, nextHighPrice: null,
+      nextLevelCount: null, nextSpacing: null, protectedLowPrice: null, protectedHighPrice: null };
+    const result = buildShadowGridCandidates(policyInput, decision);
+    expect(result.candidates.find(candidate => candidate.id === "vol_cost_density")).toBeUndefined();
+    expect(result.rejected.find(candidate => candidate.id === "vol_cost_density")?.reasons.join(" "))
+      .toContain("geometry unchanged");
+  });
+
   it("adds the EMA drift candidate only with 50 causal closed candles and records its inputs", () => {
     const history = candles(104, 60).map((candle, index) => ({ ...candle, close: 90 + index * 0.25,
       open: 90 + index * 0.25, high: 91 + index * 0.25, low: 89 + index * 0.25 }));

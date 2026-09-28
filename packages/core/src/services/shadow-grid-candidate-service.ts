@@ -11,8 +11,9 @@ import { round } from "../utils/math";
  * already produced, and returns plain JSON values suitable for an observation
  * payload. It does not choose a winner or change the live policy.
  */
-export const SHADOW_GRID_CANDIDATE_VERSION = "shadow-grid-candidates-v3" as const;
-export type ShadowGridCandidateSetVersion = typeof SHADOW_GRID_CANDIDATE_VERSION | "shadow-grid-candidates-v2";
+export const SHADOW_GRID_CANDIDATE_VERSION = "shadow-grid-candidates-v3.1" as const;
+export type ShadowGridCandidateSetVersion = typeof SHADOW_GRID_CANDIDATE_VERSION |
+  "shadow-grid-candidates-v3" | "shadow-grid-candidates-v2";
 
 export type ShadowGridCandidateKind = "keep" | "policy" | "range_variant" | "spacing_variant" |
   "donchian_variant" | "drift_variant" | "density_variant";
@@ -354,6 +355,11 @@ function validateCandidate(input: PortfolioPolicyInput, candidate: Omit<ShadowGr
     reasons.push(`Level count must be an integer between 2 and ${p.maxLevels}.`);
   }
   if (candidate.spacing <= 0) reasons.push("Spacing must be positive.");
+  if (candidate.action === "revise" && candidate.kind !== "policy" &&
+    candidate.lowPrice === input.band.lowPrice && candidate.highPrice === input.band.highPrice &&
+    candidate.levelCount === input.band.levelCount) {
+    reasons.push("Revision leaves the current grid geometry unchanged.");
+  }
 
   // PortfolioPolicyService defines envelope width relative to its center.
   const center = (candidate.lowPrice + candidate.highPrice) / 2;

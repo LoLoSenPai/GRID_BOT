@@ -18,7 +18,8 @@ function observation() {
         { baseSymbol: "BTC", baseMint: MINTS.BTC, bands: [{ bot: { baseMint: MINTS.BTC, quoteMint: MINTS.USDC } }] },
         { baseSymbol: "SOL", baseMint: MINTS.SOL, bands: [{ bot: { baseMint: MINTS.SOL, quoteMint: MINTS.USDC } }] },
       ] } },
-    candidateSet: { candidates: [] }, proposedDecision: { action: "wait" },
+    candidateSet: { version: "shadow-grid-candidates-v3", candidates: [] },
+    proposedDecision: { action: "wait" },
     marketMeta: provenance,
     snapshot: { contentHash: "market-hash", candleCount: 0,
       candles: [] as Array<{ openedAt: string; closedAt: string; open: number; high: number; low: number; close: number }>,
@@ -45,6 +46,17 @@ describe("read-only V3 replay runner", () => {
     } as never, row.id, 0.02);
     expect(output).toMatchObject({ status: "censored", reasons: ["jev_not_completed"] });
     expect(findMany).not.toHaveBeenCalled();
+  });
+
+  it("accepts the versioned V3.1 observation and candidate pair", async () => {
+    const row = observation();
+    row.questionSetVersion = "shadow-jev-v3.1";
+    row.candidateSet = { version: "shadow-grid-candidates-v3.1", candidates: [] };
+    row.outbox.status = "pending";
+    const output = await evaluateStoredShadowV3({
+      shadowJevObservation: { findUnique: vi.fn(async () => row) }, marketCandle: { findMany: vi.fn() },
+    } as never, row.id, 0.02);
+    expect(output.reasons).toEqual(["jev_not_completed"]);
   });
 
   it("rejects a market pool mismatch and records the hypothetical decision timing", async () => {

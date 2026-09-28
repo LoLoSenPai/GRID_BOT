@@ -12,7 +12,7 @@ import { evaluateJevV2 } from "./shadow-jev-v2-client";
 import { buildJevV2Request, v2ModelRequested, v2QuestionSetVersion,
   type ShadowJevV2Request } from "./shadow-jev-v2-questions";
 import { evaluateJevV3 } from "./shadow-jev-v3-client";
-import { buildJevV3Request, v3ModelRequested, v3QuestionSetVersion,
+import { buildJevV3Request, currentV3QuestionSetVersion, v3ModelRequested, v3QuestionSetVersion,
   type ShadowJevV3Request } from "./shadow-jev-v3-questions";
 
 export interface ShadowJevOutboxStore {
@@ -62,11 +62,18 @@ export class ShadowJevConsumer {
             probabilities: candidateProbabilities, option_probabilities: result.probabilities,
             confidence: result.confidence } },
           modelVersion: result.modelResolved, latencyMs: elapsedMs(startedAt) });
-      } else if (job.questionSetVersion === v3QuestionSetVersion && job.modelRequested === v3ModelRequested) {
+      } else if ((job.questionSetVersion === v3QuestionSetVersion ||
+        job.questionSetVersion === currentV3QuestionSetVersion) && job.modelRequested === v3ModelRequested) {
+        const candidateSet = job.observation.candidateSet as ShadowGridCandidateSet;
+        const expectedCandidateVersion = job.questionSetVersion === currentV3QuestionSetVersion
+          ? "shadow-grid-candidates-v3.1" : "shadow-grid-candidates-v3";
+        if (candidateSet?.version !== expectedCandidateVersion) {
+          throw new Error("V3 shadow question and candidate-set versions do not match.");
+        }
         const prepared = buildJevV3Request({ observedAt: job.observation.observedAt,
           stateReadAt: readV3StateReadAt(job.observation.context),
           policyInput: restorePolicyInput(job), objective: readV2Objective(job.observation.context),
-          candidateSet: job.observation.candidateSet as ShadowGridCandidateSet });
+          candidateSet });
         request = prepared.request;
         const result = await evaluateJevV3(prepared.request, this.client, { timeoutMs: EVALUATION_TIMEOUT_MS });
         const candidateProbabilities = Object.fromEntries(Object.entries(result.probabilities)
