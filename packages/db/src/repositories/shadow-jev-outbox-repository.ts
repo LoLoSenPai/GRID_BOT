@@ -20,6 +20,7 @@ export interface ShadowJevClaim {
     botState: unknown;
     marketMeta: unknown;
     proposedDecision: unknown;
+    candidateSet?: unknown;
     marketSnapshot: {
       id: string;
       contentHash: string;
@@ -141,6 +142,7 @@ export class PrismaShadowJevOutboxRepository {
         botState: row.observation.botState,
         marketMeta: row.observation.marketMeta,
         proposedDecision: row.observation.proposedDecision,
+        candidateSet: row.observation.candidateSet,
         marketSnapshot: {
           id: row.observation.snapshot.id,
           contentHash: row.observation.snapshot.contentHash,

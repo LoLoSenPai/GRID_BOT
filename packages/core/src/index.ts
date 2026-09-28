@@ -30,6 +30,7 @@ export * from "./services/portfolio-history-sanitizer";
 export * from "./services/range-plan-service";
 export * from "./services/rebound-zone-service";
 export * from "./services/recenter-policy-service";
+export * from "./services/shadow-grid-candidate-service";
 export * from "./services/flat-recenter-service";
 export * from "./services/risk-manager-service";
 export * from "./services/strategy-registry-service";

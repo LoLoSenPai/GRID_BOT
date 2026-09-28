@@ -4,10 +4,13 @@ import type {
   FailShadowJevJobInput,
   ShadowJevClaim,
 } from "@grid-bot/db";
-import type { PortfolioPolicyInput } from "@grid-bot/core";
+import type { PortfolioPolicyInput, ShadowGridCandidateSet } from "@grid-bot/core";
 
 import { evaluateJev, type JevClient, type ShadowJevEvaluation } from "./shadow-jev-client";
 import { buildJevRequest, modelRequested, questionSetVersion, type ShadowJevRequest } from "./shadow-jev-questions";
+import { evaluateJevV2 } from "./shadow-jev-v2-client";
+import { buildJevV2Request, v2ModelRequested, v2QuestionSetVersion,
+  type ShadowJevV2Request } from "./shadow-jev-v2-questions";
 
 export interface ShadowJevOutboxStore {
   claim(input: ClaimShadowJevJobsInput): Promise<ShadowJevClaim[]>;
@@ -32,18 +35,33 @@ export class ShadowJevConsumer {
   }
 
   private async processClaim(job: ShadowJevClaim): Promise<void> {
-    let request: ShadowJevRequest | undefined;
+    let request: ShadowJevRequest | ShadowJevV2Request | undefined;
     const startedAt = performance.now();
     try {
-      if (job.questionSetVersion !== questionSetVersion || job.modelRequested !== modelRequested) {
+      if (job.questionSetVersion === questionSetVersion && job.modelRequested === modelRequested) {
+        request = buildJevRequest({ observedAt: job.observation.observedAt,
+          policyInput: restorePolicyInput(job), strategy: readStrategy(job.observation.context) });
+        const result = await evaluateJev(request, this.client, { timeoutMs: EVALUATION_TIMEOUT_MS });
+        await this.outbox.complete({ jobId: job.jobId, workerId: this.workerId, rawRequest: request,
+          rawResponse: result.rawResponse, probabilities: fullProbabilities(result),
+          modelVersion: result.modelResolved, latencyMs: elapsedMs(startedAt) });
+      } else if (job.questionSetVersion === v2QuestionSetVersion && job.modelRequested === v2ModelRequested) {
+        const prepared = buildJevV2Request({ observedAt: job.observation.observedAt,
+          policyInput: restorePolicyInput(job), objective: readV2Objective(job.observation.context),
+          candidateSet: job.observation.candidateSet as ShadowGridCandidateSet });
+        request = prepared.request;
+        const result = await evaluateJevV2(request, this.client, { timeoutMs: EVALUATION_TIMEOUT_MS });
+        const candidateProbabilities = Object.fromEntries(Object.entries(result.probabilities)
+          .map(([option, probability]) => [prepared.optionToCandidateId[option] ?? option, probability]));
+        await this.outbox.complete({ jobId: job.jobId, workerId: this.workerId, rawRequest: request,
+          rawResponse: result.rawResponse, probabilities: { grid_candidate: {
+            option: result.choice, candidate_id: prepared.optionToCandidateId[result.choice] ?? null,
+            probabilities: candidateProbabilities, option_probabilities: result.probabilities,
+            confidence: result.confidence } },
+          modelVersion: result.modelResolved, latencyMs: elapsedMs(startedAt) });
+      } else {
         throw new Error(`Unsupported shadow question/model version: ${job.questionSetVersion}/${job.modelRequested}`);
       }
-      request = buildJevRequest({ observedAt: job.observation.observedAt,
-        policyInput: restorePolicyInput(job), strategy: readStrategy(job.observation.context) });
-      const result = await evaluateJev(request, this.client, { timeoutMs: EVALUATION_TIMEOUT_MS });
-      await this.outbox.complete({ jobId: job.jobId, workerId: this.workerId, rawRequest: request,
-        rawResponse: result.rawResponse, probabilities: fullProbabilities(result),
-        modelVersion: result.modelResolved, latencyMs: elapsedMs(startedAt) });
     } catch (error) {
       const terminal = job.attemptCount >= MAX_ATTEMPTS || !request;
       const retryAt = terminal ? undefined : new Date(Date.now() + retryDelayMs(job.attemptCount));
@@ -71,6 +89,14 @@ function readStrategy(context: unknown): { objective?: string | null } | undefin
   if (!strategy || typeof strategy !== "object" || Array.isArray(strategy)) return undefined;
   const objective = (strategy as Record<string, unknown>).objective;
   return typeof objective === "string" ? { objective } : undefined;
+}
+
+function readV2Objective(context: unknown): "accumulate_base" | "accumulate_usdc" {
+  const objective = readStrategy(context)?.objective;
+  if (objective !== "accumulate_base" && objective !== "accumulate_usdc") {
+    throw new Error("V2 shadow observation requires a known strategy objective.");
+  }
+  return objective;
 }
 
 function fullProbabilities(result: ShadowJevEvaluation) {

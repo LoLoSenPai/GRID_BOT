@@ -17,8 +17,11 @@ function job(overrides: Partial<ShadowJevClaim> = {}): ShadowJevClaim {
     observation: { id: "observation-1", portfolioId: "portfolio-1", strategyId: "strategy-1",
       bandId: "band-1", botId: "bot-1", observedAt,
       policyInput: { now: observedAt.toISOString(), price: 120, assetSymbol: "BTC",
-        candleIntervalMs: 3_600_000, band: { lowPrice: 90, highPrice: 110, levelCount: 10,
-          spacing: 20 / 9, status: "active" } },
+        candleIntervalMs: 3_600_000, bandCount: 1, assetAttributedCapitalUsd: 400,
+        band: { id: "band-1", lowPrice: 90, highPrice: 110, levelCount: 10,
+          spacing: 20 / 9, status: "active", allocatedCapitalUsd: 400, idleQuoteUsd: 100,
+          openTradingLots: [] }, availableCashUsd: 200, totalPortfolioCapitalUsd: 1_000,
+        parameters: { minUsefulOrderUsd: 25 } },
       context: { strategy: { objective: "accumulate_base" } }, botState: {}, marketMeta: {},
       proposedDecision: { action: "revise" },
       marketSnapshot: { id: "market-1", contentHash: "hash", candleCount: 24, candles,
@@ -80,5 +83,37 @@ describe("ShadowJevConsumer", () => {
     await new ShadowJevConsumer(outbox, client, "worker-1").processOne();
     expect(client.evaluate).not.toHaveBeenCalled();
     expect(outbox.fail).toHaveBeenCalledWith(expect.objectContaining({ terminal: true, rawRequest: undefined }));
+  });
+
+  it("maps neutral V2 options back to immutable candidate IDs", async () => {
+    const original = job();
+    const v2 = job({ questionSetVersion: "shadow-jev-v2", observation: {
+      ...original.observation,
+      candidateSet: { version: "shadow-grid-candidates-v2", policyCandidateId: "policy", rejected: [],
+        candidates: [
+          { id: "keep", kind: "keep", action: "keep", lowPrice: 90, highPrice: 110,
+            levelCount: 10, spacing: 20 / 9, requestedCapitalUsd: 0, validation: "validated",
+            economicallyValid: true, economicValidationReasons: [], decision: {} },
+          { id: "policy", kind: "policy", action: "revise", lowPrice: 105, highPrice: 125,
+            levelCount: 10, spacing: 20 / 9, requestedCapitalUsd: 0, validation: "validated",
+            economicallyValid: true, economicValidationReasons: [], decision: {} },
+        ] },
+    } });
+    const raw = { model: "jev-1.13.0", answers: { grid_candidate: { type: "choice", choice: "option_1",
+      confidence: 0.6, probabilities: { option_0: 0.2, option_1: 0.7, abstain: 0.1 } } },
+    usage: { input_tokens: 500, output_tokens: 25 } };
+    const outbox = { claim: vi.fn(async () => [v2]), complete: vi.fn(async () => {}), fail: vi.fn(async () => {}) };
+    const client = { evaluate: vi.fn(async (_request: unknown) => raw) };
+    await new ShadowJevConsumer(outbox, client, "worker-1").processOne();
+    expect(outbox.fail).not.toHaveBeenCalled();
+    const request = client.evaluate.mock.calls[0]![0] as { state: { candidates: Array<{ option: string; action: string }> } };
+    const mapped = Object.fromEntries(request.state.candidates.map(candidate => [candidate.option,
+      candidate.action === "keep" ? "keep" : "policy"]));
+    expect(outbox.complete).toHaveBeenCalledWith(expect.objectContaining({ probabilities: {
+      grid_candidate: { option: "option_1", candidate_id: mapped.option_1, confidence: 0.6,
+        probabilities: { [mapped.option_0!]: 0.2, [mapped.option_1!]: 0.7, abstain: 0.1 },
+        option_probabilities: raw.answers.grid_candidate.probabilities },
+    } }));
+    expect(outbox.fail).not.toHaveBeenCalled();
   });
 });
