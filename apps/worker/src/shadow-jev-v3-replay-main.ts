@@ -182,8 +182,9 @@ function contiguousPrefix(candles: HistoricalCandle[], startMs: number, limit: n
   return result;
 }
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+export function parseReplayArgs(rawArgs: string[]): { observationId: string; nativeFeeUsd: number } {
+  // pnpm passes the separator through to the script; direct tsx execution does not.
+  const args = rawArgs[0] === "--" ? rawArgs.slice(1) : rawArgs;
   const feeIndex = args.indexOf("--native-fee-usd");
   const idIndex = args.indexOf("--observation-id");
   const nativeFeeUsd = feeIndex >= 0 ? Number(args[feeIndex + 1]) : Number.NaN;
@@ -191,11 +192,16 @@ async function main(): Promise<void> {
     !Number.isFinite(nativeFeeUsd) || nativeFeeUsd <= 0) {
     throw new Error("Usage: pnpm --filter @grid-bot/worker shadow:replay:v3 -- --observation-id <id> --native-fee-usd <positive estimate>");
   }
+  return { observationId: args[idIndex + 1]!, nativeFeeUsd };
+}
+
+async function main(): Promise<void> {
+  const { observationId, nativeFeeUsd } = parseReplayArgs(process.argv.slice(2));
   const handle = createShadowObservationClient();
   try {
     const result = await handle.client.$transaction(async tx => {
       await tx.$executeRawUnsafe("SET TRANSACTION READ ONLY");
-      return evaluateStoredShadowV3(tx, args[idIndex + 1]!, nativeFeeUsd);
+      return evaluateStoredShadowV3(tx, observationId, nativeFeeUsd);
     }, { isolationLevel: "RepeatableRead" });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } finally {
