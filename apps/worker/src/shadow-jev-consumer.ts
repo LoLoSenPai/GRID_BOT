@@ -11,6 +11,9 @@ import { buildJevRequest, modelRequested, questionSetVersion, type ShadowJevRequ
 import { evaluateJevV2 } from "./shadow-jev-v2-client";
 import { buildJevV2Request, v2ModelRequested, v2QuestionSetVersion,
   type ShadowJevV2Request } from "./shadow-jev-v2-questions";
+import { evaluateJevV3 } from "./shadow-jev-v3-client";
+import { buildJevV3Request, v3ModelRequested, v3QuestionSetVersion,
+  type ShadowJevV3Request } from "./shadow-jev-v3-questions";
 
 export interface ShadowJevOutboxStore {
   claim(input: ClaimShadowJevJobsInput): Promise<ShadowJevClaim[]>;
@@ -35,7 +38,7 @@ export class ShadowJevConsumer {
   }
 
   private async processClaim(job: ShadowJevClaim): Promise<void> {
-    let request: ShadowJevRequest | ShadowJevV2Request | undefined;
+    let request: ShadowJevRequest | ShadowJevV2Request | ShadowJevV3Request | undefined;
     const startedAt = performance.now();
     try {
       if (job.questionSetVersion === questionSetVersion && job.modelRequested === modelRequested) {
@@ -51,6 +54,21 @@ export class ShadowJevConsumer {
           candidateSet: job.observation.candidateSet as ShadowGridCandidateSet });
         request = prepared.request;
         const result = await evaluateJevV2(request, this.client, { timeoutMs: EVALUATION_TIMEOUT_MS });
+        const candidateProbabilities = Object.fromEntries(Object.entries(result.probabilities)
+          .map(([option, probability]) => [prepared.optionToCandidateId[option] ?? option, probability]));
+        await this.outbox.complete({ jobId: job.jobId, workerId: this.workerId, rawRequest: request,
+          rawResponse: result.rawResponse, probabilities: { grid_candidate: {
+            option: result.choice, candidate_id: prepared.optionToCandidateId[result.choice] ?? null,
+            probabilities: candidateProbabilities, option_probabilities: result.probabilities,
+            confidence: result.confidence } },
+          modelVersion: result.modelResolved, latencyMs: elapsedMs(startedAt) });
+      } else if (job.questionSetVersion === v3QuestionSetVersion && job.modelRequested === v3ModelRequested) {
+        const prepared = buildJevV3Request({ observedAt: job.observation.observedAt,
+          stateReadAt: readV3StateReadAt(job.observation.context),
+          policyInput: restorePolicyInput(job), objective: readV2Objective(job.observation.context),
+          candidateSet: job.observation.candidateSet as ShadowGridCandidateSet });
+        request = prepared.request;
+        const result = await evaluateJevV3(prepared.request, this.client, { timeoutMs: EVALUATION_TIMEOUT_MS });
         const candidateProbabilities = Object.fromEntries(Object.entries(result.probabilities)
           .map(([option, probability]) => [prepared.optionToCandidateId[option] ?? option, probability]));
         await this.outbox.complete({ jobId: job.jobId, workerId: this.workerId, rawRequest: request,
@@ -97,6 +115,12 @@ function readV2Objective(context: unknown): "accumulate_base" | "accumulate_usdc
     throw new Error("V2 shadow observation requires a known strategy objective.");
   }
   return objective;
+}
+
+function readV3StateReadAt(context: unknown): Date | string {
+  const timing = record(record(context, "observation.context").shadowTiming, "observation.context.shadowTiming");
+  if (typeof timing.stateReadAt !== "string") throw new Error("V3 shadow observation requires stateReadAt.");
+  return timing.stateReadAt;
 }
 
 function fullProbabilities(result: ShadowJevEvaluation) {

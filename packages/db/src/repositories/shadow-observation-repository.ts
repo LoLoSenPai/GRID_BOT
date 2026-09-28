@@ -51,7 +51,7 @@ export class PrismaShadowObservationRepository {
     const candles = jsonValue(input.policyInput.candles) as Prisma.InputJsonArray;
     const { candles: _candles, ...policyWithoutCandles } = input.policyInput as { candles: readonly unknown[] } & object;
     const policyInput = jsonValue(policyWithoutCandles);
-    const context = jsonValue(input.context);
+    const suppliedContext = jsonValue(input.context);
     const botState = jsonValue(input.botState);
     const marketMeta = jsonValue(input.marketMeta);
     const proposedDecision = jsonValue(input.proposedDecision);
@@ -64,14 +64,26 @@ export class PrismaShadowObservationRepository {
       sourceMarket: input.marketMeta.sourceMarket ?? null,
     });
     const contentHash = shadowMarketContentHash(input.marketMeta, candles);
-    const observationHash = canonicalHash({
-      portfolioId: input.portfolioId, strategyId: input.strategyId, bandId: input.bandId, botId: input.botId,
-      observedAt, questionSetVersion: input.questionSetVersion, modelRequested: input.modelRequested,
-      contentHash, policyInput, context, botState, marketMeta, proposedDecision,
-      ...(candidateSet === null ? {} : { candidateSet }),
-    });
-
     return this.client.$transaction(async (tx) => {
+      // The replay state must come from one MVCC view of the shadow database. The
+      // normal portfolio cycle has already returned before this transaction runs.
+      const context = input.questionSetVersion === "shadow-jev-v3"
+        ? jsonValue({ ...(suppliedContext as object), shadowReplayV3:
+          await readShadowReplayV3(tx, input.portfolioId, input.strategyId, input.bandId, input.botId) })
+        : suppliedContext;
+      // A V3 retry can read the same portfolio a few seconds later. Keep the
+      // first immutable observation for that band/hour instead of enqueuing a
+      // second judgment solely because capturedAt or a bot tick changed.
+      const observationHash = input.questionSetVersion === "shadow-jev-v3"
+        ? canonicalHash({ portfolioId: input.portfolioId, strategyId: input.strategyId,
+          bandId: input.bandId, botId: input.botId, observedAt,
+          questionSetVersion: input.questionSetVersion, modelRequested: input.modelRequested })
+        : canonicalHash({
+          portfolioId: input.portfolioId, strategyId: input.strategyId, bandId: input.bandId, botId: input.botId,
+          observedAt, questionSetVersion: input.questionSetVersion, modelRequested: input.modelRequested,
+          contentHash, policyInput, context, botState, marketMeta, proposedDecision,
+          ...(candidateSet === null ? {} : { candidateSet }),
+        });
       const proposedSnapshotId = randomUUID();
       await tx.$executeRaw(Prisma.sql`
         INSERT INTO "shadow_market_snapshots"
@@ -119,7 +131,9 @@ export class PrismaShadowObservationRepository {
         throw new Error("Shadow outbox idempotency collision.");
       }
       return { observationId: observation.id, snapshotId: snapshot.id };
-    });
+    }, input.questionSetVersion === "shadow-jev-v3"
+      ? { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
+      : undefined);
   }
 
   async finalizeOutcome(observationId: string, input: FinalizeShadowOutcomeInput): Promise<void> {
@@ -151,6 +165,61 @@ export class PrismaShadowObservationRepository {
   }
 }
 
+async function readShadowReplayV3(tx: Prisma.TransactionClient, portfolioId: string,
+  strategyId: string, bandId: string, botId: string): Promise<Prisma.InputJsonValue> {
+  const capturedAt = new Date();
+  const source = await tx.portfolio.findUniqueOrThrow({
+    where: { id: portfolioId },
+    select: {
+      id: true, mode: true, quoteMint: true, freeQuoteAmount: true, version: true,
+      autoLive: true, shadowJevEnabled: true, nativeFeeReserveSol: true, createdAt: true, updatedAt: true,
+      assetStrategies: {
+        orderBy: { id: "asc" },
+        include: {
+          bands: {
+            where: { status: { not: "CLOSED" } }, orderBy: { id: "asc" },
+            include: {
+              bot: {
+                include: {
+                  config: true, position: true,
+                  positionLots: { where: { closedAt: null }, orderBy: { id: "asc" } },
+                  stateSnapshots: { orderBy: { createdAt: "desc" }, take: 1 },
+                  executionAttempt: { select: {
+                    botId: true, executionId: true, orderId: true, uncertain: true,
+                    createdAt: true, updatedAt: true,
+                    order: { select: {
+                      id: true, orderKey: true, side: true, levelIndex: true, targetPrice: true,
+                      requestedBaseAmount: true, requestedQuoteAmount: true, status: true,
+                      reason: true, createdAt: true, updatedAt: true,
+                    } },
+                  } },
+                },
+              },
+              revisions: { orderBy: { sequence: "desc" } },
+              exitCommitments: { where: { fulfilledAt: null }, orderBy: { id: "asc" } },
+              capitalReservations: {
+                where: { status: { in: ["RESERVED", "UNKNOWN"] } }, orderBy: { id: "asc" },
+              },
+            },
+          },
+        },
+      },
+      capitalReservations: {
+        where: { status: { in: ["RESERVED", "UNKNOWN"] } }, orderBy: { id: "asc" },
+      },
+    },
+  });
+  const target = source.assetStrategies.find(strategy => strategy.id === strategyId)
+    ?.bands.find(band => band.id === bandId && band.botId === botId);
+  if (!target) throw new Error("The target shadow band is no longer open in the captured portfolio.");
+  const { assetStrategies, capitalReservations, ...portfolio } = source;
+  // Attempt payloads/results and wallet identity are deliberately excluded: neither
+  // is required to replay the economic state and either could contain private data.
+  return jsonValue({ schemaVersion: "shadow-replay-v3", capturedAt, source: {
+    portfolioId, strategyId, bandId, botId, portfolioVersion: source.version,
+  }, portfolio, strategies: assetStrategies, reservations: capitalReservations });
+}
+
 function validateCapture(input: CaptureShadowObservationInput): void {
   for (const [name, value] of Object.entries({ portfolioId: input.portfolioId, strategyId: input.strategyId,
     bandId: input.bandId, botId: input.botId, questionSetVersion: input.questionSetVersion,
@@ -161,8 +230,8 @@ function validateCapture(input: CaptureShadowObservationInput): void {
   if (!Array.isArray(input.policyInput?.candles) || input.policyInput.candles.length === 0) {
     throw new Error("A shadow observation requires the complete effective candle series.");
   }
-  if (input.questionSetVersion === "shadow-jev-v2" && input.candidateSet === undefined) {
-    throw new Error("A V2 shadow observation requires its immutable candidate set.");
+  if (["shadow-jev-v2", "shadow-jev-v3"].includes(input.questionSetVersion) && input.candidateSet === undefined) {
+    throw new Error("A V2/V3 shadow observation requires its immutable candidate set.");
   }
   for (const name of ["provider", "symbol", "quoteSymbol", "resolution"] as const) {
     if (typeof input.marketMeta?.[name] !== "string" || input.marketMeta[name].trim() === "") {

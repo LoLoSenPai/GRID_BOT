@@ -61,7 +61,8 @@ describe("portfolio manager", () => {
     expect(s.store.applyDecision).toHaveBeenCalledTimes(1);
     expect(shadow.capture).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(shadow.capture).toHaveBeenCalledWith(expect.objectContaining({
-      observedAt: now, proposedDecision: expect.objectContaining({ action: "revise" }),
+      observedAt: now, stateReadAt: expect.any(Date),
+      proposedDecision: expect.objectContaining({ action: "revise" }),
       policyInput: expect.objectContaining({ candles: expect.any(Array), assetSymbol: "BTC" }),
       peerContexts: expect.arrayContaining([s.context]), peerBots: expect.arrayContaining([s.bot]),
     })));

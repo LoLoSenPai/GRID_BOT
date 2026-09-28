@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { Prisma } from "@prisma/client";
 import { canonicalShadowHash, shadowMarketContentHash, PrismaShadowObservationRepository } from "../repositories/shadow-observation-repository";
 import { PrismaShadowJevOutboxRepository } from "../repositories/shadow-jev-outbox-repository";
 
@@ -60,6 +61,94 @@ describe("V2 candidate capture", () => {
     expect(statements[1]!.strings.join(" ")).toContain('"candidate_set"');
     expect(statements[1]!.values).toContain(JSON.stringify({ candidates: candidateSet.candidates,
       version: candidateSet.version }));
+  });
+});
+
+describe("V3 portfolio replay capture", () => {
+  it("uses one immutable observation per band and candle even when a retry reads a newer state", async () => {
+    const hashes: string[] = [];
+    const tx = {
+      portfolio: { findUniqueOrThrow: vi.fn(async () => ({
+        id: "portfolio", version: hashes.length + 1, capitalReservations: [],
+        assetStrategies: [{ id: "strategy", bands: [{ id: "band", botId: "bot", bot: {
+          id: "bot", positionLots: [], stateSnapshots: [],
+        }, revisions: [], exitCommitments: [], capitalReservations: [] }] }],
+      })) },
+      $executeRaw: vi.fn(async () => 1),
+      shadowMarketSnapshot: { findUniqueOrThrow: vi.fn(async () => ({ id: "market" })) },
+      shadowJevObservation: { findUniqueOrThrow: vi.fn(async (args: { where: { observationHash: string } }) => {
+        hashes.push(args.where.observationHash);
+        return { id: "first-observation", observationHash: args.where.observationHash };
+      }) },
+      shadowJevOutbox: { findUniqueOrThrow: vi.fn(async () => ({ observationId: "first-observation" })) },
+    };
+    const client = { $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)) };
+    const repository = new PrismaShadowObservationRepository(client as never);
+    const input = {
+      portfolioId: "portfolio", strategyId: "strategy", bandId: "band", botId: "bot",
+      observedAt: new Date("2026-09-28T12:00:00.000Z"), questionSetVersion: "shadow-jev-v3",
+      modelRequested: "jev-1.13.0", policyInput: { candles: [{ close: 100 }] },
+      botState: {}, proposedDecision: { action: "wait" },
+      marketMeta: { provider: "gecko", symbol: "BTC", quoteSymbol: "USDC", resolution: "1h" },
+      candidateSet: { version: "shadow-grid-candidates-v3", candidates: [] },
+    };
+    const first = await repository.capture({ ...input, context: { state: "first" } });
+    const retry = await repository.capture({ ...input, context: { state: "later" },
+      candidateSet: { version: "shadow-grid-candidates-v3", candidates: [{ id: "changed" }] } });
+    expect(first).toEqual(retry);
+    expect(hashes).toHaveLength(2);
+    expect(hashes[0]).toBe(hashes[1]);
+  });
+
+  it("stores a decimal-safe full portfolio view in the observation transaction", async () => {
+    const statements: Array<{ strings: readonly string[]; values: readonly unknown[] }> = [];
+    const portfolioRead = vi.fn(async () => ({
+      id: "portfolio", version: 7, freeQuoteAmount: new Prisma.Decimal("250.1234567890"),
+      assetStrategies: [{ id: "strategy", baseSymbol: "BTC", bands: [{
+        id: "band", botId: "bot", availableQuoteAmount: new Prisma.Decimal("80.0000000001"),
+        bot: { id: "bot", config: { lowPrice: new Prisma.Decimal("100.0000000001") },
+          positionLots: [{ id: "lot", remainingBaseAmount: new Prisma.Decimal("0.0000000001") }],
+          executionAttempt: { executionId: "execution", uncertain: true } },
+        revisions: [{ id: "revision", sequence: 2 }],
+        exitCommitments: [{ id: "commitment", lotId: "lot" }],
+        capitalReservations: [{ id: "reservation" }],
+      }] }],
+      capitalReservations: [{ id: "reservation" }],
+    }));
+    const tx = {
+      portfolio: { findUniqueOrThrow: portfolioRead },
+      $executeRaw: vi.fn(async (query: { strings: readonly string[]; values: readonly unknown[] }) => {
+        statements.push(query); return 1;
+      }),
+      shadowMarketSnapshot: { findUniqueOrThrow: vi.fn(async () => ({ id: "market" })) },
+      shadowJevObservation: { findUniqueOrThrow: vi.fn(async (args: { where: { observationHash: string } }) =>
+        ({ id: "observation", observationHash: args.where.observationHash })) },
+      shadowJevOutbox: { findUniqueOrThrow: vi.fn(async () => ({ observationId: "observation" })) },
+    };
+    const client = { $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)) };
+    await new PrismaShadowObservationRepository(client as never).capture({
+      portfolioId: "portfolio", strategyId: "strategy", bandId: "band", botId: "bot",
+      observedAt: new Date("2026-09-28T12:00:00.000Z"), questionSetVersion: "shadow-jev-v3",
+      modelRequested: "jev-1.13.0", policyInput: { candles: [{ close: 100 }] },
+      context: { prior: true }, botState: {}, proposedDecision: { action: "wait" },
+      marketMeta: { provider: "gecko", symbol: "BTC", quoteSymbol: "USDC", resolution: "1h" },
+      candidateSet: { candidates: [] },
+    });
+    expect(client.$transaction).toHaveBeenCalledWith(expect.any(Function),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    expect(portfolioRead).toHaveBeenCalledTimes(1);
+    const observation = statements[1]!;
+    const stored = JSON.parse(observation.values.find(value => typeof value === "string" &&
+      value.includes('"shadowReplayV3"')) as string);
+    expect(stored.prior).toBe(true);
+    expect(stored.shadowReplayV3).toMatchObject({
+      schemaVersion: "shadow-replay-v3", source: { portfolioVersion: 7, bandId: "band" },
+      portfolio: { freeQuoteAmount: "250.123456789" },
+      strategies: [{ bands: [{ bot: { config: { lowPrice: "100.0000000001" },
+        positionLots: [{ remainingBaseAmount: "1e-10" }] } }] }],
+    });
+    expect(Number.isFinite(Date.parse(stored.shadowReplayV3.capturedAt))).toBe(true);
+    expect(statements).toHaveLength(3);
   });
 });
 

@@ -8,6 +8,7 @@
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",
     "shadow:start": "tsx src/shadow-jev-main.ts",
+    "shadow:replay:v3": "tsx src/shadow-jev-v3-replay-main.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
   },

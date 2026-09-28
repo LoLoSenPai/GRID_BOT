@@ -1,4 +1,5 @@
-import { blocksDuplicateEntry, type PortfolioPolicyDecision, type PortfolioPolicyInput } from "./portfolio-policy-service";
+import { blocksDuplicateEntry, type PolicyCandle, type PortfolioPolicyDecision, type PortfolioPolicyInput } from "./portfolio-policy-service";
+import { IndicatorService } from "./indicator-service";
 import { gridCostFloorPct } from "../utils/grid-cost-floor";
 import { round } from "../utils/math";
 
@@ -10,9 +11,11 @@ import { round } from "../utils/math";
  * already produced, and returns plain JSON values suitable for an observation
  * payload. It does not choose a winner or change the live policy.
  */
-export const SHADOW_GRID_CANDIDATE_VERSION = "shadow-grid-candidates-v2" as const;
+export const SHADOW_GRID_CANDIDATE_VERSION = "shadow-grid-candidates-v3" as const;
+export type ShadowGridCandidateSetVersion = typeof SHADOW_GRID_CANDIDATE_VERSION | "shadow-grid-candidates-v2";
 
-export type ShadowGridCandidateKind = "keep" | "policy" | "range_variant" | "spacing_variant";
+export type ShadowGridCandidateKind = "keep" | "policy" | "range_variant" | "spacing_variant" |
+  "donchian_variant" | "drift_variant" | "density_variant";
 export type ShadowGridCandidateAction = "keep" | "revise" | "create_band" | "park" | "reactivate";
 
 export interface ShadowGridCandidate {
@@ -33,6 +36,8 @@ export interface ShadowGridCandidate {
   /** Whether the current policy would select this candidate at this observation. */
   currentlyPolicyEligible: boolean;
   policyEligibilityReasons: string[];
+  /** Reproducible knobs used to construct a deterministic V3 geometry. */
+  strategyParameters?: Record<string, number | string>;
 }
 
 export interface RejectedShadowGridCandidate {
@@ -44,10 +49,6 @@ export interface RejectedShadowGridCandidate {
 export interface ShadowGridCandidateOptions {
   /** Maximum returned candidates, including KEEP and the policy proposal. */
   maxCandidates?: number;
-  /** Width multipliers for the two range variants. At most two are used. */
-  rangeMultipliers?: readonly number[];
-  /** Level-count deltas for the two spacing variants. At most two are used. */
-  spacingLevelDeltas?: readonly number[];
   /** Needed to reproduce the PortfolioManager's cross-asset lower-band priority. */
   assetAllocations?: readonly { assetSymbol: string; allocatedCapitalUsd: number }[];
   /** An unknown lot exit prevents creating another band. */
@@ -55,7 +56,7 @@ export interface ShadowGridCandidateOptions {
 }
 
 export interface ShadowGridCandidateSet {
-  version: typeof SHADOW_GRID_CANDIDATE_VERSION;
+  version: ShadowGridCandidateSetVersion;
   candidates: ShadowGridCandidate[];
   policyCandidateId: string | null;
   rejected: RejectedShadowGridCandidate[];
@@ -63,14 +64,12 @@ export interface ShadowGridCandidateSet {
 
 const DEFAULT_MAX_CANDIDATES = 6;
 const MAX_CANDIDATES = 6;
-const DEFAULT_RANGE_MULTIPLIERS = [0.85, 1.15] as const;
-const DEFAULT_SPACING_LEVEL_DELTAS = [1, -1] as const;
 
 /**
  * Builds a bounded candidate population for shadow-only evaluation.
  *
  * The order is stable: KEEP, the current portfolio-policy proposal, then
- * narrower/wider ranges and finer/coarser spacing. Invalid candidates are
+ * robust price-channel, drift-tilted and cost/volatility-density candidates. Invalid candidates are
  * excluded and retained in `rejected` with concise reasons for auditability.
  */
 export function buildShadowGridCandidates(
@@ -136,7 +135,7 @@ export function buildShadowGridCandidates(
     if (candidates.some(candidate => candidate.id === proposal.id)) policyCandidateId = proposal.id;
   }
 
-  // Variants use the policy proposal when there is one. With WAIT/PARK, the
+  // Counterfactuals use the policy proposal when there is one. With WAIT/PARK, the
   // current band remains the anchor so Jev can measure an earlier
   // counterfactual adaptation; timing eligibility is recorded separately.
   const variantProposal = proposal && (proposal.action === "revise" || proposal.action === "create_band") ? proposal : null;
@@ -152,46 +151,101 @@ export function buildShadowGridCandidates(
     decision: keepDecision(band)
   };
   if (candidates.length < maxCandidates && (!proposal || variantProposal)) {
-    const center = variantProposal ? (variantProposal.lowPrice + variantProposal.highPrice) / 2 : policyInput.price;
-    const width = variantAnchor.highPrice - variantAnchor.lowPrice;
-    const rangeMultipliers = boundedNumbers(options.rangeMultipliers, DEFAULT_RANGE_MULTIPLIERS);
-    rangeMultipliers.forEach((multiplier, index) => {
-      if (candidates.length >= maxCandidates) return;
-      const nextWidth = boundedCenteredWidth(center, width * multiplier, policyInput.parameters.minWidthPct, policyInput.parameters.maxWidthPct);
-      const low = center - nextWidth / 2;
-      const high = center + nextWidth / 2;
-      add({
-        id: `range_${index === 0 ? "narrow" : "wide"}`,
-        kind: "range_variant",
-        action: variantAnchor.action,
-        lowPrice: low,
-        highPrice: high,
-        levelCount: variantAnchor.levelCount,
-        spacing: nextWidth / Math.max(1, variantAnchor.levelCount - 1),
-        requestedCapitalUsd: requestedCapital(policyInput, variantAnchor.action, variantAnchor.levelCount),
-        decision: candidateDecision(policyInput, variantAnchor, low, high, variantAnchor.levelCount)
-      });
-    });
+    const candlePrefix = policyInput.candles.filter(c => c.closedAt <= policyInput.now).sort((a, b) => +a.closedAt - +b.closedAt);
+    const channel = robustChannel(candlePrefix.slice(-20));
+    if (channel) {
+      const geometry = fitRangeToPolicy(channel.low, channel.high, policyInput.price, policyInput);
+      if (geometry) add(makeCandidate(policyInput, variantAnchor, "donchian_robust", "donchian_variant", geometry.low, geometry.high,
+        safeLevelCount(policyInput, geometry.low, geometry.high, variantAnchor.levelCount),
+        { lookback: channel.count, low_quantile: 0.1, high_quantile: 0.9, padding_pct: 5 }));
+      else rejected.push({ id: "donchian_robust", kind: "donchian_variant", reasons: ["Robust closed-candle channel cannot fit configured width bounds while containing current price."] });
+    } else rejected.push({ id: "donchian_robust", kind: "donchian_variant", reasons: ["At least 5 valid closed candles are required for a robust channel."] });
 
-    const spacingDeltas = boundedIntegers(options.spacingLevelDeltas, DEFAULT_SPACING_LEVEL_DELTAS);
-    spacingDeltas.forEach((delta, index) => {
-      if (candidates.length >= maxCandidates) return;
-      const levelCount = variantAnchor.levelCount + delta;
-      add({
-        id: `spacing_${index === 0 ? "fine" : "coarse"}`,
-        kind: "spacing_variant",
-        action: variantAnchor.action,
-        lowPrice: variantAnchor.lowPrice,
-        highPrice: variantAnchor.highPrice,
-        levelCount,
-        spacing: (variantAnchor.highPrice - variantAnchor.lowPrice) / Math.max(1, levelCount - 1),
-        requestedCapitalUsd: requestedCapital(policyInput, variantAnchor.action, levelCount),
-        decision: candidateDecision(policyInput, variantAnchor, variantAnchor.lowPrice, variantAnchor.highPrice, levelCount)
-      });
-    });
+    const ema = emaPair(candlePrefix);
+    if (ema) {
+      const width = variantAnchor.highPrice - variantAnchor.lowPrice;
+      const drift = Math.max(-0.2, Math.min(0.2, (ema.fast / ema.slow - 1) * 4));
+      const center = (variantAnchor.lowPrice + variantAnchor.highPrice) / 2 + drift * width;
+      const geometry = fitRangeToPolicy(center - width / 2, center + width / 2, policyInput.price, policyInput);
+      if (geometry) add(makeCandidate(policyInput, variantAnchor, "ema_drift", "drift_variant", geometry.low, geometry.high,
+        safeLevelCount(policyInput, geometry.low, geometry.high, variantAnchor.levelCount),
+        { ema_fast: 20, ema_slow: 50, drift_width_fraction: round(drift, 6) }));
+      else rejected.push({ id: "ema_drift", kind: "drift_variant", reasons: ["EMA-tilted range cannot fit configured width bounds while containing current price."] });
+    } else rejected.push({ id: "ema_drift", kind: "drift_variant", reasons: ["At least 50 valid closed candles are required for EMA20/EMA50 drift."] });
+
+    const atrPct = latestAtrPct(candlePrefix);
+    if (atrPct !== null) {
+      const costFloor = gridCostFloorPct(policyInput.parameters.estimatedSlippageBps ?? 0,
+        policyInput.parameters.estimatedExecutionFeeBps ?? 0) + 0.25;
+      const targetSpacingPct = Math.max(policyInput.parameters.minimumSpacingPct, costFloor, atrPct * 0.75);
+      const count = Math.max(2, Math.min(policyInput.parameters.maxLevels,
+        Math.floor((variantAnchor.highPrice - variantAnchor.lowPrice) /
+          (policyInput.price * targetSpacingPct / 100)) + 1));
+      const spacing = (variantAnchor.highPrice - variantAnchor.lowPrice) / (count - 1);
+      add({ id: "vol_cost_density", kind: "density_variant", action: variantAnchor.action,
+        lowPrice: variantAnchor.lowPrice, highPrice: variantAnchor.highPrice, levelCount: count, spacing,
+        requestedCapitalUsd: requestedCapital(policyInput, variantAnchor.action, count),
+        decision: { ...candidateDecision(policyInput, variantAnchor, variantAnchor.lowPrice, variantAnchor.highPrice, count),
+          reason: "Shadow level density from ATR14 and estimated execution cost; existing lot exits stay fixed." },
+        strategyParameters: { atr_pct_14: round(atrPct, 6), target_spacing_pct: round(targetSpacingPct, 6),
+          cost_floor_pct: round(costFloor, 6) } });
+    } else rejected.push({ id: "vol_cost_density", kind: "density_variant", reasons: ["At least 14 valid closed candles are required for ATR spacing."] });
   }
 
   return { version: SHADOW_GRID_CANDIDATE_VERSION, candidates, policyCandidateId, rejected };
+}
+
+function makeCandidate(input: PortfolioPolicyInput,
+  anchor: Omit<ShadowGridCandidate, "validation" | "economicallyValid" | "economicValidationReasons" | "currentlyPolicyEligible" | "policyEligibilityReasons">,
+  id: string, kind: ShadowGridCandidateKind, low: number, high: number, levelCount: number,
+  strategyParameters: Record<string, number | string>) {
+  return { id, kind, action: anchor.action, lowPrice: low, highPrice: high, levelCount,
+    spacing: (high - low) / Math.max(1, levelCount - 1),
+    requestedCapitalUsd: requestedCapital(input, anchor.action, levelCount),
+    decision: { ...candidateDecision(input, anchor, low, high, levelCount),
+      reason: `Shadow ${kind} from closed candles; existing lot exits stay fixed.` }, strategyParameters };
+}
+
+function robustChannel(candles: PolicyCandle[]) {
+  if (candles.length < 5) return null;
+  const lows = candles.map(c => c.low).sort((a, b) => a - b);
+  const highs = candles.map(c => c.high).sort((a, b) => a - b);
+  const low = lows[Math.floor((lows.length - 1) * 0.1)]!;
+  const high = highs[Math.ceil((highs.length - 1) * 0.9)]!;
+  const center = (low + high) / 2;
+  return { low: low - (center - low) * 0.05, high: high + (high - center) * 0.05, count: candles.length };
+}
+
+function fitRangeToPolicy(low: number, high: number, price: number, input: PortfolioPolicyInput) {
+  if (![low, high, price].every(Number.isFinite) || low <= 0 || high <= low) return null;
+  const center = (low + high) / 2;
+  const widthPct = (high - low) / center * 100;
+  const targetWidthPct = Math.max(input.parameters.minWidthPct, Math.min(input.parameters.maxWidthPct, widthPct));
+  const targetWidth = center * targetWidthPct / 100;
+  const finalCenter = Math.max(price - targetWidth / 2, Math.min(price + targetWidth / 2, center));
+  return { low: finalCenter - targetWidth / 2, high: finalCenter + targetWidth / 2 };
+}
+
+function emaPair(candles: PolicyCandle[]) {
+  if (candles.length < 50) return null;
+  const latest = new IndicatorService().compute(candles.map(c => ({ timestamp: c.openedAt,
+    open: c.open, high: c.high, low: c.low, close: c.close }))).latest;
+  return latest?.ema20 && latest.ema50 ? { fast: latest.ema20, slow: latest.ema50 } : null;
+}
+
+function latestAtrPct(candles: PolicyCandle[]) {
+  if (candles.length < 14) return null;
+  const summary = new IndicatorService().compute(candles.map(c => ({ timestamp: c.openedAt,
+    open: c.open, high: c.high, low: c.low, close: c.close })));
+  return summary.latest?.atrPct14 ?? null;
+}
+
+function safeLevelCount(input: PortfolioPolicyInput, low: number, high: number, preferred: number) {
+  const atrPct = latestAtrPct(input.candles.filter(c => c.closedAt <= input.now).sort((a, b) => +a.closedAt - +b.closedAt)) ?? 0;
+  const floorPct = Math.max(input.parameters.minimumSpacingPct, atrPct * 0.5,
+    gridCostFloorPct(input.parameters.estimatedSlippageBps ?? 0, input.parameters.estimatedExecutionFeeBps ?? 0) + 0.25);
+  const maxCount = Math.max(2, Math.floor((high - low) / (high * floorPct / 100)) + 1);
+  return Math.max(2, Math.min(preferred, input.parameters.maxLevels, maxCount));
 }
 
 function proposalCandidate(input: PortfolioPolicyInput, decision: PortfolioPolicyDecision): Omit<ShadowGridCandidate, "validation" | "economicallyValid" | "economicValidationReasons" | "currentlyPolicyEligible" | "policyEligibilityReasons"> | null {
@@ -317,7 +371,7 @@ function validateCandidate(input: PortfolioPolicyInput, candidate: Omit<ShadowGr
   }
 
   if (Number.isFinite(candidate.spacing) && candidate.highPrice > 0) {
-    const atrPct = input.indicators?.atrPct ?? 0;
+    const atrPct = input.indicators?.atrPct ?? latestAtrPct(input.candles.filter(c => c.closedAt <= input.now)) ?? 0;
     const costSpacingPct = gridCostFloorPct(p.estimatedSlippageBps ?? 0, p.estimatedExecutionFeeBps ?? 0) + 0.25;
     const minimumSpacingPct = Math.max(p.minimumSpacingPct, atrPct * 0.5, costSpacingPct);
     if (candidate.spacing / candidate.highPrice * 100 + 1e-8 < minimumSpacingPct) {
@@ -369,13 +423,6 @@ function requestedCapital(input: PortfolioPolicyInput, action: ShadowGridCandida
     : 0;
 }
 
-function boundedCenteredWidth(center: number, width: number, minWidthPct: number, maxWidthPct: number): number {
-  if (!Number.isFinite(center) || center <= 0 || !Number.isFinite(width) || width <= 0) return width;
-  const minWidth = center * minWidthPct / 100;
-  const maxWidth = center * maxWidthPct / 100;
-  return Math.max(minWidth, Math.min(maxWidth, width));
-}
-
 function candidateKey(candidate: Pick<ShadowGridCandidate, "lowPrice" | "highPrice" | "levelCount" | "spacing" | "action">): string {
   return [candidate.action, candidate.lowPrice, candidate.highPrice, candidate.levelCount, candidate.spacing].join("|");
 }
@@ -383,13 +430,4 @@ function candidateKey(candidate: Pick<ShadowGridCandidate, "lowPrice" | "highPri
 function boundedCandidateLimit(value: number | undefined): number {
   if (!Number.isFinite(value)) return DEFAULT_MAX_CANDIDATES;
   return Math.max(1, Math.min(MAX_CANDIDATES, Math.floor(value!)));
-}
-
-function boundedNumbers(values: readonly number[] | undefined, fallback: readonly number[]): number[] {
-  const source = values ?? fallback;
-  return source.filter(Number.isFinite).slice(0, 2);
-}
-
-function boundedIntegers(values: readonly number[] | undefined, fallback: readonly number[]): number[] {
-  return boundedNumbers(values, fallback).map(Math.trunc);
 }

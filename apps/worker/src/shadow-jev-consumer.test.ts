@@ -22,7 +22,9 @@ function job(overrides: Partial<ShadowJevClaim> = {}): ShadowJevClaim {
           spacing: 20 / 9, status: "active", allocatedCapitalUsd: 400, idleQuoteUsd: 100,
           openTradingLots: [] }, availableCashUsd: 200, totalPortfolioCapitalUsd: 1_000,
         parameters: { minUsefulOrderUsd: 25 } },
-      context: { strategy: { objective: "accumulate_base" } }, botState: {}, marketMeta: {},
+      context: { strategy: { objective: "accumulate_base" },
+        shadowTiming: { marketClosedAt: observedAt.toISOString(),
+          stateReadAt: new Date(+observedAt + 10_000).toISOString() } }, botState: {}, marketMeta: {},
       proposedDecision: { action: "revise" },
       marketSnapshot: { id: "market-1", contentHash: "hash", candleCount: 24, candles,
         provenance: {}, observedAt } },
@@ -112,6 +114,40 @@ describe("ShadowJevConsumer", () => {
     expect(outbox.complete).toHaveBeenCalledWith(expect.objectContaining({ probabilities: {
       grid_candidate: { option: "option_1", candidate_id: mapped.option_1, confidence: 0.6,
         probabilities: { [mapped.option_0!]: 0.2, [mapped.option_1!]: 0.7, abstain: 0.1 },
+        option_probabilities: raw.answers.grid_candidate.probabilities },
+    } }));
+    expect(outbox.fail).not.toHaveBeenCalled();
+  });
+
+  it("keeps V3 strategy families shadow only and persists the complete choice distribution", async () => {
+    const original = job();
+    const v3 = job({ questionSetVersion: "shadow-jev-v3", observation: {
+      ...original.observation,
+      candidateSet: { version: "shadow-grid-candidates-v3", policyCandidateId: null, rejected: [],
+        candidates: [
+          { id: "keep", kind: "keep", action: "keep", lowPrice: 90, highPrice: 110,
+            levelCount: 10, spacing: 20 / 9, requestedCapitalUsd: 0, validation: "validated",
+            economicallyValid: true, economicValidationReasons: [], decision: { reason: "Keep current grid." } },
+          { id: "donchian_robust", kind: "donchian_variant", action: "revise", lowPrice: 105, highPrice: 125,
+            levelCount: 10, spacing: 20 / 9, requestedCapitalUsd: 0, validation: "validated",
+            economicallyValid: true, economicValidationReasons: [],
+            strategyParameters: { lookback: 20, low_quantile: 0.1 },
+            decision: { reason: "Robust channel from closed candles." } },
+        ] },
+    } });
+    const raw = { model: "jev-1.13.0", answers: { grid_candidate: { type: "choice", choice: "option_0",
+      confidence: 0.65, probabilities: { option_0: 0.65, option_1: 0.25, abstain: 0.1 } } },
+    usage: { input_tokens: 500, output_tokens: 25 } };
+    const outbox = { claim: vi.fn(async () => [v3]), complete: vi.fn(async () => {}), fail: vi.fn(async () => {}) };
+    const client = { evaluate: vi.fn(async (_request: unknown) => raw) };
+    await new ShadowJevConsumer(outbox, client, "worker-1").processOne();
+    const request = client.evaluate.mock.calls[0]![0] as { state: { candidates: Array<{ option: string; family: string }> } };
+    const mapping = Object.fromEntries(request.state.candidates.map(candidate => [candidate.option,
+      candidate.family === "keep" ? "keep" : "donchian_robust"]));
+    expect(JSON.stringify(request)).not.toContain("donchian_robust");
+    expect(outbox.complete).toHaveBeenCalledWith(expect.objectContaining({ probabilities: {
+      grid_candidate: { option: "option_0", candidate_id: mapping.option_0, confidence: 0.65,
+        probabilities: { [mapping.option_0!]: 0.65, [mapping.option_1!]: 0.25, abstain: 0.1 },
         option_probabilities: raw.answers.grid_candidate.probabilities },
     } }));
     expect(outbox.fail).not.toHaveBeenCalled();
