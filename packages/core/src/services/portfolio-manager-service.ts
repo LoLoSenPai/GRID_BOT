@@ -32,6 +32,8 @@ export interface PortfolioShadowCapture {
     marketMeta: CandleHistoryMeta;
     proposedDecision: PortfolioPolicyDecision;
     observedAt: Date;
+    /** Actual read time; the market candle in observedAt closed earlier. */
+    stateReadAt: Date;
   }): Promise<string | null>;
   recordOutcome(observationId: string, outcome: {
     status: "applied" | "wait" | "rejected" | "observed_only";
@@ -84,10 +86,11 @@ export class PortfolioManagerService {
           const peers = await this.store.listBandContexts();
           const peerBots = (await Promise.all(peers.filter(p => p.portfolio.id === context.portfolio.id && p.strategy.id === context.strategy.id)
             .map(p => this.store.getBot(p.band.botId)))).filter((b): b is BotAggregate => b !== null);
+          const stateReadAt = new Date();
           const policyInput = this.inputFactory(context, bot, peers, observedAt, candles, this.parameters, peerBots);
           const decision = evaluatePortfolioPolicy(policyInput);
           const shadowInput = { context, bot, peerContexts: peers, peerBots,
-            policyInput, marketMeta: result.meta, proposedDecision: decision, observedAt };
+            policyInput, marketMeta: result.meta, proposedDecision: decision, observedAt, stateReadAt };
           if (!policyEnabled) {
             this.shadowObserved.set(context.band.id, +observedAt);
             if (shadowEnabled) pendingShadow.push({ input: shadowInput, outcome: { status: "observed_only" },

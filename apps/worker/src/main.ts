@@ -38,7 +38,7 @@ import { getPortfolioSnapshotIntervalMs, safeBackfillPortfolioSnapshots, safeCre
 import { getRuntimeMaintenanceIntervalMs, runRuntimeMaintenance } from "./runtime-maintenance";
 import { SymbolRunScheduler } from "./symbol-run-scheduler";
 import { ExecutionRecoveryPoller } from "./execution-recovery-poller";
-import { v2ModelRequested, v2QuestionSetVersion } from "./shadow-jev-v2-questions";
+import { v3ModelRequested, v3QuestionSetVersion } from "./shadow-jev-v3-questions";
 
 const env = getEnv();
 
@@ -101,7 +101,7 @@ async function main() {
   const portfolioManager = new PortfolioManagerService(new PrismaPortfolioManagerStore(),
     new CachedCandleHistoryProvider(new PrismaMarketCandleRepository(), new GeckoTerminalHistoryProvider()),
     DEFAULT_PORTFOLIO_POLICY, buildPortfolioPolicyInput, shadow ? {
-      capture: async ({ context, bot, peerContexts, peerBots, policyInput, marketMeta, proposedDecision, observedAt }) => {
+      capture: async ({ context, bot, peerContexts, peerBots, policyInput, marketMeta, proposedDecision, observedAt, stateReadAt }) => {
         const strategyAllocations = [...new Map(peerContexts
           .filter(peer => peer.portfolio.id === context.portfolio.id)
           .map(peer => [peer.strategy.id, { assetSymbol: peer.strategy.baseSymbol,
@@ -111,15 +111,16 @@ async function main() {
           hasUnknownExitCommitment: context.exitCommitments.some(commitment =>
             commitment.targetStatus === "UNKNOWN" && !commitment.fulfilledAt),
         });
-        const replayBot = (aggregate: typeof bot) => ({ bot: aggregate.bot, config: aggregate.config,
-          openLots: aggregate.openLots });
+        const preDecisionBot = (aggregate: typeof bot) => ({ bot: aggregate.bot, config: aggregate.config,
+          position: aggregate.position, latestState: aggregate.latestState, openLots: aggregate.openLots });
         const captured = await shadow.repository.capture({
           portfolioId: context.portfolio.id, strategyId: context.strategy.id, bandId: context.band.id,
-          botId: bot.bot.id, observedAt, questionSetVersion: v2QuestionSetVersion,
-          modelRequested: v2ModelRequested, policyInput,
-          context: { ...context, shadowReplay: { bot: replayBot(bot),
-            peerContexts: peerContexts.filter(peer => peer.portfolio.id === context.portfolio.id),
-            peerBots: peerBots.map(replayBot) } },
+          botId: bot.bot.id, observedAt, questionSetVersion: v3QuestionSetVersion,
+          modelRequested: v3ModelRequested, policyInput,
+          context: { ...context, shadowTiming: { marketClosedAt: observedAt, stateReadAt },
+            shadowPreDecision: { bot: preDecisionBot(bot),
+              peerContexts: peerContexts.filter(peer => peer.portfolio.id === context.portfolio.id),
+              peerBots: peerBots.map(preDecisionBot) } },
           botState: bot.latestState,
           marketMeta, proposedDecision, candidateSet,
         });

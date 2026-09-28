@@ -76,30 +76,47 @@ describe("shadow grid candidate generator", () => {
       .toContain("unknown exit");
   });
 
-  it("creates policy and bounded range/spacing alternatives only after a policy proposal", () => {
-    const policyInput = input({ price: 120, candles: candles(120) });
-    const decision = evaluatePortfolioPolicy(policyInput);
-    expect(decision.action).toBe("revise");
+  it("creates distinct causal channel and volatility-density alternatives", () => {
+    const policyInput = input({ price: 100, candles: candles(100) });
+    const decision = { action: "revise" as const, reason: "policy envelope", nextLowPrice: 96,
+      nextHighPrice: 104, nextLevelCount: 5, nextSpacing: 2,
+      protectedLowPrice: null, protectedHighPrice: null };
     const result = buildShadowGridCandidates(policyInput, decision);
 
     expect(result.policyCandidateId).toBe("policy");
     expect(result.candidates.map(candidate => candidate.kind)).toEqual(expect.arrayContaining([
-      "keep", "policy", "range_variant", "spacing_variant"
+      "keep", "policy", "donchian_variant", "density_variant"
     ]));
     expect(result.candidates.find(candidate => candidate.id === "keep")?.currentlyPolicyEligible).toBe(false);
     expect(result.candidates.filter(candidate => candidate.kind !== "keep").every(candidate => candidate.lowPrice < policyInput.price && candidate.highPrice > policyInput.price)).toBe(true);
     expect(result.candidates.every(candidate => candidate.spacing >= 0)).toBe(true);
   });
 
-  it("does not turn a WAIT into an adaptive proposal", () => {
+  it("keeps WAIT as the policy choice and records unavailable drift inputs", () => {
     const policyInput = input();
     const decision = { action: "wait" as const, reason: "wait", nextLowPrice: null, nextHighPrice: null,
       nextLevelCount: null, nextSpacing: null, protectedLowPrice: null, protectedHighPrice: null };
     const result = buildShadowGridCandidates(policyInput, decision);
 
     expect(result.policyCandidateId).toBe("keep");
-    expect(result.candidates.map(candidate => candidate.id)).toEqual(["keep", "range_narrow", "range_wide", "spacing_fine", "spacing_coarse"]);
-    expect(result.candidates.filter(candidate => !candidate.currentlyPolicyEligible).length).toBe(4);
+    expect(result.policyCandidateId).toBe("keep");
+    expect(result.candidates[0]?.id).toBe("keep");
+    expect(result.candidates.length).toBeLessThanOrEqual(6);
+    expect(result.rejected.find(candidate => candidate.id === "ema_drift")?.reasons.join(" ")).toContain("50 valid closed candles");
+    expect(result.candidates.filter(candidate => !candidate.currentlyPolicyEligible).length).toBeGreaterThan(0);
+  });
+
+  it("adds the EMA drift candidate only with 50 causal closed candles and records its inputs", () => {
+    const history = candles(104, 60).map((candle, index) => ({ ...candle, close: 90 + index * 0.25,
+      open: 90 + index * 0.25, high: 91 + index * 0.25, low: 89 + index * 0.25 }));
+    const latest = history.at(-1)!;
+    const policyInput = input({ now: latest.closedAt, price: latest.close, candles: history });
+    const result = buildShadowGridCandidates(policyInput, { action: "wait", reason: "wait", nextLowPrice: null,
+      nextHighPrice: null, nextLevelCount: null, nextSpacing: null, protectedLowPrice: null, protectedHighPrice: null });
+    const drift = result.candidates.find(candidate => candidate.id === "ema_drift");
+    expect(drift?.strategyParameters).toMatchObject({ ema_fast: 20, ema_slow: 50 });
+    expect(drift?.lowPrice).toBeLessThan(policyInput.price);
+    expect(drift?.highPrice).toBeGreaterThan(policyInput.price);
   });
 
   it("rejects a KEEP band that violates the policy cost floor and explains why", () => {
