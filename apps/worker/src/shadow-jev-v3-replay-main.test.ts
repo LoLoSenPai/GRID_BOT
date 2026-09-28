@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GECKOTERMINAL_POOLS, MINTS } from "@grid-bot/common";
-import { evaluateStoredShadowV3 } from "./shadow-jev-v3-replay-main";
+import { evaluateStoredShadowV3, parseReplayArgs } from "./shadow-jev-v3-replay-main";
 
 const observedAt = new Date("2026-09-28T12:00:00.000Z");
 const provenance = { provider: "gecko-terminal", symbol: "BTC", quoteSymbol: "USDC",
@@ -29,6 +29,13 @@ function observation() {
 }
 
 describe("read-only V3 replay runner", () => {
+  it("accepts both pnpm and direct script argument forms", () => {
+    const flags = ["--observation-id", "observation-1", "--native-fee-usd", "0.02"];
+    const parsed = { observationId: "observation-1", nativeFeeUsd: 0.02 };
+    expect(parseReplayArgs(["--", ...flags])).toEqual(parsed);
+    expect(parseReplayArgs(flags)).toEqual(parsed);
+  });
+
   it("censors an unfinished Jev job before reading future market data", async () => {
     const row = observation();
     row.outbox.status = "pending";
