@@ -24,6 +24,45 @@ describe("shadow persistence hashing", () => {
   });
 });
 
+describe("V2 candidate capture", () => {
+  const captureInput = {
+    portfolioId: "portfolio", strategyId: "strategy", bandId: "band", botId: "bot",
+    observedAt: new Date("2026-09-28T12:00:00.000Z"), questionSetVersion: "shadow-jev-v2",
+    modelRequested: "jev-1.13.0", policyInput: { candles: [{ close: 100 }] },
+    context: {}, botState: {}, proposedDecision: { action: "wait" },
+    marketMeta: { provider: "gecko", symbol: "BTC", quoteSymbol: "USDC", resolution: "1h" },
+  };
+
+  it("requires a candidate set before touching the database", async () => {
+    const client = { $transaction: vi.fn() };
+    await expect(new PrismaShadowObservationRepository(client as never).capture(captureInput))
+      .rejects.toThrow("requires its immutable candidate set");
+    expect(client.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("stores the candidates with the observation and outbox atomically", async () => {
+    const statements: Array<{ strings: readonly string[]; values: readonly unknown[] }> = [];
+    const tx = {
+      $executeRaw: vi.fn(async (query: { strings: readonly string[]; values: readonly unknown[] }) => {
+        statements.push(query); return 1;
+      }),
+      shadowMarketSnapshot: { findUniqueOrThrow: vi.fn(async () => ({ id: "market" })) },
+      shadowJevObservation: { findUniqueOrThrow: vi.fn(async (args: { where: { observationHash: string } }) =>
+        ({ id: "observation", observationHash: args.where.observationHash })) },
+      shadowJevOutbox: { findUniqueOrThrow: vi.fn(async () => ({ observationId: "observation" })) },
+    };
+    const client = { $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)) };
+    const candidateSet = { version: "shadow-grid-candidates-v2", candidates: [{ id: "keep" }] };
+    const result = await new PrismaShadowObservationRepository(client as never)
+      .capture({ ...captureInput, candidateSet });
+    expect(result).toEqual({ observationId: "observation", snapshotId: "market" });
+    expect(statements).toHaveLength(3);
+    expect(statements[1]!.strings.join(" ")).toContain('"candidate_set"');
+    expect(statements[1]!.values).toContain(JSON.stringify({ candidates: candidateSet.candidates,
+      version: candidateSet.version }));
+  });
+});
+
 describe("shadow Jev attempt journal", () => {
   it("records a completed attempt in the same transaction as the terminal outbox update", async () => {
     const attemptCreate = vi.fn(async () => undefined);

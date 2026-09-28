@@ -640,6 +640,7 @@ model ShadowJevObservation {
   botState           Json                 @map("bot_state")
   marketMeta         Json                 @map("market_meta")
   proposedDecision   Json                 @map("proposed_decision")
+  candidateSet       Json?                @map("candidate_set")
   createdAt          DateTime             @default(now()) @map("created_at")
   snapshot           ShadowMarketSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Restrict)
   portfolio          Portfolio            @relation(fields: [portfolioId], references: [id], onDelete: Restrict)

@@ -28,6 +28,7 @@ export interface CaptureShadowObservationInput {
   botState: unknown;
   marketMeta: ShadowMarketMeta;
   proposedDecision: unknown;
+  candidateSet?: unknown;
 }
 
 export interface CaptureShadowObservationResult {
@@ -54,6 +55,7 @@ export class PrismaShadowObservationRepository {
     const botState = jsonValue(input.botState);
     const marketMeta = jsonValue(input.marketMeta);
     const proposedDecision = jsonValue(input.proposedDecision);
+    const candidateSet = input.candidateSet === undefined ? null : jsonValue(input.candidateSet);
     const provenance = jsonValue({
       provider: input.marketMeta.provider,
       symbol: input.marketMeta.symbol.toUpperCase(),
@@ -66,6 +68,7 @@ export class PrismaShadowObservationRepository {
       portfolioId: input.portfolioId, strategyId: input.strategyId, bandId: input.bandId, botId: input.botId,
       observedAt, questionSetVersion: input.questionSetVersion, modelRequested: input.modelRequested,
       contentHash, policyInput, context, botState, marketMeta, proposedDecision,
+      ...(candidateSet === null ? {} : { candidateSet }),
     });
 
     return this.client.$transaction(async (tx) => {
@@ -85,12 +88,13 @@ export class PrismaShadowObservationRepository {
         INSERT INTO "shadow_jev_observations"
           ("id", "portfolio_id", "strategy_id", "band_id", "bot_id", "snapshot_id", "observed_at",
            "question_set_version", "model_requested", "observation_hash", "policy_input", "context", "bot_state",
-           "market_meta", "proposed_decision", "created_at")
+           "market_meta", "proposed_decision", "candidate_set", "created_at")
         VALUES
           (${proposedObservationId}, ${input.portfolioId}, ${input.strategyId}, ${input.bandId}, ${input.botId},
            ${snapshot.id}, ${observedAt}, ${input.questionSetVersion}, ${input.modelRequested}, ${observationHash},
            ${JSON.stringify(policyInput)}::jsonb, ${JSON.stringify(context)}::jsonb, ${JSON.stringify(botState)}::jsonb,
-           ${JSON.stringify(marketMeta)}::jsonb, ${JSON.stringify(proposedDecision)}::jsonb, CURRENT_TIMESTAMP)
+           ${JSON.stringify(marketMeta)}::jsonb, ${JSON.stringify(proposedDecision)}::jsonb,
+           ${candidateSet === null ? null : JSON.stringify(candidateSet)}::jsonb, CURRENT_TIMESTAMP)
         ON CONFLICT ("observation_hash") DO NOTHING
       `);
       const observation = await tx.shadowJevObservation.findUniqueOrThrow({
@@ -156,6 +160,9 @@ function validateCapture(input: CaptureShadowObservationInput): void {
   if (!(input.observedAt instanceof Date) || !Number.isFinite(+input.observedAt)) throw new Error("Invalid observedAt.");
   if (!Array.isArray(input.policyInput?.candles) || input.policyInput.candles.length === 0) {
     throw new Error("A shadow observation requires the complete effective candle series.");
+  }
+  if (input.questionSetVersion === "shadow-jev-v2" && input.candidateSet === undefined) {
+    throw new Error("A V2 shadow observation requires its immutable candidate set.");
   }
   for (const name of ["provider", "symbol", "quoteSymbol", "resolution"] as const) {
     if (typeof input.marketMeta?.[name] !== "string" || input.marketMeta[name].trim() === "") {

@@ -17,6 +17,17 @@ describe("PortfolioPolicyReplayService", () => {
     const result = new PortfolioPolicyReplayService().replay(request({ allocations: [request().allocations[0]!] , totalStartingCapitalUsd: 500 }));
     expect(result.closedCycles).toBeGreaterThan(0);
   });
+  it("seeds an existing lot with its original exit target and reserved book capital", () => {
+    const allocation = { ...request().allocations[0]!, lowPrice: 50, highPrice: 150, levelCount: 2,
+      series: series("BTC", Array(22).fill(100).concat([105, 110])),
+      initialIdleQuoteUsd: 400, initialLots: [{ kind: "trading" as const, entryPrice: 90,
+        remainingBaseAmount: 1.2, costQuote: 100, exitPrice: 108, entrySpacing: 5 }] };
+    const result = new PortfolioPolicyReplayService().replay(request({ allocations: [allocation],
+      totalStartingCapitalUsd: 500, adaptive: false }));
+    expect(result.closedCycles).toBe(1);
+    expect(result.retainedBaseByAsset.BTC).toBeGreaterThan(0);
+    expect(result.endingCashUsd).toBeGreaterThanOrEqual(500);
+  });
   it("does not use future candles when deciding the prefix", () => {
     const base = Array(24).fill(100);
     const first = new PortfolioPolicyReplayService().replay(request({ allocations: [{ ...request().allocations[0]!, series: series("BTC", base) }], totalStartingCapitalUsd: 500 }));
@@ -39,5 +50,51 @@ describe("PortfolioPolicyReplayService", () => {
     expect(result.endingCashUsd).toBeGreaterThanOrEqual(0);
     expect(result.endingEquityUsd).toBeLessThan(500);
     expect(() => new PortfolioPolicyReplayService().replay(request({ totalStartingCapitalUsd: 800 }))).toThrow(/equal total/);
+  });
+
+  it("selects a validated shadow candidate causally and records its identity", () => {
+    const prefixes: number[] = [];
+    const result = new PortfolioPolicyReplayService().replay(request({ allocations: [{ ...request().allocations[0]!, lowPrice: 95, highPrice: 105, series: series("BTC", Array(24).fill(100)) }], totalStartingCapitalUsd: 500, candidateSelector: ({ policyInput, objective, candidateSet, candles, candidates }) => {
+      prefixes.push(candles.length);
+      expect(policyInput.candles).toEqual(candles);
+      expect(objective).toBe("accumulate_base");
+      expect(candidateSet.version).toBe("shadow-grid-candidates-v2");
+      return candidates[0]!.id;
+    } }));
+
+    expect(prefixes.length).toBeGreaterThan(0);
+    expect(prefixes.every((length, index) => index === 0 || length >= prefixes[index - 1]!)).toBe(true);
+    expect(result.actions.some((action) => action.candidateId !== undefined)).toBe(true);
+  });
+
+  it("rejects an unknown candidate selected by the hook", () => {
+    expect(() => new PortfolioPolicyReplayService().replay(request({ candidateSelector: () => "missing" })))
+      .toThrow(/unknown candidate ID/);
+  });
+
+  it("isolates replay accounting from mutations inside the selector", () => {
+    const baseline = new PortfolioPolicyReplayService().replay(request({ candidateSelector: ({ candidates }) => candidates[0]!.id }));
+    const mutated = new PortfolioPolicyReplayService().replay(request({ candidateSelector: ({ policyInput, candidates }) => {
+      policyInput.band.idleQuoteUsd = 0;
+      policyInput.candles.at(-1)!.close = 1;
+      candidates[0]!.lowPrice = 1;
+      return candidates[0]!.id;
+    } }));
+    expect(mutated.endingEquityUsd).toBe(baseline.endingEquityUsd);
+    expect(mutated.endingCashUsd).toBe(baseline.endingCashUsd);
+  });
+
+  it("can choose KEEP or a revise candidate from the same initial capital", () => {
+    const allocation = { ...request().allocations[0]!, lowPrice: 95, highPrice: 105,
+      series: series("BTC", Array(20).fill(100).concat([101, 102, 103, 104])) };
+    let policySeen = false;
+    const choose = (mode: "keep" | "policy") => ({ candidates }: { candidates: readonly { id: string; decision: import("../services/portfolio-policy-service").PortfolioPolicyDecision }[] }) => {
+      if (candidates.some((candidate) => candidate.id === "policy")) policySeen = true;
+      return mode === "policy" && candidates.some((candidate) => candidate.id === "policy") ? "policy" : candidates[0]!.id;
+    };
+    const keep = new PortfolioPolicyReplayService().replay({ ...request({ allocations: [allocation], totalStartingCapitalUsd: 500 }), candidateSelector: choose("keep") });
+    const revised = new PortfolioPolicyReplayService().replay({ ...request({ allocations: [allocation], totalStartingCapitalUsd: 500 }), candidateSelector: choose("policy") });
+    expect(policySeen).toBe(true);
+    expect(revised.points.at(-1)!.equityUsd).not.toBe(keep.points.at(-1)!.equityUsd);
   });
 });

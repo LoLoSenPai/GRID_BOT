@@ -50,6 +50,7 @@ function makeClient(read: () => State) {
       update: mutate("band.update", ({ where, data }) => applyNumericUpdate(read().bands.find((row) => row.id === where.id)!, data)),
     },
     portfolio: {
+      count: vi.fn(async ({ where }) => read().portfolios.filter((row) => row.mode === where.mode).length),
       findUniqueOrThrow: vi.fn(async ({ where }) => read().portfolios.find((row) => row.id === where.id)!),
       update: mutate("portfolio.update", ({ where, data }) => applyNumericUpdate(read().portfolios.find((row) => row.id === where.id)!, data)),
     },

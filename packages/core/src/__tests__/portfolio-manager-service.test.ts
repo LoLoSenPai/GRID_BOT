@@ -63,6 +63,7 @@ describe("portfolio manager", () => {
     await vi.waitFor(() => expect(shadow.capture).toHaveBeenCalledWith(expect.objectContaining({
       observedAt: now, proposedDecision: expect.objectContaining({ action: "revise" }),
       policyInput: expect.objectContaining({ candles: expect.any(Array), assetSymbol: "BTC" }),
+      peerContexts: expect.arrayContaining([s.context]), peerBots: expect.arrayContaining([s.bot]),
     })));
     await vi.waitFor(() => expect(shadow.recordOutcome).toHaveBeenCalledWith("observation-1", {
       status: "applied", effectiveDecision: expect.objectContaining({ action: "revise" }),

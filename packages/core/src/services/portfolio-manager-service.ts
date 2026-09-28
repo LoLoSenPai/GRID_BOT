@@ -26,6 +26,8 @@ export interface PortfolioShadowCapture {
   capture(input: {
     context: BandExecutionContext;
     bot: BotAggregate;
+    peerContexts: BandExecutionContext[];
+    peerBots: BotAggregate[];
     policyInput: PortfolioPolicyInput;
     marketMeta: CandleHistoryMeta;
     proposedDecision: PortfolioPolicyDecision;
@@ -84,7 +86,8 @@ export class PortfolioManagerService {
             .map(p => this.store.getBot(p.band.botId)))).filter((b): b is BotAggregate => b !== null);
           const policyInput = this.inputFactory(context, bot, peers, observedAt, candles, this.parameters, peerBots);
           const decision = evaluatePortfolioPolicy(policyInput);
-          const shadowInput = { context, bot, policyInput, marketMeta: result.meta, proposedDecision: decision, observedAt };
+          const shadowInput = { context, bot, peerContexts: peers, peerBots,
+            policyInput, marketMeta: result.meta, proposedDecision: decision, observedAt };
           if (!policyEnabled) {
             this.shadowObserved.set(context.band.id, +observedAt);
             if (shadowEnabled) pendingShadow.push({ input: shadowInput, outcome: { status: "observed_only" },

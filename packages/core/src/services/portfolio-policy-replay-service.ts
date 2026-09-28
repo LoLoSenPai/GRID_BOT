@@ -1,12 +1,22 @@
 import type { BacktestMarketSeries, HistoricalCandle } from "../domain/types";
 import { CandleReplayService } from "./candle-replay-service";
 import { blocksDuplicateEntry } from "./portfolio-policy-service";
-import { evaluatePortfolioPolicy, type PortfolioPolicyDecision, type PortfolioPolicyParameters, type PolicyBandState, type PolicyCandle, type PolicyLot } from "./portfolio-policy-service";
+import { evaluatePortfolioPolicy, type PortfolioPolicyDecision, type PortfolioPolicyInput, type PortfolioPolicyParameters, type PolicyBandState, type PolicyCandle, type PolicyLot } from "./portfolio-policy-service";
+import { buildShadowGridCandidates, type ShadowGridCandidate, type ShadowGridCandidateSet } from "./shadow-grid-candidate-service";
 
-export interface PortfolioReplayAllocation { assetSymbol: string; series: BacktestMarketSeries; warmupCandles?: HistoricalCandle[]; initialBudgetUsd: number; lowPrice: number; highPrice: number; levelCount: number; strategy: "accumulate_base" | "accumulate_usdc"; }
-export interface PortfolioPolicyReplayRequest { allocations: PortfolioReplayAllocation[]; totalStartingCapitalUsd: number; freeCashUsd?: number; policyParameters: PortfolioPolicyParameters; feeBps: number; slippageBps?: number; minOrderQuoteUsd?: number; candleIntervalMs?: number; adaptive?: boolean; nativeFeeUsd?: number; }
+export interface PortfolioReplayInitialLot { kind: "trading" | "retained"; entryPrice: number;
+  remainingBaseAmount: number; costQuote: number; exitPrice: number; entrySpacing: number; }
+export interface PortfolioReplayAllocation { assetSymbol: string; series: BacktestMarketSeries;
+  warmupCandles?: HistoricalCandle[]; initialBudgetUsd: number; initialIdleQuoteUsd?: number;
+  initialLots?: PortfolioReplayInitialLot[]; lowPrice: number; highPrice: number; levelCount: number;
+  initialStatus?: "active" | "parked"; initialLastRevisionAt?: Date; initialRevisionsToday?: number;
+  strategy: "accumulate_base" | "accumulate_usdc"; }
+export type PortfolioReplayCandidateSelector = (input: { policyInput: PortfolioPolicyInput;
+  objective: PortfolioReplayAllocation["strategy"]; candidateSet: ShadowGridCandidateSet;
+  candles: readonly PolicyCandle[]; candidates: readonly ShadowGridCandidate[] }) => string;
+export interface PortfolioPolicyReplayRequest { allocations: PortfolioReplayAllocation[]; totalStartingCapitalUsd: number; freeCashUsd?: number; policyParameters: PortfolioPolicyParameters; feeBps: number; slippageBps?: number; minOrderQuoteUsd?: number; candleIntervalMs?: number; adaptive?: boolean; nativeFeeUsd?: number; candidateSelector?: PortfolioReplayCandidateSelector; }
 export interface PortfolioReplayPoint { timestamp: Date; priceByAsset: Record<string, number>; equityUsd: number; cashUsd: number; tradingCostUsd: number; retainedBaseByAsset: Record<string, number>; openTradingLots: number; closedCycles: number; }
-export interface PortfolioReplayAction { timestamp: Date; assetSymbol: string; action: PortfolioPolicyDecision["action"]; reason: string; bandId: string; }
+export interface PortfolioReplayAction { timestamp: Date; assetSymbol: string; action: PortfolioPolicyDecision["action"]; reason: string; bandId: string; candidateId?: string; policyCandidateId?: string | null; }
 export interface PortfolioPolicyReplayResult { points: PortfolioReplayPoint[]; actions: PortfolioReplayAction[]; endingEquityUsd: number; endingCashUsd: number; endingTradingCostUsd: number; retainedBaseByAsset: Record<string, number>; closedCycles: number; policyParameters: PortfolioPolicyParameters; }
 
 type Lot = PolicyLot & { id: number; bandId: string; exitPrice: number; assetSymbol: string; entrySpacing: number };
@@ -30,9 +40,16 @@ export class PortfolioPolicyReplayService {
     const nativeFee = request.nativeFeeUsd ?? 0;
     const bands: Band[] = request.allocations.map((a, i) => ({ id: `${a.assetSymbol}:${i}`, assetSymbol: a.assetSymbol,
       strategy: a.strategy, lowPrice: a.lowPrice, highPrice: a.highPrice, levelCount: a.levelCount,
-      spacing: (a.highPrice - a.lowPrice) / (a.levelCount - 1), status: "active",
-      allocatedCapitalUsd: a.initialBudgetUsd, idleQuoteUsd: a.initialBudgetUsd, openTradingLots: [], previousPrice: null, lastRevisionAt: a.series.candles[0]!.timestamp }));
-    const lots: Lot[] = [], actions: PortfolioReplayAction[] = [], points: PortfolioReplayPoint[] = [];
+      spacing: (a.highPrice - a.lowPrice) / (a.levelCount - 1), status: a.initialStatus ?? "active",
+      allocatedCapitalUsd: a.initialBudgetUsd, idleQuoteUsd: a.initialIdleQuoteUsd ?? a.initialBudgetUsd,
+      openTradingLots: [], previousPrice: null,
+      lastRevisionAt: a.initialLastRevisionAt ?? a.series.candles[0]!.timestamp,
+      revisionsToday: a.initialRevisionsToday ?? 0 }));
+    const lots: Lot[] = request.allocations.flatMap((allocation, index) => (allocation.initialLots ?? []).map(lot => ({
+      ...lot, id: 0, bandId: bands[index]!.id, assetSymbol: allocation.assetSymbol,
+    })));
+    lots.forEach((lot, index) => { lot.id = index; });
+    const actions: PortfolioReplayAction[] = [], points: PortfolioReplayPoint[] = [];
     const prices: Record<string, number> = {};
     const closed: Record<string, PolicyCandle[]> = Object.fromEntries(request.allocations.map(a => [a.assetSymbol, (a.warmupCandles ?? []).filter(c => +c.timestamp + interval <= +a.series.candles[0]!.timestamp).map(c => ({ openedAt: c.timestamp, closedAt: new Date(+c.timestamp + interval), open: c.open, high: c.high, low: c.low, close: c.close }))]));
     type Event = { time: number; phase: number; asset: string; price: number; candle?: HistoricalCandle };
@@ -89,20 +106,38 @@ export class PortfolioPolicyReplayService {
           for (const band of bands.filter(b => b.assetSymbol === event.asset)) {
             const sameDay = band.lastRevisionAt?.toISOString().slice(0, 10) === now.toISOString().slice(0, 10);
             const assetLots = lots.filter(l => l.assetSymbol === event.asset);
-            const decision = evaluatePortfolioPolicy({ now, price: event.price, assetSymbol: event.asset,
+            const policyInput = { now, price: event.price, assetSymbol: event.asset,
               band: { ...band, revisionsToday: sameDay ? band.revisionsToday : 0, openTradingLots: assetLots },
               bandCount: bands.filter(b => b.assetSymbol === event.asset).length, assetAttributedCapitalUsd: attributions(event.asset),
               candles: closed[event.asset]!.slice(-80), candleIntervalMs: interval, maxCandleAgeMs: interval * 2,
               availableCashUsd: freeCash, totalPortfolioCapitalUsd: request.totalStartingCapitalUsd,
-              parameters: request.policyParameters });
-            if (decision.action === "revise") {
-              Object.assign(band, { lowPrice: decision.nextLowPrice!, highPrice: decision.nextHighPrice!,
-                levelCount: decision.nextLevelCount!, spacing: decision.nextSpacing!, previousPrice: null,
+              parameters: request.policyParameters };
+            const decision = evaluatePortfolioPolicy(policyInput);
+            let appliedDecision = decision;
+            let candidateId: string | undefined;
+            let policyCandidateId: string | null | undefined;
+            if (request.candidateSelector) {
+              const assetAllocations = [...new Set(bands.map(candidateBand => candidateBand.assetSymbol))]
+                .map(assetSymbol => ({ assetSymbol, allocatedCapitalUsd: attributions(assetSymbol) }));
+              const candidateSet = buildShadowGridCandidates(policyInput, decision, { assetAllocations });
+              const visible = structuredClone({ policyInput, candidateSet });
+              const selectedId = request.candidateSelector({ policyInput: visible.policyInput, objective: band.strategy,
+                candidateSet: visible.candidateSet, candles: visible.policyInput.candles,
+                candidates: visible.candidateSet.candidates });
+              const selected = candidateSet.candidates.find(candidate => candidate.id === selectedId);
+              if (!selected) throw new Error(`Candidate selector returned unknown candidate ID "${String(selectedId)}".`);
+              candidateId = selected.id;
+              policyCandidateId = candidateSet.policyCandidateId;
+              appliedDecision = selected.decision;
+            }
+            if (appliedDecision.action === "revise") {
+              Object.assign(band, { lowPrice: appliedDecision.nextLowPrice!, highPrice: appliedDecision.nextHighPrice!,
+                levelCount: appliedDecision.nextLevelCount!, spacing: appliedDecision.nextSpacing!, previousPrice: null,
                 lastRevisionAt: now, revisionsToday: (sameDay ? band.revisionsToday ?? 0 : 0) + 1, status: "active" });
-            } else if (decision.action === "park") band.status = "parked";
-            else if (decision.action === "reactivate") { band.status = "active"; band.previousPrice = null; }
-            else if (decision.action === "create_band" && decision.candidate) {
-              const candidate = decision.candidate;
+            } else if (appliedDecision.action === "park") band.status = "parked";
+            else if (appliedDecision.action === "reactivate") { band.status = "active"; band.previousPrice = null; }
+            else if (appliedDecision.action === "create_band" && appliedDecision.candidate) {
+              const candidate = appliedDecision.candidate;
               const least = [...new Set(bands.map(b => b.assetSymbol))].sort((a, b) => attributions(a) - attributions(b) || a.localeCompare(b))[0];
               if (least !== event.asset || candidate.requestedCapitalUsd > freeCash) continue;
               freeCash -= candidate.requestedCapitalUsd;
@@ -112,7 +147,7 @@ export class PortfolioPolicyReplayService {
                 allocatedCapitalUsd: candidate.requestedCapitalUsd, idleQuoteUsd: candidate.requestedCapitalUsd,
                 previousPrice: null, status: "active", lastRevisionAt: now, revisionsToday: 1, openTradingLots: [] });
             }
-            if (decision.action !== "wait") actions.push({ timestamp: now, assetSymbol: event.asset, action: decision.action, reason: decision.reason, bandId: band.id });
+            if (appliedDecision.action !== "wait" || candidateId) actions.push({ timestamp: now, assetSymbol: event.asset, action: appliedDecision.action, reason: appliedDecision.reason, bandId: band.id, candidateId, policyCandidateId });
           }
         }
         const retainedBaseByAsset: Record<string, number> = {};
@@ -138,6 +173,31 @@ function validateRequest(r: PortfolioPolicyReplayRequest) {
   for (const a of r.allocations) {
     if (!Number.isFinite(a.initialBudgetUsd) || a.initialBudgetUsd < 0 || !Number.isInteger(a.levelCount) || a.levelCount < 2 ||
       !Number.isFinite(a.lowPrice) || !Number.isFinite(a.highPrice) || a.lowPrice <= 0 || a.highPrice <= a.lowPrice || !a.series.candles.length) throw new Error("Invalid allocation.");
+    if ((a.initialLots?.length ?? 0) > 0 && a.initialIdleQuoteUsd === undefined) {
+      throw new Error("Seeded lots require explicit initial idle cash.");
+    }
+    if (a.initialIdleQuoteUsd !== undefined && (!Number.isFinite(a.initialIdleQuoteUsd) || a.initialIdleQuoteUsd < 0 ||
+      a.initialIdleQuoteUsd > a.initialBudgetUsd + 1e-8)) throw new Error("Invalid initial idle cash.");
+    if (a.initialStatus !== undefined && a.initialStatus !== "active" && a.initialStatus !== "parked") {
+      throw new Error("Invalid initial band status.");
+    }
+    if (a.initialLastRevisionAt !== undefined && (!(a.initialLastRevisionAt instanceof Date) ||
+      !Number.isFinite(+a.initialLastRevisionAt) || +a.initialLastRevisionAt > +a.series.candles[0]!.timestamp)) {
+      throw new Error("Invalid initial revision time.");
+    }
+    if (a.initialRevisionsToday !== undefined && (!Number.isInteger(a.initialRevisionsToday) ||
+      a.initialRevisionsToday < 0)) throw new Error("Invalid initial revision count.");
+    if ((a.initialLots ?? []).some(lot => ![lot.entryPrice, lot.remainingBaseAmount, lot.costQuote,
+      lot.exitPrice, lot.entrySpacing].every(value => Number.isFinite(value) && value >= 0) ||
+      lot.entryPrice <= 0 || lot.remainingBaseAmount <= 0 || lot.exitPrice <= 0 || lot.entrySpacing <= 0 ||
+      (lot.kind === "retained" && lot.costQuote !== 0) ||
+      (lot.kind === "trading" && lot.costQuote <= 0))) throw new Error("Invalid initial lot.");
+    const seededBookCapital = (a.initialIdleQuoteUsd ?? a.initialBudgetUsd) +
+      (a.initialLots ?? []).reduce((sum, lot) => sum + lot.costQuote, 0);
+    const nativeFeeAllowance = (r.nativeFeeUsd ?? 0) * (a.initialLots?.length ?? 0);
+    if (seededBookCapital > a.initialBudgetUsd + nativeFeeAllowance + 0.01) {
+      throw new Error("Seeded idle cash and lot cost exceed assigned capital.");
+    }
     if (!a.series.candles.every((c, i) => c.timestamp instanceof Date && Number.isFinite(+c.timestamp) &&
       (i === 0 || +c.timestamp > +a.series.candles[i - 1]!.timestamp) &&
       [c.open, c.high, c.low, c.close].every(v => Number.isFinite(v) && v > 0) && c.high >= Math.max(c.open, c.close) && c.low <= Math.min(c.open, c.close))) throw new Error("Invalid historical candles.");
