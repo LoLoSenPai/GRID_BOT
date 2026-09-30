@@ -76,18 +76,24 @@ export class PrismaShadowCostRepository {
       completedAt: { gte: start, lte: asOf } }, orderBy: [{ completedAt: "desc" }, { id: "desc" }], take: 501,
       // Only public reports, never execution_attempts.payload / transaction authorizations.
       select: { id: true, botId: true, provider: true, mode: true, status: true, createdAt: true, completedAt: true,
-        executedInputAmount: true, executedOutputAmount: true, rawReport: true, order: { select: { side: true } } } });
+        executedInputAmount: true, executedOutputAmount: true, executedFeeAmount: true, rawReport: true, order: { select: { side: true } } } });
     // Index-backed single reference per non-SOL fill; never scan a month of high-frequency snapshots.
     const executions: ShadowCostExecution[] = [];
     for (const row of rows.slice(0, 500).reverse()) {
-      const price = bot.baseMint === MINTS.SOL ? null : await this.client.priceSnapshot.findFirst({ where: {
-        symbol: "SOL", createdAt: { lte: asOf }, capturedAt: { gte: new Date(row.completedAt!.getTime() - 60 * 60 * 1_000), lte: row.completedAt! } },
-        select: { price: true, capturedAt: true }, orderBy: { capturedAt: "desc" } });
-      executions.push({ ...row, side: row.order.side, assetSymbol: bot.baseSymbol, baseMint: bot.baseMint, quoteMint: bot.quoteMint,
+      const execution: ShadowCostExecution = { ...row, side: row.order.side, assetSymbol: bot.baseSymbol, baseMint: bot.baseMint, quoteMint: bot.quoteMint,
         baseDecimals: bot.baseDecimals, quoteDecimals: bot.quoteDecimals,
         executedInputAmount: row.executedInputAmount === null ? null : Number(row.executedInputAmount),
         executedOutputAmount: row.executedOutputAmount === null ? null : Number(row.executedOutputAmount),
-        nativeUsdReference: price ? { price: Number(price.price), capturedAt: price.capturedAt } : null });
+        executedFeeAmount: row.executedFeeAmount == null ? null : Number(row.executedFeeAmount),
+        // commitExecution sets completedAt and executedFeeAmount in the same UPDATE, after native USD valuation.
+        // This is an availability upper bound, not an invented timestamp of a market-price observation.
+        executedFeeValuedAt: row.completedAt, nativeUsdReference: null };
+      const hasNativeUsdEvidence = decomposeShadowExecutionCost(execution).walletNativeCostUsd !== null;
+      const price = bot.baseMint === MINTS.SOL || hasNativeUsdEvidence ? null : await this.client.priceSnapshot.findFirst({ where: {
+        symbol: "SOL", createdAt: { lte: asOf }, capturedAt: { gte: new Date(row.completedAt!.getTime() - 60 * 60 * 1_000), lte: row.completedAt! } },
+        select: { price: true, capturedAt: true }, orderBy: { capturedAt: "desc" } });
+      execution.nativeUsdReference = price ? { price: Number(price.price), capturedAt: price.capturedAt } : null;
+      executions.push(execution);
     }
     return { bot, executions, truncated: rows.length > 500 };
   }

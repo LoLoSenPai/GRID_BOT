@@ -7,6 +7,10 @@ export interface ShadowCostExecution {
   side: "buy" | "sell"; createdAt: Date | string; completedAt: Date | string | null;
   assetSymbol: string; baseMint: string; quoteMint: string; baseDecimals: number; quoteDecimals: number;
   executedInputAmount: number | null; executedOutputAmount: number | null; rawReport: unknown;
+  /** Quote-denominated accounting valuation frozen before completedAt, not an extra swap fee. */
+  executedFeeAmount?: number | null;
+  /** Availability of the frozen native USD valuation; persisted alongside feeAmount in the commit. */
+  executedFeeValuedAt?: Date | string | null;
   /** Causal USD reference, never a current price applied retrospectively. */
   nativeUsdReference?: { price: number; capturedAt: Date | string } | null;
 }
@@ -31,6 +35,8 @@ export interface ShadowExecutionCostBreakdown {
   feeBps: number | null; quotedFeeBps: number | null; adverseSlippageBps: number | null;
   netQuoteToFillAdverseBps: number | null;
   walletNativeCostSol: number | null; walletNativeRefundSol: number | null; walletNativeCostUsd: number | null;
+  walletNativeCostUsdBasis: "persisted-executed-fee-quote" | "execution-sol-fill-price" | "causal-sol-price" | "confirmed-zero" | "unavailable";
+  walletNativeCostUsdValuedAt: string | null;
   networkFeeSol: number | null; networkPaidByWalletSol: number | null; networkPaidElsewhereSol: number | null;
   rentEstimateSol: number | null; rentActualSol: null; route: string | null;
   approximateCreationToCompletionMs: number | null; warnings: string[];
@@ -106,12 +112,29 @@ export function decomposeShadowExecutionCost(row: ShadowCostExecution): ShadowEx
     completed - referenceTime <= 60 * 60 * 1_000) nativePrice = positive(row.nativeUsdReference?.price);
   const walletNativeCostUsd = walletNativeCostSol === null ? null : walletNativeCostSol === 0 ? 0
     : nativePrice === null ? null : walletNativeCostSol * nativePrice;
+  // Jupiter returns feeAmount=0 because wallet token totals already include swap fees. The engine then
+  // converts the separate confirmed SOL wallet cost into quote units BEFORE accounting commit, where
+  // executedFeeAmount is frozen. Use that settled valuation before any reconstructed SOL/USD price.
+  // Legacy generic fee columns, unconfirmed native reports and non-USDC quote units cannot prove USD.
+  const settledValuedAt = date(row.executedFeeValuedAt);
+  const settledNativeUsd = row.provider === "jupiter" && row.mode === "live" && row.status === "filled" &&
+    completed !== null && settledValuedAt !== null && settledValuedAt <= completed && row.quoteMint === MINTS.USDC && pairMatches && amountMatches &&
+    walletNativeCostSol !== null && walletNativeCostSol > 0 ? positive(row.executedFeeAmount) : null;
+  const nativeCostUsd = settledNativeUsd ?? walletNativeCostUsd;
+  const walletNativeCostUsdBasis: ShadowExecutionCostBreakdown["walletNativeCostUsdBasis"] = settledNativeUsd !== null
+    ? "persisted-executed-fee-quote" : nativeCostUsd === null ? "unavailable" : walletNativeCostSol === 0 ? "confirmed-zero"
+      : row.baseMint === MINTS.SOL ? "execution-sol-fill-price" : "causal-sol-price";
+  const nativeValuedAt = settledNativeUsd !== null ? settledValuedAt : nativeCostUsd === null ? null
+    : row.baseMint === MINTS.SOL || walletNativeCostSol === 0 ? completed : referenceTime;
+  if (settledNativeUsd !== null) warnings.push("native_usd_valuation_frozen_at_accounting_commit");
   if (walletNativeCostSol === null) warnings.push("wallet_native_fee_unconfirmed");
-  if (walletNativeCostUsd === null) warnings.push("native_fee_usd_missing_causal_price");
+  if (nativeCostUsd === null) warnings.push("native_fee_usd_missing_causal_price");
   warnings.push("rent_estimate_not_actual_rent", "wallet_native_total_already_includes_native_costs");
   return { executionId: row.id, completedAt: completed === null ? null : new Date(completed).toISOString(), notionalUsd,
     walletInputAmount: input, walletOutputAmount: output, embeddedFeeMint: feeMint, embeddedFeeAmount, embeddedFeeUsd,
-    feeBps, quotedFeeBps, adverseSlippageBps, netQuoteToFillAdverseBps, walletNativeCostSol, walletNativeRefundSol, walletNativeCostUsd,
+    feeBps, quotedFeeBps, adverseSlippageBps, netQuoteToFillAdverseBps, walletNativeCostSol, walletNativeRefundSol,
+    walletNativeCostUsd: nativeCostUsd, walletNativeCostUsdBasis,
+    walletNativeCostUsdValuedAt: nativeValuedAt === null ? null : new Date(nativeValuedAt).toISOString(),
     networkFeeSol, networkPaidByWalletSol, networkPaidElsewhereSol, rentEstimateSol: lamports(order.rentFeeLamports),
     rentActualSol: null, route: text(order.router), approximateCreationToCompletionMs:
       completed !== null && created !== null && completed >= created ? completed - created : null, warnings };
