@@ -39,6 +39,12 @@ export class ShadowDataCollector {
               const result = await this.deps.history.getHistory({ symbol: target.symbol, quoteSymbol: "USDC", resolution,
                 from: new Date(+now - (resolution === "5m" ? 26 : 80) * 3_600_000), to: now });
               await this.store.candles(result.candles.filter(c => c.closeTime && c.closeTime <= now));
+              const lastClose = result.candles.at(-1)?.closeTime;
+              const interval = resolution === "5m" ? 300_000 : 3_600_000;
+              if (!lastClose || +lastClose < Math.floor(+now / interval) * interval) {
+                this.deps.onError(new Error(`Pool history closed through ${lastClose?.toISOString() ?? "unknown"}; no missing candles are fabricated.`),
+                  `stale_${target.symbol}_${resolution}`);
+              }
             } catch (error) { this.deps.onError(error, `candles_${target.symbol}_${resolution}`); }
           }
         } catch (error) { this.deps.onError(error, `pool_${target.symbol}`); }
