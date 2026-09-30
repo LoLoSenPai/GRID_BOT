@@ -33,6 +33,8 @@ Toutes les 30 minutes, le collecteur compare des quotes achat puis vente `/order
 
 Les erreurs et écarts temporels sont enregistrés. `economicallyComparable` reste faux : les coûts de landing `/build` ne sont pas connus et les quotes ne sont pas des fills. Cette collecte peut révéler une piste d'économie, mais ne permet pas d'affirmer à elle seule qu'un autre chemin est moins cher ou plus rapide en réel.
 
+Les appels Jupiter sont espacés d'au moins 1,1 seconde sur l'ensemble des comparaisons du processus. La fraîcheur des bougies est signalée séparément : le pool BTC peut cesser de publier des intervalles récents, même avec `include_empty_intervals=true`. Les intervalles manquants ne sont pas fabriqués ; les captures et horizons concernés restent indisponibles ou censurés.
+
 ## Replay causal hors ligne
 
 ```bash

@@ -131,3 +131,22 @@ function mint(value: unknown): value is string { return typeof value === "string
 function label(value: unknown): string | null { return typeof value === "string" && /^[a-zA-Z0-9 _.-]{1,50}$/.test(value) ? value : null; }
 function nonnegativeInteger(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0; }
 function bps(value: unknown): number | null { return nonnegativeInteger(value) && value <= 10_000 ? value : null; }
+
+/** Share one pacer across comparisons so the independent quota also tolerates a 1 RPS tier. */
+export function createPacedShadowFetch(fetchFn: typeof fetch = fetch, intervalMs = 1_100): typeof fetch {
+  let nextStart = 0;
+  return async (input, init) => {
+    const startedAt = Math.max(Date.now(), nextStart);
+    nextStart = startedAt + intervalMs;
+    const delayMs = startedAt - Date.now();
+    if (delayMs > 0) await new Promise<void>((resolve, reject) => {
+      const finish = () => { init?.signal?.removeEventListener("abort", abort); resolve(); };
+      const timer = setTimeout(finish, delayMs);
+      const abort = () => { clearTimeout(timer); init?.signal?.removeEventListener("abort", abort);
+        reject(new Error("Shadow paced request aborted")); };
+      if (init?.signal?.aborted) abort(); else init?.signal?.addEventListener("abort", abort, { once: true });
+    });
+    init?.signal?.throwIfAborted();
+    return fetchFn(input, init);
+  };
+}

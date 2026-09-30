@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MINTS } from "@grid-bot/common";
-import { ShadowExecutionQuoteClient } from "../shadow-execution-quote-client";
+import { createPacedShadowFetch, ShadowExecutionQuoteClient } from "../shadow-execution-quote-client";
 
 const request = { baseMint: MINTS.SOL, quoteMint: MINTS.USDC, rawQuoteAmount: "100000000" };
 function response(url: string) {
@@ -13,6 +13,21 @@ function response(url: string) {
 const options = { apiKey: "dedicated-test-key", quotaIsolated: true, buildTakerPublicKey: MINTS.SOL };
 
 describe("isolated shadow quote client", () => {
+  it("paces successive comparisons on one quota rather than resetting for each bot", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-30T12:00:00Z"));
+    try {
+      const times: number[] = [];
+      const fetchFn = vi.fn(async () => { times.push(Date.now()); return {} as Response; });
+      const paced = createPacedShadowFetch(fetchFn);
+      await paced("https://api.jup.ag/one");
+      const second = paced("https://api.jup.ag/two");
+      await vi.advanceTimersByTimeAsync(1_099); expect(fetchFn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1); await second;
+      const third = paced("https://api.jup.ag/three");
+      await vi.advanceTimersByTimeAsync(1_100); await third;
+      expect(times.map((t, i) => i ? t - times[i - 1]! : 0)).toEqual([0, 1_100, 1_100]);
+    } finally { vi.useRealTimers(); }
+  });
   it("requires both a separate key and confirmed independent quota before any request", async () => {
     const fetchFn = vi.fn();
     expect((await new ShadowExecutionQuoteClient({ fetchFn }).compare(request)).status).toBe("skipped");

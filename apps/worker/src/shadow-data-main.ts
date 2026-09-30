@@ -2,10 +2,11 @@ import { logger } from "@grid-bot/common";
 import { GeckoTerminalHistoryProvider } from "@grid-bot/core";
 import { createShadowObservationClient, PrismaShadowCostRepository, type ShadowObservationClientHandle } from "@grid-bot/db";
 import { ShadowDataCollector, verifyShadowPool, type ShadowCollectionTarget } from "./shadow-data-collector";
-import { ShadowExecutionQuoteClient } from "./shadow-execution-quote-client";
+import { createPacedShadowFetch, ShadowExecutionQuoteClient } from "./shadow-execution-quote-client";
 
 export function createShadowDataCollector(handle: ShadowObservationClientHandle) {
   const client = handle.client, costs = new PrismaShadowCostRepository(client);
+  const shadowFetch = createPacedShadowFetch();
   const verified = new Map<string, number>();
   return new ShadowDataCollector({
     targets: async () => {
@@ -46,8 +47,12 @@ export function createShadowDataCollector(handle: ShadowObservationClientHandle)
     },
     compare: (target, size) => new ShadowExecutionQuoteClient({ apiKey: process.env.JUPITER_SHADOW_API_KEY,
       quotaIsolated: process.env.SHADOW_JUPITER_QUOTA_ISOLATED === "true", buildTakerPublicKey: target.publicTaker,
+      fetchFn: shadowFetch,
     }).compare({ baseMint: target.baseMint, quoteMint: target.quoteMint, rawQuoteAmount: String(Math.round(size * 1_000_000)) }),
-    onError: (error, task) => logger.warn({ error, task }, "Independent shadow data collection failed"),
+    onError: (error, task) => logger.warn({ task,
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorMessage: error instanceof Error ? error.message.slice(0, 300) : "Unknown collection failure" },
+      "Independent shadow data collection failed"),
   });
 }
 
