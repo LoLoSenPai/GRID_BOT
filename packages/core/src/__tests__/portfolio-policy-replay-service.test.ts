@@ -206,6 +206,93 @@ describe("PortfolioPolicyReplayService", () => {
     expect(() => run(gapped)).toThrow(/contiguous/);
   });
 
+  it("applies lot identities only after latency, without reusing earlier five-minute highs", () => {
+    const allocation = { ...request().allocations[0]!, bandId: "source-band", baseDecimals: 8,
+      lowPrice: 50, highPrice: 150, levelCount: 2, initialIdleQuoteUsd: 400,
+      initialLots: [{ sourceLotId: "source-lot", kind: "trading" as const, entryPrice: 90,
+        remainingBaseAmount: 1.2, costQuote: 100, exitPrice: 120, entrySpacing: 5, economicRule: "accumulate_base" as const }],
+      series: series("BTC", [100, 100]) };
+    allocation.series.candles = allocation.series.candles.map(c => ({ ...c, open: 100, high: 115, low: 100, close: 100 }));
+    const start = +allocation.series.candles[0]!.timestamp;
+    const executionSeries = { symbol: "BTC", pair: "BTC/USDC", resolution: "5m", candles: Array.from({ length: 24 }, (_, i) => ({
+      timestamp: new Date(start + i * 300_000), open: 100, high: i === 0 ? 115 : 100, low: 100, close: 100 })) };
+    const update = { sourceLotId: "source-lot", bandId: "source-band", oldTargetPrice: 120, newTargetPrice: 110,
+      remainingBaseAmount: 1.2, costQuote: 100, economicRule: "accumulate_base" as const,
+      minimumNetGainUsd: 0, minimumRetainedBaseAmount: 0.001 };
+    const input = request({ allocations: [{ ...allocation, executionSeries }], totalStartingCapitalUsd: 500,
+      adaptive: false, nativeFeeUsd: 0.01, slippageBps: 10,
+      timedIntervention: { availableAt: new Date(start + 4 * 60_000), exitUpdates: [update] } });
+    const saved = structuredClone(input), result = new PortfolioPolicyReplayService().replay(input);
+    expect(result.closedCycles).toBe(0);
+    expect(result.exitUpdates[0]!.appliedAt).toEqual(new Date(start + 300_000));
+    expect(result.endingLots[0]!.sourceLotId).toBe("source-lot");
+    expect(result.endingLots[0]!.exitPrice).toBe(110);
+    expect(input).toEqual(saved);
+    executionSeries.candles[2]!.high = 115;
+    const future = new PortfolioPolicyReplayService().replay(input);
+    expect(future.closedCycles).toBe(1);
+    expect(future.trades[0]!.timestamp.getTime()).toBeGreaterThanOrEqual(start + 600_000);
+    expect(future.trades[0]!.realizedProfitUsd).toBeGreaterThanOrEqual(0);
+    expect(future.retainedBaseByAsset.BTC).toBeGreaterThanOrEqual(0.001);
+  });
+
+  it("keeps hourly policy observations when execution candles are five-minute", () => {
+    const allocation = { ...request().allocations[0]!, series: series("BTC", [100, 100, 100]) };
+    const start = +allocation.series.candles[0]!.timestamp;
+    const executionSeries = { symbol: "BTC", pair: "BTC/USDC", resolution: "5m", candles: Array.from({ length: 36 }, (_, i) => ({
+      timestamp: new Date(start + i * 300_000), open: 100, high: 101, low: 99, close: 100 })) };
+    const observed: Date[] = [];
+    new PortfolioPolicyReplayService().replay(request({ allocations: [{ ...allocation, executionSeries }], totalStartingCapitalUsd: 500,
+      candidateSelector: ({ policyInput }) => { observed.push(policyInput.now); return "keep"; } }));
+    expect(observed.map(t => +t)).toEqual([start + 3_600_000, start + 2 * 3_600_000, start + 3 * 3_600_000]);
+    const gapped = structuredClone(executionSeries); gapped.candles.splice(1, 1);
+    expect(() => new PortfolioPolicyReplayService().replay(request({ allocations: [{ ...allocation, executionSeries: gapped }],
+      totalStartingCapitalUsd: 500 }))).toThrow(/five-minute/);
+  });
+
+  it("rejects uneconomic or mismatching exit changes rather than rewriting captured cost", () => {
+    const allocation = { ...request().allocations[0]!, bandId: "band", series: series("BTC", [100, 100]),
+      initialIdleQuoteUsd: 400, initialLots: [{ sourceLotId: "lot", kind: "trading" as const, entryPrice: 100,
+        remainingBaseAmount: 1, costQuote: 100, exitPrice: 120, entrySpacing: 5, economicRule: "accumulate_usdc" as const }] };
+    const update = { sourceLotId: "lot", bandId: "band", oldTargetPrice: 120, newTargetPrice: 101,
+      remainingBaseAmount: 1, costQuote: 100, economicRule: "accumulate_usdc" as const,
+      minimumNetGainUsd: 0.05, minimumRetainedBaseAmount: 0 };
+    const input = request({ allocations: [allocation], totalStartingCapitalUsd: 500, feeBps: 100, slippageBps: 100,
+      adaptive: false, timedIntervention: { availableAt: allocation.series.candles[0]!.timestamp, exitUpdates: [update] } });
+    expect(() => new PortfolioPolicyReplayService().replay(input)).toThrow(/economic floor/);
+    update.newTargetPrice = 110; update.costQuote = 99;
+    expect(() => new PortfolioPolicyReplayService().replay(input)).toThrow(/state mismatch/);
+  });
+
+  it("replays explicit deposits identically without counting them as realized profit", () => {
+    const input = request({ adaptive: false });
+    const flows = [{ id: "deposit", at: new Date(+input.allocations[0]!.series.candles[0]!.timestamp + 3_600_000), amountUsd: 200 }];
+    const before = new PortfolioPolicyReplayService().replay(input), after = new PortfolioPolicyReplayService().replay({ ...input, cashflows: flows });
+    expect(after.externalCashflowUsd).toBe(200); expect(after.cashflows).toEqual(flows);
+    expect(after.endingEquityUsd - before.endingEquityUsd).toBeCloseTo(200);
+    expect(after.realizedProfitUsd).toBe(before.realizedProfitUsd);
+    expect(after.initialPoint).toEqual(before.initialPoint);
+  });
+
+  it("keeps funding exposure tied to actual book capital after withdrawing realized profits", () => {
+    const allocation = { ...request().allocations[1]!, bandId: "sol-band", lowPrice: 50, highPrice: 90,
+      levelCount: 2, initialStatus: "parked" as const, initialIdleQuoteUsd: 400,
+      initialLots: [{ kind: "trading" as const, entryPrice: 50, remainingBaseAmount: 2, costQuote: 100,
+        exitPrice: 60, entrySpacing: 40, economicRule: "accumulate_usdc" as const }], series: series("SOL", [80, 80]) };
+    const start = +allocation.series.candles[0]!.timestamp;
+    const create: PortfolioPolicyDecision = { action: "create_band", reason: "Fund from post-withdrawal reserve",
+      nextLowPrice: null, nextHighPrice: null, nextLevelCount: null, nextSpacing: null,
+      protectedLowPrice: null, protectedHighPrice: null,
+      candidate: { lowPrice: 50, highPrice: 60, levelCount: 2, spacing: 10, requestedCapitalUsd: 5 } };
+    const result = new PortfolioPolicyReplayService().replay(request({ allocations: [allocation], totalStartingCapitalUsd: 500,
+      adaptive: false, cashflows: [{ id: "withdraw-profit", at: new Date(start + 3_600_000), amountUsd: -50 }],
+      timedIntervention: { availableAt: new Date(start + 3_600_000), grid: { bandId: "sol-band", decision: create } } }));
+    expect(result.externalCashflowUsd).toBe(-50);
+    expect(result.endingBands).toHaveLength(2);
+    expect(result.endingBands[1]!.allocatedCapitalUsd).toBe(5);
+    expect(result.realizedProfitUsd).toBeGreaterThan(50);
+  });
+
   it("rejects unaccounted initial capital and future warmup instead of silently dropping them", () => {
     const allocation = { ...request().allocations[0]!, initialIdleQuoteUsd: 490, series: series("BTC", [100, 100]) };
     const input = request({ allocations: [allocation], totalStartingCapitalUsd: 500, adaptive: false });

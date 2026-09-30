@@ -6,6 +6,20 @@ datasource db {
   provider = "postgresql"
 }
 
+// Immutable prospective quote evidence; no authorization or instructions belong here.
+model ShadowQuoteComparison {
+  id          String   @id @default(cuid())
+  contentHash String   @unique @map("content_hash")
+  portfolioId String   @map("portfolio_id")
+  botId       String   @map("bot_id")
+  capturedAt  DateTime @map("captured_at")
+  payload     Json
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([portfolioId, botId, capturedAt(sort: Desc)])
+  @@map("shadow_quote_comparisons")
+}
+
 enum BotStatus {
   running
   paused

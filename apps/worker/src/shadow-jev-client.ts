@@ -7,6 +7,7 @@ import {
 } from "./shadow-jev-questions";
 import type { ShadowJevV2Request } from "./shadow-jev-v2-questions";
 import type { ShadowJevV3Request } from "./shadow-jev-v3-questions";
+import type { ShadowJevV4Request } from "./shadow-jev-v4-questions";
 
 const DEFAULT_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -16,7 +17,7 @@ export interface JevClientRequestOptions {
 }
 
 export interface JevClient {
-  evaluate(request: ShadowJevRequest | ShadowJevV2Request | ShadowJevV3Request, options?: JevClientRequestOptions): Promise<unknown>;
+  evaluate(request: ShadowJevRequest | ShadowJevV2Request | ShadowJevV3Request | ShadowJevV4Request, options?: JevClientRequestOptions): Promise<unknown>;
 }
 
 export interface HttpJevClientOptions {
@@ -93,7 +94,7 @@ export class HttpJevClient implements JevClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  async evaluate(request: ShadowJevRequest | ShadowJevV2Request | ShadowJevV3Request, options: JevClientRequestOptions = {}): Promise<unknown> {
+  async evaluate(request: ShadowJevRequest | ShadowJevV2Request | ShadowJevV3Request | ShadowJevV4Request, options: JevClientRequestOptions = {}): Promise<unknown> {
     const response = await this.fetchImpl(this.endpoint, {
       method: "POST",
       headers: {

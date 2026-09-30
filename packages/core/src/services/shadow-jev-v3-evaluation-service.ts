@@ -53,7 +53,7 @@ export class ShadowJevV3EvaluationService {
         ({ assetSymbol, baseMint, quoteMint, provider, sourceMarket, inputId })),
     };
     try {
-      const { allocations, freeCashUsd, totalStartingCapitalUsd, minOrderQuoteUsd, parameters, decisions, t0 } = prepare(input);
+      const { allocations, freeCashUsd, totalStartingCapitalUsd, minOrderQuoteUsd, parameters, decisions, t0 } = prepareShadowJevV3Replay(input);
       for (const hours of HORIZONS) {
         try {
           const ready = allocations.map(allocation => {
@@ -63,7 +63,7 @@ export class ShadowJevV3EvaluationService {
               `FUTURE_COVERAGE:${allocation.assetSymbol}:${hours}h`);
             return { ...allocation, series: { ...allocation.series, candles: future } };
           });
-          const run = (decision: PortfolioPolicyDecision, candidateId: string) => metrics(this.replay.replay({
+          const run = (decision: PortfolioPolicyDecision, candidateId: string) => shadowReplayMetrics(this.replay.replay({
             allocations: ready, totalStartingCapitalUsd, freeCashUsd, policyParameters: parameters,
             feeBps: input.feeBps, slippageBps: input.slippageBps, nativeFeeUsd: input.nativeFeeUsd,
             candleIntervalMs: HOUR, minOrderQuoteUsd, adaptive: true,
@@ -88,7 +88,7 @@ export class ShadowJevV3EvaluationService {
   }
 }
 
-function prepare(input: ShadowJevV3EvaluationRequest) {
+export function prepareShadowJevV3Replay(input: ShadowJevV3EvaluationRequest) {
   const t0 = time(input.observation.observedAt, "observedAt");
   requireState(t0 % HOUR === 0, "UNALIGNED_OBSERVATION");
   const context = record(input.observation.context, "context");
@@ -199,7 +199,7 @@ function prepare(input: ShadowJevV3EvaluationRequest) {
           requireState(commitment.economicRule === "accumulate_base" || commitment.economicRule === "accumulate_usdc", "UNSUPPORTED_EXIT_RULE");
           economicRule = commitment.economicRule;
         }
-        return { kind: lot.kind, entryPrice, remainingBaseAmount: number(lot.remainingBaseAmount, "remainingBaseAmount"),
+        return { sourceLotId: string(lot.id, "lot.id"), kind: lot.kind, entryPrice, remainingBaseAmount: number(lot.remainingBaseAmount, "remainingBaseAmount"),
           costQuote: number(lot.costQuote, "costQuote"), exitPrice, entrySpacing, economicRule };
       });
       requireState(commitments.length === initialLots.filter(lot => lot.kind === "trading").length, "ORPHAN_EXIT_COMMITMENT");
@@ -268,7 +268,7 @@ function prepare(input: ShadowJevV3EvaluationRequest) {
     decisions: { keep: keepDecision, policy: policyDecision, jev: jevDecision } };
 }
 
-function metrics(result: PortfolioPolicyReplayResult): ShadowJevV3Metrics {
+export function shadowReplayMetrics(result: PortfolioPolicyReplayResult): ShadowJevV3Metrics {
   const last = result.points.at(-1)!;
   const baseAmountByAsset: Record<string, number> = {}, realizedUsdcByAsset: Record<string, number> = {};
   for (const lot of result.endingLots) baseAmountByAsset[lot.assetSymbol] = (baseAmountByAsset[lot.assetSymbol] ?? 0) + lot.remainingBaseAmount;
