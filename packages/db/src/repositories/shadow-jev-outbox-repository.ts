@@ -21,6 +21,7 @@ export interface ShadowJevClaim {
     marketMeta: unknown;
     proposedDecision: unknown;
     candidateSet?: unknown;
+    fineMarketSnapshot?: { candles: unknown; candleCount: number; provenance: unknown };
     marketSnapshot: {
       id: string;
       contentHash: string;
@@ -124,7 +125,7 @@ export class PrismaShadowJevOutboxRepository {
       orderBy: [{ observedAt: "asc" }, { id: "asc" }],
       include: { observation: { include: { snapshot: true } } },
     });
-    return rows.map((row) => ({
+    return Promise.all(rows.map(async (row) => ({
       jobId: row.id,
       attemptCount: row.attemptCount,
       leaseExpiresAt: row.leaseExpiresAt!,
@@ -143,6 +144,7 @@ export class PrismaShadowJevOutboxRepository {
         marketMeta: row.observation.marketMeta,
         proposedDecision: row.observation.proposedDecision,
         candidateSet: row.observation.candidateSet,
+        fineMarketSnapshot: await this.readFineSnapshot(row.observation.context),
         marketSnapshot: {
           id: row.observation.snapshot.id,
           contentHash: row.observation.snapshot.contentHash,
@@ -152,7 +154,16 @@ export class PrismaShadowJevOutboxRepository {
           observedAt: row.observation.snapshot.observedAt,
         },
       },
-    }));
+    })));
+  }
+
+  private async readFineSnapshot(context: unknown) {
+    const data = context as { shadowFineMarket?: { snapshotId?: string; contentHash?: string } } | null;
+    const reference = data?.shadowFineMarket;
+    if (!reference?.snapshotId) return undefined;
+    const snapshot = await this.client.shadowMarketSnapshot.findUniqueOrThrow({ where: { id: reference.snapshotId } });
+    if (snapshot.contentHash !== reference.contentHash) throw new Error("Fine snapshot reference hash mismatch.");
+    return { candles: snapshot.candles, candleCount: snapshot.candleCount, provenance: snapshot.provenance };
   }
 
   async complete(input: CompleteShadowJevJobInput): Promise<void> {

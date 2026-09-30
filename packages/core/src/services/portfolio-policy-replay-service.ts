@@ -4,10 +4,20 @@ import { blocksDuplicateEntry } from "./portfolio-policy-service";
 import { evaluatePortfolioPolicy, type PortfolioPolicyDecision, type PortfolioPolicyInput, type PortfolioPolicyParameters, type PolicyBandState, type PolicyCandle } from "./portfolio-policy-service";
 import { buildShadowGridCandidates, type ShadowGridCandidate, type ShadowGridCandidateSet } from "./shadow-grid-candidate-service";
 
-export interface PortfolioReplayInitialLot { kind: "trading" | "retained"; entryPrice: number;
+export interface PortfolioReplayInitialLot { sourceLotId?: string; kind: "trading" | "retained"; entryPrice: number;
   remainingBaseAmount: number; costQuote: number; exitPrice: number; entrySpacing: number;
   economicRule?: "accumulate_base" | "accumulate_usdc"; }
+export interface ShadowReplayExitUpdate { sourceLotId: string; bandId: string; oldTargetPrice: number;
+  newTargetPrice: number; costQuote: number; remainingBaseAmount: number;
+  economicRule: "accumulate_base" | "accumulate_usdc"; minimumNetGainUsd: number; minimumRetainedBaseAmount: number; }
+export interface PortfolioReplayTimedIntervention { availableAt: Date;
+  grid?: { bandId: string; decision: PortfolioPolicyDecision; candidateId?: string }; exitUpdates?: ShadowReplayExitUpdate[]; }
+export interface PortfolioReplayCashflow { at: Date; amountUsd: number; id: string; }
+export interface PortfolioReplayExecutionCosts { feeBps: number; slippageBps: number; nativeFeeUsd: number;
+  notionalBucket?: { minUsd: number; maxUsd: number }; }
 export interface PortfolioReplayAllocation { assetSymbol: string; series: BacktestMarketSeries;
+  /** Optional five-minute fills; policy observations still follow the hourly series. */
+  executionSeries?: BacktestMarketSeries;
   bandId?: string; baseMint?: string; quoteMint?: string; baseDecimals?: number;
   initialPreviousPrice?: number; initialRealizedLossUsd?: number;
   warmupCandles?: HistoricalCandle[]; initialBudgetUsd: number; initialIdleQuoteUsd?: number;
@@ -21,7 +31,10 @@ export interface PortfolioReplayInitialIntervention { bandId: string; observedAt
   decision: PortfolioPolicyDecision; candidateId?: string; }
 export interface PortfolioPolicyReplayRequest { allocations: PortfolioReplayAllocation[]; totalStartingCapitalUsd: number; freeCashUsd?: number; policyParameters: PortfolioPolicyParameters; feeBps: number; slippageBps?: number; minOrderQuoteUsd?: number; candleIntervalMs?: number; adaptive?: boolean; nativeFeeUsd?: number; candidateSelector?: PortfolioReplayCandidateSelector;
   /** Apply this recorded decision once at t0, before processing future candles. */
-  initialIntervention?: PortfolioReplayInitialIntervention; }
+  initialIntervention?: PortfolioReplayInitialIntervention;
+  /** Apply once at the first candle open at or after availability, never to an earlier OHLC path. */
+  timedIntervention?: PortfolioReplayTimedIntervention; executionCostsByAsset?: Record<string, PortfolioReplayExecutionCosts>;
+  cashflows?: PortfolioReplayCashflow[]; }
 export interface PortfolioReplayPoint { timestamp: Date; priceByAsset: Record<string, number>; equityUsd: number; cashUsd: number;
   /** Remaining lot cost basis, not transaction fees. */
   tradingCostUsd: number; retainedBaseByAsset: Record<string, number>; openTradingLots: number; closedCycles: number;
@@ -33,11 +46,14 @@ export interface PortfolioReplayTrade { timestamp: Date; assetSymbol: string; ba
 export interface PortfolioPolicyReplayResult { initialPoint: PortfolioReplayPoint; points: PortfolioReplayPoint[]; actions: PortfolioReplayAction[]; trades: PortfolioReplayTrade[];
   endingEquityUsd: number; endingCashUsd: number; endingTradingCostUsd: number; retainedBaseByAsset: Record<string, number>; closedCycles: number; policyParameters: PortfolioPolicyParameters;
   feesUsd: number; slippageCostUsd: number; roundingCostUsd: number; realizedProfitUsd: number;
+  exitUpdates: Array<ShadowReplayExitUpdate & { appliedAt: Date; status: "applied" | "already_closed" }>;
+  cashflows: PortfolioReplayCashflow[]; externalCashflowUsd: number;
   endingLots: Array<PortfolioReplayInitialLot & { id: number; bandId: string; assetSymbol: string }>;
   endingBands: Array<{ bandId: string; assetSymbol: string; lowPrice: number; highPrice: number; levelCount: number;
     status: "active" | "parked"; allocatedCapitalUsd: number; idleQuoteUsd: number }>; }
 
-type Lot = PortfolioReplayInitialLot & { id: number; bandId: string; assetSymbol: string; economicRule: PortfolioReplayAllocation["strategy"] };
+type Lot = PortfolioReplayInitialLot & { id: number; bandId: string; assetSymbol: string; economicRule: PortfolioReplayAllocation["strategy"];
+  minimumNetGainUsd?: number; minimumRetainedBaseAmount?: number };
 type Band = PolicyBandState & { assetSymbol: string; strategy: PortfolioReplayAllocation["strategy"]; previousPrice: number | null; baseDecimals: number };
 
 /** OHLC paths are synthetic. This validates causal accounting/policy, not intrabar execution quality. */
@@ -59,6 +75,13 @@ export class PortfolioPolicyReplayService {
     let closedCycles = 0;
     const fee = request.feeBps / 10_000, slip = (request.slippageBps ?? 0) / 10_000;
     const nativeFee = request.nativeFeeUsd ?? 0;
+    const costsFor = (asset: string, notional?: number) => {
+      const costs = request.executionCostsByAsset?.[asset];
+      const bucket = costs?.notionalBucket;
+      return costs && (!bucket || (notional !== undefined && notional >= bucket.minUsd && notional < bucket.maxUsd))
+        ? { fee: costs.feeBps / 10_000, slip: costs.slippageBps / 10_000, nativeFee: costs.nativeFeeUsd }
+        : { fee, slip, nativeFee };
+    };
     const bands: Band[] = request.allocations.map((a, i) => ({ id: a.bandId ?? `${a.assetSymbol}:${i}`, assetSymbol: a.assetSymbol,
       strategy: a.strategy, lowPrice: a.lowPrice, highPrice: a.highPrice, levelCount: a.levelCount,
       spacing: (a.highPrice - a.lowPrice) / (a.levelCount - 1), status: a.initialStatus ?? "active",
@@ -73,14 +96,19 @@ export class PortfolioPolicyReplayService {
     lots.forEach((lot, index) => { lot.id = index; });
     const actions: PortfolioReplayAction[] = [], points: PortfolioReplayPoint[] = [];
     const trades: PortfolioReplayTrade[] = [];
+    const exitUpdates: PortfolioPolicyReplayResult["exitUpdates"] = [];
+    const appliedCashflows: PortfolioReplayCashflow[] = [];
+    let externalCashflowUsd = 0, interventionApplied = false;
+    const pendingCashflows = [...(request.cashflows ?? [])].sort((a, b) => +a.at - +b.at);
     let feesUsd = 0, slippageCostUsd = 0, roundingCostUsd = 0, realizedProfitUsd = 0;
     const prices: Record<string, number> = Object.fromEntries(markets.map(a => [a.assetSymbol, a.series.candles[0]!.open]));
     const closed: Record<string, PolicyCandle[]> = Object.fromEntries(markets.map(a => [a.assetSymbol, (a.warmupCandles ?? []).map(c => ({ openedAt: c.timestamp, closedAt: new Date(+c.timestamp + interval), open: c.open, high: c.high, low: c.low, close: c.close }))]));
     type Event = { time: number; phase: number; asset: string; price: number; candle?: HistoricalCandle };
-    const events: Event[] = markets.flatMap(a => a.series.candles.flatMap(c => [
-      ...this.path.buildIntrabougiePath(c, interval).map((t, i) => ({ time: +t.timestamp, phase: i === 0 ? 2 : 0, asset: a.assetSymbol, price: t.price })),
-      { time: +c.timestamp + interval, phase: 1, asset: a.assetSymbol, price: c.close, candle: c },
-    ]));
+    const events: Event[] = markets.flatMap(a => [
+      ...(a.executionSeries ?? a.series).candles.flatMap(c => this.path.buildIntrabougiePath(c, a.executionSeries ? 300_000 : interval)
+        .map((t, i) => ({ time: +t.timestamp, phase: i === 0 ? 2 : 0, asset: a.assetSymbol, price: t.price }))),
+      ...a.series.candles.map(c => ({ time: +c.timestamp + interval, phase: 1, asset: a.assetSymbol, price: c.close, candle: c })),
+    ]);
     events.sort((a, b) => a.time - b.time || a.phase - b.phase || a.asset.localeCompare(b.asset));
     const totalCash = () => freeCash + bands.reduce((s, b) => s + b.idleQuoteUsd, 0);
     const attributions = (asset: string) => bands.filter(b => b.assetSymbol === asset).reduce((s, b) => s + b.allocatedCapitalUsd, 0);
@@ -112,7 +140,8 @@ export class PortfolioPolicyReplayService {
         const least = markets.map(a => a.assetSymbol).sort((a, b) => attributions(a) - attributions(b) || a.localeCompare(b))[0];
         if (least !== band.assetSymbol || candidate.requestedCapitalUsd > freeCash ||
           bands.filter(b => b.assetSymbol === band.assetSymbol).length >= request.policyParameters.maxBands ||
-          (attributions(band.assetSymbol) + candidate.requestedCapitalUsd) / request.totalStartingCapitalUsd * 100 > request.policyParameters.maxExposurePct) {
+          (attributions(band.assetSymbol) + candidate.requestedCapitalUsd) / (request.cashflows?.length
+            ? freeCash + bands.reduce((sum, b) => sum + b.allocatedCapitalUsd, 0) : request.totalStartingCapitalUsd) * 100 > request.policyParameters.maxExposurePct) {
           if (strict) throw new Error("Initial intervention cannot fund or admit the new band.");
           return false;
         }
@@ -138,18 +167,63 @@ export class PortfolioPolicyReplayService {
     }
     for (const [eventIndex, event] of events.entries()) {
       const now = new Date(event.time);
+      while (pendingCashflows.length && +pendingCashflows[0]!.at <= event.time) {
+        const flow = pendingCashflows.shift()!;
+        if (freeCash + flow.amountUsd < -1e-8) throw new Error("Cashflow withdrawal exceeds available portfolio cash.");
+        freeCash += flow.amountUsd; externalCashflowUsd += flow.amountUsd; appliedCashflows.push(flow);
+      }
+      // Wait until a fresh candle open. The highs/lows of a candle already underway are never reused.
+      if (!interventionApplied && request.timedIntervention && event.phase === 2 &&
+        event.time >= +request.timedIntervention.availableAt) {
+        const intervention = request.timedIntervention;
+        for (const update of intervention.exitUpdates ?? []) {
+          const lot = lots.find(l => l.sourceLotId === update.sourceLotId && l.bandId === update.bandId);
+          if (!lot) throw new Error("Exit intervention source lot is absent.");
+          if (lot.kind !== "trading" || lot.remainingBaseAmount === 0) {
+            exitUpdates.push({ ...update, appliedAt: now, status: "already_closed" }); continue;
+          }
+          if (lot.exitPrice !== update.oldTargetPrice || lot.costQuote !== update.costQuote ||
+            lot.remainingBaseAmount !== update.remainingBaseAmount || lot.economicRule !== update.economicRule) {
+            throw new Error("Exit intervention lot state mismatch.");
+          }
+          const band = bands.find(b => b.id === lot.bandId)!;
+          const modeledNotional = lot.economicRule === "accumulate_base" ? lot.costQuote : lot.remainingBaseAmount * update.newTargetPrice;
+          const { fee: exitFee, slip: exitSlip, nativeFee: exitNativeFee } = costsFor(lot.assetSymbol, modeledNotional);
+          const netUnit = update.newTargetPrice * (1 - exitSlip) * (1 - exitFee), scale = 10 ** band.baseDecimals;
+          const sold = update.economicRule === "accumulate_base"
+            ? Math.ceil((lot.costQuote + exitNativeFee) / netUnit * scale) / scale : lot.remainingBaseAmount;
+          if (sold > lot.remainingBaseAmount || sold * netUnit - exitNativeFee + 1e-9 < lot.costQuote + update.minimumNetGainUsd ||
+            lot.remainingBaseAmount - sold + 1e-12 < update.minimumRetainedBaseAmount) {
+            throw new Error("Exit intervention fails economic floor.");
+          }
+          lot.exitPrice = update.newTargetPrice;
+          lot.minimumNetGainUsd = update.minimumNetGainUsd; lot.minimumRetainedBaseAmount = update.minimumRetainedBaseAmount;
+          exitUpdates.push({ ...update, appliedAt: now, status: "applied" });
+        }
+        if (intervention.grid) {
+          const grid = intervention.grid, band = bands.find(b => b.id === grid.bandId);
+          if (!band) throw new Error("Timed grid intervention target band is absent.");
+          applyDecision(band, grid.decision, now, true);
+          actions.push({ timestamp: now, assetSymbol: band.assetSymbol, bandId: band.id,
+            action: grid.decision.action, reason: grid.decision.reason, candidateId: grid.candidateId });
+        }
+        interventionApplied = true;
+      }
       prices[event.asset] = event.price;
       if (!event.candle) {
         // Lot ownership and target never depend on the current entry-grid revision.
         for (const lot of lots.filter(l => l.assetSymbol === event.asset && l.kind !== "retained" && l.remainingBaseAmount > 0)) {
           if (event.price < lot.exitPrice) continue;
           const band = bands.find(b => b.id === lot.bandId)!;
+          const { fee, slip, nativeFee } = costsFor(event.asset, lot.economicRule === "accumulate_base"
+            ? lot.costQuote : lot.remainingBaseAmount * event.price);
           const netUnit = event.price * (1 - slip) * (1 - fee);
           const scale = 10 ** band.baseDecimals;
           const sold = lot.economicRule === "accumulate_base" ? Math.ceil((lot.costQuote + nativeFee) / netUnit * scale) / scale : lot.remainingBaseAmount;
-          if (sold > lot.remainingBaseAmount || (lot.economicRule === "accumulate_base" && lot.remainingBaseAmount - sold < 1 / scale)) continue;
+          if (sold > lot.remainingBaseAmount || (lot.economicRule === "accumulate_base" && lot.remainingBaseAmount - sold + 1e-12 <
+            (lot.minimumRetainedBaseAmount ?? 1 / scale))) continue;
           const net = sold * netUnit - nativeFee;
-          if (net + 1e-9 < lot.costQuote) continue;
+          if (net + 1e-9 < lot.costQuote + (lot.minimumNetGainUsd ?? 0)) continue;
           recordTrade({ timestamp: now, assetSymbol: event.asset, bandId: band.id, lotId: lot.id, side: "sell",
             baseAmount: sold, quoteAmount: net, marketPrice: event.price, executionPrice: event.price * (1 - slip),
             feesUsd: sold * event.price * (1 - slip) * fee + nativeFee,
@@ -172,6 +246,7 @@ export class PortfolioPolicyReplayService {
               currentPrice: rail, widerSpacing: Math.max(band.spacing, l.entrySpacing),
               openTradingLot: l.kind !== "retained" && l.remainingBaseAmount > 0 }))) continue;
             const spend = Math.max(request.minOrderQuoteUsd ?? 0, band.allocatedCapitalUsd / (band.levelCount - 1));
+            const { fee, slip, nativeFee } = costsFor(event.asset, spend);
             if (spend > band.idleQuoteUsd + 1e-9 || spend <= nativeFee) continue;
             const scale = 10 ** band.baseDecimals;
             const base = Math.floor((spend - nativeFee) * (1 - fee) / (event.price * (1 + slip)) * scale) / scale;
@@ -197,7 +272,8 @@ export class PortfolioPolicyReplayService {
               band: { ...band, revisionsToday: sameDay ? band.revisionsToday : 0, openTradingLots: assetLots },
               bandCount: bands.filter(b => b.assetSymbol === event.asset).length, assetAttributedCapitalUsd: attributions(event.asset),
               candles: closed[event.asset]!.slice(-80), candleIntervalMs: interval, maxCandleAgeMs: interval * 2,
-              availableCashUsd: freeCash, totalPortfolioCapitalUsd: request.totalStartingCapitalUsd,
+              availableCashUsd: freeCash, totalPortfolioCapitalUsd: request.cashflows?.length
+                ? freeCash + bands.reduce((sum, b) => sum + b.allocatedCapitalUsd, 0) : request.totalStartingCapitalUsd,
               parameters: request.policyParameters };
             const decision = evaluatePortfolioPolicy(policyInput);
             let appliedDecision = decision;
@@ -230,6 +306,7 @@ export class PortfolioPolicyReplayService {
     return { initialPoint, points, actions, trades, endingCashUsd: totalCash(), endingEquityUsd: last?.equityUsd ?? totalCash(),
       endingTradingCostUsd: last?.tradingCostUsd ?? 0, retainedBaseByAsset: last?.retainedBaseByAsset ?? {},
       closedCycles, policyParameters: { ...request.policyParameters }, feesUsd, slippageCostUsd, roundingCostUsd, realizedProfitUsd,
+      exitUpdates, cashflows: appliedCashflows, externalCashflowUsd,
       endingLots: lots.map(lot => ({ ...lot })),
       endingBands: bands.map(band => ({ bandId: band.id, assetSymbol: band.assetSymbol,
         lowPrice: band.lowPrice, highPrice: band.highPrice, levelCount: band.levelCount, status: band.status,
@@ -246,6 +323,21 @@ function validateRequest(r: PortfolioPolicyReplayRequest) {
   if (ids.some(id => !id.trim()) || new Set(ids).size !== ids.length) throw new Error("Band IDs must be unique.");
   if (r.initialIntervention && (!(r.initialIntervention.observedAt instanceof Date) ||
     !Number.isFinite(+r.initialIntervention.observedAt))) throw new Error("Invalid initial intervention time.");
+  if (r.timedIntervention && (!(r.timedIntervention.availableAt instanceof Date) || !Number.isFinite(+r.timedIntervention.availableAt) ||
+    +r.timedIntervention.availableAt < +r.allocations[0]!.series.candles[0]!.timestamp)) throw new Error("Invalid timed intervention availability.");
+  const updates = r.timedIntervention?.exitUpdates ?? [];
+  if (new Set(updates.map(u => `${u.bandId}:${u.sourceLotId}`)).size !== updates.length || updates.some(u =>
+    !u.bandId.trim() || !u.sourceLotId.trim() || ![u.oldTargetPrice, u.newTargetPrice, u.costQuote, u.remainingBaseAmount,
+      u.minimumNetGainUsd, u.minimumRetainedBaseAmount].every(v => Number.isFinite(v) && v >= 0) ||
+    u.oldTargetPrice <= 0 || u.newTargetPrice <= 0 || u.costQuote <= 0 || u.remainingBaseAmount <= 0 ||
+    !["accumulate_base", "accumulate_usdc"].includes(u.economicRule))) throw new Error("Invalid exit intervention.");
+  for (const costs of Object.values(r.executionCostsByAsset ?? {})) if (![costs.feeBps, costs.slippageBps, costs.nativeFeeUsd]
+    .every(v => Number.isFinite(v) && v >= 0) || costs.feeBps >= 10_000 || costs.slippageBps >= 10_000 ||
+    (costs.notionalBucket && (!Number.isFinite(costs.notionalBucket.minUsd) || costs.notionalBucket.minUsd < 0 ||
+      !Number.isFinite(costs.notionalBucket.maxUsd) || costs.notionalBucket.maxUsd <= costs.notionalBucket.minUsd))) throw new Error("Invalid asset costs.");
+  if (new Set((r.cashflows ?? []).map(f => f.id)).size !== (r.cashflows ?? []).length || (r.cashflows ?? []).some(f =>
+    !f.id.trim() || !(f.at instanceof Date) || !Number.isFinite(+f.at) || !Number.isFinite(f.amountUsd) ||
+    +f.at < +r.allocations[0]!.series.candles[0]!.timestamp)) throw new Error("Invalid cashflow.");
   for (const a of r.allocations) {
     if (!Number.isFinite(a.initialBudgetUsd) || a.initialBudgetUsd < 0 || !Number.isInteger(a.levelCount) || a.levelCount < 2 ||
       !Number.isFinite(a.lowPrice) || !Number.isFinite(a.highPrice) || a.lowPrice <= 0 || a.highPrice <= a.lowPrice || !a.series.candles.length) throw new Error("Invalid allocation.");
@@ -278,6 +370,8 @@ function validateRequest(r: PortfolioPolicyReplayRequest) {
       (lot.economicRule !== undefined && lot.economicRule !== "accumulate_base" && lot.economicRule !== "accumulate_usdc") ||
       (lot.kind === "retained" && lot.costQuote !== 0) ||
       (lot.kind === "trading" && lot.costQuote <= 0))) throw new Error("Invalid initial lot.");
+    const sourceIds = (a.initialLots ?? []).flatMap(l => l.sourceLotId === undefined ? [] : [l.sourceLotId]);
+    if (sourceIds.some(id => !id.trim()) || new Set(sourceIds).size !== sourceIds.length) throw new Error("Invalid source lot identities.");
     const seededBookCapital = (a.initialIdleQuoteUsd ?? a.initialBudgetUsd) +
       (a.initialLots ?? []).reduce((sum, lot) => sum + lot.costQuote, 0);
     if (Math.abs(seededBookCapital + (a.initialRealizedLossUsd ?? 0) - a.initialBudgetUsd) > 1e-8) {
@@ -302,6 +396,17 @@ function validateTimelines(request: PortfolioPolicyReplayRequest, interval: numb
       throw new Error("Replay assets require the same contiguous candle timeline.");
     }
     const warmup = allocation.warmupCandles ?? [];
+    if (!!allocation.executionSeries !== !!first.executionSeries) throw new Error("Execution candle coverage must be shared by every asset.");
+    if (allocation.executionSeries) {
+      const execution = allocation.executionSeries, finer = execution.candles;
+      if (interval !== 3_600_000 || execution.symbol !== allocation.assetSymbol || execution.pair !== allocation.series.pair ||
+        finer.length !== candles.length * 12 || finer.some((c, i) => !(c.timestamp instanceof Date) ||
+          +c.timestamp !== +candles[0]!.timestamp + i * 300_000 ||
+          ![c.open, c.high, c.low, c.close].every(v => Number.isFinite(v) && v > 0) ||
+          c.high < Math.max(c.open, c.close) || c.low > Math.min(c.open, c.close))) {
+        throw new Error("Execution candles require a complete contiguous five-minute timeline within hourly policy candles.");
+      }
+    }
     if (warmup.some((c, i) => !(c.timestamp instanceof Date) || !Number.isFinite(+c.timestamp) ||
       +c.timestamp + interval > +candles[0]!.timestamp ||
       (i > 0 && +c.timestamp - +warmup[i - 1]!.timestamp !== interval) ||
@@ -315,6 +420,8 @@ function validateTimelines(request: PortfolioPolicyReplayRequest, interval: numb
       (peer.baseDecimals ?? 8) !== (allocation.baseDecimals ?? 8) || peer.series.pair !== allocation.series.pair ||
       peer.series.resolution !== allocation.series.resolution ||
       peer.series.candles.some((c, i) => !sameCandle(c, candles[i]!)) ||
+      (peer.executionSeries?.candles ?? []).some((c, i) => !allocation.executionSeries?.candles[i] ||
+        !sameCandle(c, allocation.executionSeries.candles[i]!)) ||
       (peer.warmupCandles?.length ?? 0) !== warmup.length ||
       (peer.warmupCandles ?? []).some((c, i) => !sameCandle(c, warmup[i]!)))) {
       throw new Error("Bands of the same asset must share identical market data, mint and precision.");

@@ -133,5 +133,22 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  shadow-data:
+    profiles: ["shadow"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["pnpm", "--filter", "@grid-bot/worker", "shadow:data"]
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   postgres_data:

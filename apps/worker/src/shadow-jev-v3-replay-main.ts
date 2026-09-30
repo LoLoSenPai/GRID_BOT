@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { GECKOTERMINAL_POOLS, MINTS } from "@grid-bot/common";
-import { ShadowJevV3EvaluationService, type HistoricalCandle } from "@grid-bot/core";
+import { ShadowJevV3EvaluationService, type HistoricalCandle, type ShadowJevV3EvaluationRequest } from "@grid-bot/core";
 import { createShadowObservationClient, type ShadowObservationClientHandle } from "@grid-bot/db";
 
 const HOUR_MS = 3_600_000;
@@ -20,7 +20,7 @@ interface ReplayOutput {
 
 /** Reads the immutable observation and cached candles only. No market or Jev client is constructed. */
 export async function evaluateStoredShadowV3(client: ReadClient, observationId: string,
-  nativeFeeUsd: number): Promise<ReplayOutput> {
+  nativeFeeUsd: number, onPrepared?: (input: ShadowJevV3EvaluationRequest) => void): Promise<ReplayOutput> {
   const observation = await client.shadowJevObservation.findUnique({
     where: { id: observationId }, include: { snapshot: true, outbox: true },
   });
@@ -123,11 +123,13 @@ export async function evaluateStoredShadowV3(client: ReadClient, observationId: 
     nativeFeeSource: "explicit_cli_estimate_per_trade" };
   provenance.mintEvidence = "Portfolio bot/strategy mints checked against configured Solana mints; cache rows do not attest pool token mints.";
   try {
-    const evaluation = new ShadowJevV3EvaluationService().evaluate({ observation: {
+    const replayInput: ShadowJevV3EvaluationRequest = { observation: {
       observedAt: observation.observedAt, bandId: observation.bandId, context: observation.context,
       candidateSet: observation.candidateSet, proposedDecision: observation.proposedDecision,
       policyInput: observation.policyInput,
-    }, selectedCandidateId, markets, feeBps, slippageBps, nativeFeeUsd });
+    }, selectedCandidateId, markets, feeBps, slippageBps, nativeFeeUsd };
+    onPrepared?.(replayInput);
+    const evaluation = new ShadowJevV3EvaluationService().evaluate(replayInput);
     return { observationId, status: evaluation.status, reasons: evaluation.reasons, provenance, evaluation };
   } catch (error) {
     return censor(`replay_invalid:${error instanceof Error ? error.message : "unknown"}`);

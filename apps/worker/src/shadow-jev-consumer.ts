@@ -4,7 +4,9 @@ import type {
   FailShadowJevJobInput,
   ShadowJevClaim,
 } from "@grid-bot/db";
-import type { PortfolioPolicyInput, ShadowGridCandidateSet } from "@grid-bot/core";
+import type { PortfolioPolicyInput, ShadowGridCandidateSet, ShadowDecisionCandidateSet } from "@grid-bot/core";
+import { buildJevV4Request, v4QuestionSetVersion, v4ModelRequested, type ShadowJevV4Request } from "./shadow-jev-v4-questions";
+import { evaluateJevV4 } from "./shadow-jev-v4-client";
 
 import { evaluateJev, type JevClient, type ShadowJevEvaluation } from "./shadow-jev-client";
 import { buildJevRequest, modelRequested, questionSetVersion, type ShadowJevRequest } from "./shadow-jev-questions";
@@ -38,7 +40,7 @@ export class ShadowJevConsumer {
   }
 
   private async processClaim(job: ShadowJevClaim): Promise<void> {
-    let request: ShadowJevRequest | ShadowJevV2Request | ShadowJevV3Request | undefined;
+    let request: ShadowJevRequest | ShadowJevV2Request | ShadowJevV3Request | ShadowJevV4Request | undefined;
     const startedAt = performance.now();
     try {
       if (job.questionSetVersion === questionSetVersion && job.modelRequested === modelRequested) {
@@ -84,6 +86,22 @@ export class ShadowJevConsumer {
             probabilities: candidateProbabilities, option_probabilities: result.probabilities,
             confidence: result.confidence } },
           modelVersion: result.modelResolved, latencyMs: elapsedMs(startedAt) });
+      } else if (job.questionSetVersion === v4QuestionSetVersion && job.modelRequested === v4ModelRequested) {
+        const prepared = buildJevV4Request({ observedAt: job.observation.observedAt,
+          stateReadAt: readV3StateReadAt(job.observation.context), policyInput: restorePolicyInput(job),
+          objective: readV2Objective(job.observation.context), candidateSet: job.observation.candidateSet as ShadowDecisionCandidateSet,
+          fineMarketSnapshot: job.observation.fineMarketSnapshot });
+        request = prepared.request;
+        const result = await evaluateJevV4(prepared.request, this.client, { timeoutMs: EVALUATION_TIMEOUT_MS });
+        const probabilities = Object.fromEntries((["grid_candidate", "exit_candidate"] as const).map(id => {
+          const answer = result.answers[id];
+          const mapping: Record<string, string> = id === "grid_candidate" ? prepared.gridOptionToCandidateId : prepared.exitOptionToCandidateId;
+          return [id, { option: answer.choice, candidate_id: mapping[answer.choice],
+            probabilities: Object.fromEntries(Object.entries(answer.probabilities).map(([k, p]) => [mapping[k] ?? k, p])),
+            option_probabilities: answer.probabilities, confidence: answer.confidence }];
+        }));
+        await this.outbox.complete({ jobId: job.jobId, workerId: this.workerId, rawRequest: request,
+          rawResponse: result.rawResponse, probabilities, modelVersion: result.modelResolved, latencyMs: elapsedMs(startedAt) });
       } else {
         throw new Error(`Unsupported shadow question/model version: ${job.questionSetVersion}/${job.modelRequested}`);
       }

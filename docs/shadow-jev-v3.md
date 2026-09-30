@@ -1,5 +1,7 @@
 # Jev shadow V3 — choix de configurations et évaluation causale
 
+Cette page décrit l'expérience V3/V3.1 historique. L'extension courante est documentée dans [shadow-jev-v4.md](./shadow-jev-v4.md).
+
 ## Périmètre
 
 La V3 reste exclusivement shadow. `PortfolioManagerService` et `BotEngineService` n'utilisent aucune réponse Jev. La capture est planifiée après le cycle normal, sur le client de base séparé ; toute erreur de génération, lecture, snapshot ou outbox est journalisée sans faire échouer le cycle. Le consommateur Jev est un processus séparé.

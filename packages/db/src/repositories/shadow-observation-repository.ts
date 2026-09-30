@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../client";
+import { logger } from "@grid-bot/common";
+import { buildShadowDecisionCandidates, type PortfolioPolicyInput, type PortfolioPolicyDecision,
+  type ShadowObservedCostProfile } from "@grid-bot/core";
+import { PrismaShadowCostRepository } from "./shadow-cost-repository";
 
 export interface ShadowMarketMeta {
   provider: string;
@@ -55,7 +59,15 @@ export class PrismaShadowObservationRepository {
     const botState = jsonValue(input.botState);
     const marketMeta = jsonValue(input.marketMeta);
     const proposedDecision = jsonValue(input.proposedDecision);
-    const candidateSet = input.candidateSet === undefined ? null : jsonValue(input.candidateSet);
+    let candidateSet = input.candidateSet === undefined ? null : jsonValue(input.candidateSet);
+    let costProfile: ShadowObservedCostProfile | null = null;
+    if (input.questionSetVersion === "shadow-jev-v4") {
+      try {
+        costProfile = await new PrismaShadowCostRepository(this.client).readProfile(input.portfolioId, input.botId, observedAt);
+      } catch (error) {
+        logger.warn({ botId: input.botId, error }, "Shadow cost profile unavailable; freeze legacy assumptions");
+      }
+    }
     const provenance = jsonValue({
       provider: input.marketMeta.provider,
       symbol: input.marketMeta.symbol.toUpperCase(),
@@ -67,10 +79,24 @@ export class PrismaShadowObservationRepository {
     return this.client.$transaction(async (tx) => {
       // The replay state must come from one MVCC view of the shadow database. The
       // normal portfolio cycle has already returned before this transaction runs.
-      const context = isV3Question(input.questionSetVersion)
+      let context = isV3Question(input.questionSetVersion)
         ? jsonValue({ ...(suppliedContext as object), shadowReplayV3:
           await readShadowReplayV3(tx, input.portfolioId, input.strategyId, input.bandId, input.botId) })
         : suppliedContext;
+      if (input.questionSetVersion === "shadow-jev-v4") {
+        const full = context as unknown as Record<string, unknown>;
+        const snapshot = full.shadowReplayV3 as { capturedAt: string; strategies: Array<{ baseSymbol: string; allocatedQuoteAmount: string }> };
+        const supplied = suppliedContext as unknown as { exitCommitments?: Array<{ targetStatus: string; fulfilledAt?: unknown }> };
+        candidateSet = jsonValue(buildShadowDecisionCandidates({
+          policyInput: restorePolicyInput(input.policyInput), proposedDecision: input.proposedDecision as PortfolioPolicyDecision,
+          replaySnapshot: snapshot, costProfile,
+          options: { assetAllocations: snapshot.strategies.map(strategy => ({ assetSymbol: strategy.baseSymbol,
+            allocatedCapitalUsd: Number(strategy.allocatedQuoteAmount) })),
+            hasUnknownExitCommitment: supplied.exitCommitments?.some(c => c.targetStatus === "UNKNOWN" && !c.fulfilledAt) },
+        }));
+        const fineMarket = await captureFineMarket(tx, input, new Date(snapshot.capturedAt));
+        context = jsonValue({ ...full, shadowFineMarket: fineMarket });
+      }
       // A V3 retry can read the same portfolio a few seconds later. Keep the
       // first immutable observation for that band/hour instead of enqueuing a
       // second judgment solely because capturedAt or a bot tick changed.
@@ -242,7 +268,41 @@ function validateCapture(input: CaptureShadowObservationInput): void {
 }
 
 function isV3Question(version: string): boolean {
-  return version === "shadow-jev-v3" || version === "shadow-jev-v3.1";
+  return version === "shadow-jev-v3" || version === "shadow-jev-v3.1" || version === "shadow-jev-v4";
+}
+
+function restorePolicyInput(raw: CaptureShadowObservationInput["policyInput"]): PortfolioPolicyInput {
+  const policy = raw as unknown as PortfolioPolicyInput;
+  return { ...policy, now: new Date(policy.now), candles: policy.candles.map(c => ({ ...c,
+    openedAt: new Date(c.openedAt), closedAt: new Date(c.closedAt) })) };
+}
+
+/** Reference one immutable 5m snapshot rather than copying candles into every observation. */
+async function captureFineMarket(tx: Prisma.TransactionClient, input: CaptureShadowObservationInput, capturedAt: Date) {
+  const rows = await tx.marketCandle.findMany({ where: {
+    provider: input.marketMeta.provider, symbol: input.marketMeta.symbol.toUpperCase(), quoteSymbol: "USDC", resolution: "5m",
+    sourceMarket: input.marketMeta.sourceMarket ?? undefined,
+    closeTime: { lte: input.observedAt, gte: new Date(+input.observedAt - 2 * 3_600_000) }, fetchedAt: { lte: capturedAt },
+  }, orderBy: { openTime: "asc" } });
+  if (!rows.length) return { status: "missing_at_capture" };
+  const last = rows.at(-1)!;
+  if (!last.closeTime || +input.observedAt - +last.closeTime > 10 * 60_000 ||
+    rows.some((r, i) => !r.closeTime || +r.closeTime - +r.openTime !== 300_000 ||
+      (i > 0 && +r.openTime - +rows[i - 1]!.openTime !== 300_000))) return { status: "incomplete_at_capture" };
+  const candles = rows.map(r => ({ openedAt: r.openTime.toISOString(), closedAt: r.closeTime!.toISOString(),
+    open: r.open.toNumber(), high: r.high.toNumber(), low: r.low.toNumber(), close: r.close.toNumber() }));
+  const meta = { ...input.marketMeta, resolution: "5m" };
+  const contentHash = shadowMarketContentHash(meta, candles);
+  const provenance = { provider: meta.provider, symbol: meta.symbol.toUpperCase(), quoteSymbol: "USDC",
+    resolution: "5m", sourceMarket: meta.sourceMarket ?? null };
+  await tx.$executeRaw(Prisma.sql`INSERT INTO shadow_market_snapshots
+    (id, content_hash, candle_count, candles, provenance, observed_at, created_at)
+    VALUES (${randomUUID()}, ${contentHash}, ${candles.length}, ${JSON.stringify(candles)}::jsonb,
+      ${JSON.stringify(provenance)}::jsonb, ${input.observedAt}, CURRENT_TIMESTAMP)
+    ON CONFLICT (content_hash) DO NOTHING`);
+  const stored = await tx.shadowMarketSnapshot.findUniqueOrThrow({ where: { contentHash } });
+  return { status: "captured", snapshotId: stored.id, contentHash, candleCount: candles.length,
+    closedThrough: last.closeTime.toISOString() };
 }
 
 function normalizeError(error: FinalizeShadowOutcomeInput["error"]): {
