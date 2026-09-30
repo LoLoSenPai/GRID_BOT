@@ -22,3 +22,4 @@ AGENTS.md
 deploy/paper-pilot/data
 deploy/paper-pilot/secrets
 postgres_data
+backups
