@@ -59,11 +59,14 @@ export function buildShadowDecisionCandidates(input: { policyInput: PortfolioPol
       grid.candidates.length < Math.min(6, Math.max(2, input.options?.maxCandidates ?? 6)) && (input.options?.assetAllocations ?? []).every(a =>
         a.allocatedCapitalUsd + 1e-8 >= policy.assetAttributedCapitalUsd)) {
       const low = policy.price * 0.97, high = policy.price * 1.03;
+      const exposureHeadroom = Math.max(0, policy.totalPortfolioCapitalUsd * policy.parameters.maxExposurePct / 100 -
+        policy.assetAttributedCapitalUsd);
+      const fundingBudget = Math.min(policy.availableCashUsd, exposureHeadroom);
       const levelCount = Math.max(2, Math.min(policy.parameters.maxLevels,
-        Math.floor(policy.availableCashUsd / minimumOrder) + 1,
+        Math.floor(fundingBudget / minimumOrder) + 1,
         Math.floor((high - low) / (high * spacingFloor / 100)) + 1));
       const capital = minimumOrder * (levelCount - 1), spacing = (high - low) / (levelCount - 1);
-      if (capital <= policy.availableCashUsd && (policy.assetAttributedCapitalUsd + capital) /
+      if (capital <= fundingBudget && (policy.assetAttributedCapitalUsd + capital) /
         policy.totalPortfolioCapitalUsd * 100 <= policy.parameters.maxExposurePct &&
         (low !== policy.band.lowPrice || high !== policy.band.highPrice || levelCount !== policy.band.levelCount)) {
         const decision: PortfolioPolicyDecision = { action: "create_band", reason: "Shadow reserve-funded band for fully invested inventory.",
@@ -74,6 +77,9 @@ export function buildShadowDecisionCandidates(input: { policyInput: PortfolioPol
           economicallyValid: true, economicValidationReasons: [], currentlyPolicyEligible: false,
           policyEligibilityReasons: ["Counterfactual reserve allocation; the live policy does not select an in-range new band."],
           strategyParameters: { experiment: "shadow-only-v4", live_validity: "unvalidated", funding: "existing-global-reserve" } });
+      } else {
+        grid.rejected.push({ id: "v4_reserve_band", kind: "range_variant",
+          reasons: ["Existing reserve and exposure headroom cannot fund a cost-covered band."] });
       }
     }
   }

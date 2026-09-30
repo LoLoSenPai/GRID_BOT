@@ -14,6 +14,13 @@ function execution(id = "execution"): ShadowCostExecution {
       nativeFeePayer: "wallet", walletNativeRefundLamports: 0 } };
 }
 function raw(row: ShadowCostExecution) { return row.rawReport as { order: Record<string, unknown>; executeResponse: Record<string, unknown>; [key: string]: unknown }; }
+function btcExecution(id = "btc"): ShadowCostExecution {
+  const row = execution(id); row.assetSymbol = "BTC"; row.baseMint = MINTS.BTC; row.baseDecimals = 8;
+  row.executedOutputAmount = 0.000999;
+  Object.assign(raw(row).order, { outputMint: MINTS.BTC, feeMint: MINTS.BTC, outAmount: "99900" });
+  Object.assign(raw(row).executeResponse, { totalOutputAmount: "99900", outputAmountResult: "100000" });
+  return row;
+}
 function profile(rows: ShadowCostExecution[], extra = {}) {
   return buildObservedCostProfile({ portfolioId: "portfolio", botId: "bot", assetSymbol: "SOL", baseMint: MINTS.SOL,
     quoteMint: MINTS.USDC, asOf: "2026-09-30T12:00:00Z", executions: rows, ...extra });
@@ -79,6 +86,34 @@ describe("observed Jupiter cost decomposition", () => {
     row.nativeUsdReference.capturedAt = "2026-09-30T10:00:01Z";
     expect(decomposeShadowExecutionCost(row).walletNativeCostUsd).toBeCloseTo(0.2005);
   });
+  it("prefers settled native USDC valuation to reconstructed prices without changing embedded swap fees", () => {
+    const row = btcExecution(); row.executedFeeAmount = 0.00060821; row.executedFeeValuedAt = row.completedAt;
+    raw(row).totalWalletNativeCostLamports = 5_111;
+    row.nativeUsdReference = { price: 9_999, capturedAt: "2026-09-30T10:00:01Z" };
+    const result = decomposeShadowExecutionCost(row);
+    expect(result.walletNativeCostUsd).toBe(0.00060821);
+    expect(result.walletNativeCostUsdBasis).toBe("persisted-executed-fee-quote");
+    expect(result.walletNativeCostUsdValuedAt).toBe("2026-09-30T10:00:02.000Z");
+    expect(result.feeBps).toBeCloseTo(10); expect(result.embeddedFeeAmount).toBeCloseTo(0.000001);
+    expect(result.walletInputAmount).toBe(100); expect(result.walletOutputAmount).toBe(0.000999);
+  });
+  it("requires confirmed native basis, USDC, consistent amounts and a known nonfuture settlement time", () => {
+    const valid = btcExecution(); valid.executedFeeAmount = 0.00060821; valid.executedFeeValuedAt = valid.completedAt;
+    for (const change of [
+      (row: ShadowCostExecution) => { raw(row).nativeFeeBasis = "order-estimate"; },
+      (row: ShadowCostExecution) => { row.quoteMint = MINTS.HYPE; raw(row).order.inputMint = MINTS.HYPE; },
+      (row: ShadowCostExecution) => { row.executedInputAmount = 101; },
+      (row: ShadowCostExecution) => { row.executedFeeValuedAt = null; },
+      (row: ShadowCostExecution) => { row.executedFeeValuedAt = "2026-09-30T12:00:01Z"; },
+      (row: ShadowCostExecution) => { row.executedFeeAmount = 0; },
+      (row: ShadowCostExecution) => { row.executedFeeAmount = -1; },
+      (row: ShadowCostExecution) => { row.executedFeeAmount = NaN; },
+    ]) {
+      const row = structuredClone(valid); change(row);
+      expect(decomposeShadowExecutionCost(row).walletNativeCostUsd).toBeNull();
+      expect(decomposeShadowExecutionCost(row).walletNativeCostUsdBasis).toBe("unavailable");
+    }
+  });
 });
 
 describe("immutable causal observed cost profiles", () => {
@@ -108,5 +143,16 @@ describe("immutable causal observed cost profiles", () => {
     const result = profile(rows, { options: { safetyMarginBps: 20 } });
     expect(result.p90NativeFeeUsd).toBeCloseTo(0.009 * (100 / 0.999)); expect(result.safetyMarginBps).toBe(20);
     expect(profile([...rows].reverse()).p90NativeFeeUsd).toBe(result.p90NativeFeeUsd);
+  });
+  it("retains all seven frozen BTC native valuations when historical SOL prices have been purged", () => {
+    const fees = [0.00060821, 0.00379092, 0.00079413, 0.00317026, 0.00156753, 0.00064743, 0.00072545];
+    const lamports = [5_111, 33_333, 7_025, 27_275, 13_174, 5_221, 5_962];
+    const rows = fees.map((fee, i) => { const row = btcExecution(String(i)); row.executedFeeAmount = fee;
+      row.executedFeeValuedAt = row.completedAt; raw(row).totalWalletNativeCostLamports = lamports[i]; return row; });
+    const result = profile(rows, { baseMint: MINTS.BTC, assetSymbol: "BTC" });
+    expect(result.coverage).toEqual({ fee: 7, adverseSlippage: 7, nativeFeeUsd: 7 });
+    expect(result.usable).toBe(true); expect(result.p90NativeFeeUsd).toBe(0.00379092);
+    expect(rows.reduce((sum, row) => sum + decomposeShadowExecutionCost(row).walletNativeCostUsd!, 0)).toBeCloseTo(0.01130393, 10);
+    expect(profile(rows, { baseMint: MINTS.BTC, assetSymbol: "BTC", asOf: "2026-09-30T10:00:01Z" }).count).toBe(0);
   });
 });

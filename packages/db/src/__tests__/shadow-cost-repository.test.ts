@@ -30,6 +30,21 @@ describe("isolated observed cost repository", () => {
       symbol: "SOL", createdAt: { lte: asOf }, capturedAt: { gte: new Date("2026-09-30T09:00:02Z"), lte: new Date("2026-09-30T10:00:02Z") } },
       orderBy: { capturedAt: "desc" } }));
   });
+  it("loads the native quote valuation frozen with completion and avoids a purged price cache", async () => {
+    const mock = client(MINTS.BTC);
+    const stored = (await mock.execution.findMany())[0]!;
+    Object.assign(stored, { executedFeeAmount: "0.00060821", rawReport: {
+      nativeFeeBasis: "confirmed-wallet-sol-delta", totalWalletNativeCostLamports: 5_111,
+      order: { inputMint: MINTS.USDC, outputMint: MINTS.BTC, inAmount: "100000000", outAmount: "1000000000", feeMint: MINTS.BTC, feeBps: 0 },
+      executeResponse: { totalInputAmount: "100000000", totalOutputAmount: "1000000000", inputAmountResult: "100000000", outputAmountResult: "1000000000" },
+    } });
+    mock.execution.findMany.mockResolvedValue([stored]);
+    const report = await new PrismaShadowCostRepository(mock as never).readAuditReport("portfolio", "bot", asOf);
+    expect(mock.execution.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ select: expect.objectContaining({ executedFeeAmount: true }) }));
+    expect(mock.priceSnapshot.findFirst).not.toHaveBeenCalled();
+    expect(report.executions[0]).toMatchObject({ walletNativeCostUsd: 0.00060821,
+      walletNativeCostUsdBasis: "persisted-executed-fee-quote", walletNativeCostUsdValuedAt: "2026-09-30T10:00:02.000Z" });
+  });
   it("deduplicates immutable prospective observations without upsert or update", async () => {
     const mock = client(); const repo = new PrismaShadowCostRepository(mock as never);
     const capture = { portfolioId: "portfolio", botId: "bot", capturedAt: asOf, payload: { version: "v1", paths: [{ outAmount: "100" }] } };

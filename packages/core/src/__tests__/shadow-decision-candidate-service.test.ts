@@ -82,4 +82,14 @@ describe("V4 shadow decisions", () => {
       { assetSymbol: "SOL", allocatedCapitalUsd: 500 }, { assetSymbol: "BTC", allocatedCapitalUsd: 400 }] } });
     expect(denied.grid.candidates.some(c => c.id === "v4_reserve_band")).toBe(false);
   });
+  it("sizes the reserve band to exposure headroom instead of rejecting all available reserve", () => {
+    const input = fixture("BTC");
+    Object.assign(input.policyInput, { availableCashUsd: 218.62, totalPortfolioCapitalUsd: 800, assetAttributedCapitalUsd: 400 });
+    input.policyInput.band.idleQuoteUsd = 0;
+    const result = buildShadowDecisionCandidates({ ...input, options: { assetAllocations: [
+      { assetSymbol: "BTC", allocatedCapitalUsd: 400 }, { assetSymbol: "SOL", allocatedCapitalUsd: 400 }] } });
+    const reserve = result.grid.candidates.find(c => c.id === "v4_reserve_band");
+    expect(reserve).toBeDefined(); expect(reserve!.requestedCapitalUsd).toBe(150);
+    expect((400 + reserve!.requestedCapitalUsd) / 800 * 100).toBeLessThanOrEqual(70);
+  });
 });

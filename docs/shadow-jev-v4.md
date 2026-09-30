@@ -29,6 +29,8 @@ Le profil est calculé avec les exécutions terminées avant l'observation, pour
 
 Les frais Jupiter inclus dans les quantités réellement débitées/reçues ne sont pas ajoutés une seconde fois au résultat réalisé. Le débit SOL du wallet inclut les dépenses natives observées, dont le rent lorsqu'il est présent ; une estimation de rent séparée ne doit pas être additionnée de nouveau.
 
+La valorisation USDC native gelée dans `executedFeeAmount` au settlement est prioritaire lorsque les mints, les quantités et le débit SOL confirmé concordent. Sa date et sa source sont exposées. Le repli vers un prix SOL historique reste causal ; la purge du cache de prix ne doit pas effacer un coût déjà valorisé dans l'exécution.
+
 Toutes les 30 minutes, le collecteur compare des quotes achat puis vente `/order` et `/build` sur deux tailles bornées. Les appels utilisent exclusivement `JUPITER_SHADOW_API_KEY` avec `SHADOW_JUPITER_QUOTA_ISOLATED=true`. `/build` reçoit une adresse publique de taker ; les instructions retournées sont écartées. Le processus ne monte aucun fichier secret de wallet et n'appelle jamais `/execute`.
 
 Les erreurs et écarts temporels sont enregistrés. `economicallyComparable` reste faux : les coûts de landing `/build` ne sont pas connus et les quotes ne sont pas des fills. Cette collecte peut révéler une piste d'économie, mais ne permet pas d'affirmer à elle seule qu'un autre chemin est moins cher ou plus rapide en réel.
