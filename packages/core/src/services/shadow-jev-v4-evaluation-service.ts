@@ -49,6 +49,7 @@ export class ShadowJevV4EvaluationService {
         "All branches receive identical dated external cashflows, which are excluded from reported equity change.",
         "USDC is valued at one USD. Native SOL reserve is excluded from modeled equity and spendable quote cash.",
         "Public candles remain a market proxy; exact declared mint provenance does not prove execution liquidity."] };
+    output.assumptions.push("The non-target asset warmup is reconstructed from the later cache; availability/version at t0 is not attested. This is a conditional historical-price replay, not a complete reconstruction of live information availability.");
     try {
       ensure(["shadow-decisions-v4", "shadow-decisions-v4.1"].includes(set?.version) && set.grid && set.exit?.version === "shadow-exits-v1", "UNSUPPORTED_V4_CANDIDATE_VERSION");
       ensure(Array.isArray(set.exit.candidates) && set.exit.candidates.length > 0 && set.exit.candidates.length <= 3 &&

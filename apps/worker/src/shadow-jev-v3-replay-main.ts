@@ -125,6 +125,7 @@ export async function evaluateStoredShadowV3(client: ReadClient, observationId: 
     feeAndSlippageSource: "frozen_policy_input_parameters",
     nativeFeeSource: "explicit_cli_estimate_per_trade" };
   provenance.mintEvidence = "Portfolio bot/strategy mints checked against configured Solana mints; cache rows do not attest pool token mints.";
+  provenance.nonTargetWarmupAvailability = "not_attested_at_t0; reconstructed_from_later_cache";
   try {
     const inventoryEvidence = await loadShadowInventoryEvidence(client, strategies);
     const capitalEvidence = await loadShadowCapitalEvidence(client, strategies, String(portfolio.id), observation.observedAt);

@@ -66,6 +66,8 @@ Le capital nominal de la band peut différer de cash + coût des lots + pertes �
 
 Ces preuves `ordered-receipts-v1` et `band-ledger-v1` sont **reconstruites après capture**, accompagnent l'input exporté et ses empreintes, et ne modifient pas l'observation d'origine. Un hash ne prouve pas la complétude on-chain. Les métriques mesurent une évolution depuis l'état enregistré, pas une reconstitution des gains historiques depuis financement.
 
+Le warmup de l'actif non ciblé par l'observation provient du cache historique relu ultérieurement. Sa disponibilité et sa version à t0 ne sont pas attestées. Le replay est donc conditionnel aux prix historiques exportés, et ne reconstitue pas complètement la disponibilité des informations en live.
+
 Un fichier facultatif `--cashflows <fichier.json>` applique les mêmes dépôts/retraits datés à toutes les branches :
 
 ```json

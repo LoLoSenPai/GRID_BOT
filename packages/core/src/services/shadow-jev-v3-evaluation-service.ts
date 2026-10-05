@@ -53,6 +53,7 @@ export class ShadowJevV3EvaluationService {
         "KEEP retains fixed entry geometry; policy and Jev branches continue the hourly deterministic policy after their initial decision.",
         "USDC is valued at one USD. Native SOL reserve is excluded from modeled strategy equity and is not spendable quote cash.",
         "Public candle prices are a market proxy; matching the declared mint does not prove the pool traded that mint.",
+        "The non-target asset warmup is reconstructed from the later cache; its availability/version at t0 is not attested. Results remain conditional on the exported historical prices.",
         "Post-close capture is accepted only when captured economic mutation timestamps establish unchanged holdings at t0.",
         "The saved pre-decision context is not used to reverse post-close mutations; those observations remain censored."],
       horizons: [], provenance: input.markets.map(({ assetSymbol, baseMint, quoteMint, provider, sourceMarket, inputId }) =>
