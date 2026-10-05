@@ -1,5 +1,7 @@
 import type { HistoricalCandle } from "../domain/types";
 import type { PortfolioPolicyDecision, PortfolioPolicyParameters } from "./portfolio-policy-service";
+import { reconcileShadowInventory, type ShadowInventoryEvidence, type ShadowInventoryReconciliation } from "./shadow-inventory-reconciliation-service";
+import { reconcileShadowBandCapital, type ShadowBandCapitalEvidence, type ShadowBandCapitalReconciliation } from "./shadow-band-capital-reconciliation-service";
 import { PortfolioPolicyReplayService, type PortfolioReplayAllocation, type PortfolioReplayInitialLot,
   type PortfolioPolicyReplayResult } from "./portfolio-policy-replay-service";
 
@@ -10,7 +12,9 @@ type JsonRecord = Record<string, unknown>;
 
 export interface ShadowJevV3EvaluationRequest {
   observation: { observedAt: Date | string; bandId: string; context: unknown; candidateSet: unknown;
-    proposedDecision: unknown; policyInput: unknown };
+    proposedDecision: unknown; policyInput: unknown; initialEngineDecision?: unknown };
+  inventoryEvidence?: ShadowInventoryEvidence[];
+  capitalEvidence?: ShadowBandCapitalEvidence[];
   selectedCandidateId: string;
   markets: Array<{ assetSymbol: string; baseMint: string; quoteMint: string; provider: string;
     sourceMarket: string; inputId: string; warmupCandles: HistoricalCandle[]; futureCandles: HistoricalCandle[] }>;
@@ -24,7 +28,9 @@ export interface ShadowJevV3Metrics {
   closedCycles: number; lockedLotCostUsd: number; openTradingLots: number;
 }
 export interface ShadowJevV3EvaluationResult {
-  version: "shadow-jev-v3-evaluation-v1"; mode: "hypothetical_at_candle_close";
+  version: "shadow-jev-v3-evaluation-v2"; mode: "hypothetical_at_candle_close";
+  inventoryReconciliation: ShadowInventoryReconciliation[];
+  capitalReconciliation: ShadowBandCapitalReconciliation[];
   status: "evaluated" | "partial" | "censored"; reasons: string[]; assumptions: string[];
   horizons: Array<{ hours: Horizon; status: "evaluated" | "censored"; reasons: string[];
     branches?: { keep: ShadowJevV3Metrics; policy: ShadowJevV3Metrics; jev: ShadowJevV3Metrics } }>;
@@ -42,9 +48,9 @@ export class ShadowJevV3EvaluationService {
 
   evaluate(input: ShadowJevV3EvaluationRequest): ShadowJevV3EvaluationResult {
     const output: ShadowJevV3EvaluationResult = {
-      version: "shadow-jev-v3-evaluation-v1", mode: "hypothetical_at_candle_close", status: "censored", reasons: [],
+      version: "shadow-jev-v3-evaluation-v2", mode: "hypothetical_at_candle_close", status: "censored", reasons: [], inventoryReconciliation: [], capitalReconciliation: [],
       assumptions: ["Synthetic hourly OHLC fills; Jupiter execution, order throttles and Jev response latency are not modeled.",
-        "One recorded intervention at the candle close, followed by the deterministic policy on each branch.",
+        "KEEP retains fixed entry geometry; policy and Jev branches continue the hourly deterministic policy after their initial decision.",
         "USDC is valued at one USD. Native SOL reserve is excluded from modeled strategy equity and is not spendable quote cash.",
         "Public candle prices are a market proxy; matching the declared mint does not prove the pool traded that mint.",
         "Post-close capture is accepted only when captured economic mutation timestamps establish unchanged holdings at t0.",
@@ -53,7 +59,7 @@ export class ShadowJevV3EvaluationService {
         ({ assetSymbol, baseMint, quoteMint, provider, sourceMarket, inputId })),
     };
     try {
-      const { allocations, freeCashUsd, totalStartingCapitalUsd, minOrderQuoteUsd, parameters, decisions, t0 } = prepareShadowJevV3Replay(input);
+      const { allocations, freeCashUsd, totalStartingCapitalUsd, minOrderQuoteUsd, parameters, decisions, t0 } = prepareShadowJevV3Replay(input, output.inventoryReconciliation, output.capitalReconciliation);
       for (const hours of HORIZONS) {
         try {
           const ready = allocations.map(allocation => {
@@ -63,14 +69,14 @@ export class ShadowJevV3EvaluationService {
               `FUTURE_COVERAGE:${allocation.assetSymbol}:${hours}h`);
             return { ...allocation, series: { ...allocation.series, candles: future } };
           });
-          const run = (decision: PortfolioPolicyDecision, candidateId: string) => shadowReplayMetrics(this.replay.replay({
+          const run = (decision: PortfolioPolicyDecision, candidateId: string, adaptive = true) => shadowReplayMetrics(this.replay.replay({
             allocations: ready, totalStartingCapitalUsd, freeCashUsd, policyParameters: parameters,
             feeBps: input.feeBps, slippageBps: input.slippageBps, nativeFeeUsd: input.nativeFeeUsd,
-            candleIntervalMs: HOUR, minOrderQuoteUsd, adaptive: true,
+            candleIntervalMs: HOUR, minOrderQuoteUsd, adaptive,
             initialIntervention: { bandId: input.observation.bandId, observedAt: new Date(t0), decision, candidateId },
           }));
           output.horizons.push({ hours, status: "evaluated", reasons: [], branches: {
-            keep: run(decisions.keep, "keep"), policy: run(decisions.policy, "policy"),
+            keep: run(decisions.keep, "keep", false), policy: run(decisions.policy, "policy"),
             jev: run(decisions.jev, input.selectedCandidateId === "abstain" ? "policy" : input.selectedCandidateId),
           } });
         } catch (error) {
@@ -88,7 +94,8 @@ export class ShadowJevV3EvaluationService {
   }
 }
 
-export function prepareShadowJevV3Replay(input: ShadowJevV3EvaluationRequest) {
+export function prepareShadowJevV3Replay(input: ShadowJevV3EvaluationRequest, inventoryReconciliation: ShadowInventoryReconciliation[] = [],
+  capitalReconciliation: ShadowBandCapitalReconciliation[] = []) {
   const t0 = time(input.observation.observedAt, "observedAt");
   requireState(t0 % HOUR === 0, "UNALIGNED_OBSERVATION");
   const context = record(input.observation.context, "context");
@@ -155,7 +162,8 @@ export function prepareShadowJevV3Replay(input: ShadowJevV3EvaluationRequest) {
       requireState(states.length === 1, "MISSING_RUNTIME_STATE");
       const state = record(states[0], "runtime state");
       const metadata = record(state.metadata, "metadata");
-      requireState(!metadata.pendingSignal && Object.keys(record(metadata.levelLocks, "levelLocks")).length === 0,
+      requireState(!metadata.pendingSignal && Object.values(record(metadata.levelLocks, "levelLocks")).every(expiry =>
+        typeof expiry === "string" && Number.isFinite(Date.parse(expiry)) && Date.parse(expiry) <= t0),
         "PENDING_RUNTIME_SIGNAL_OR_LEVEL_LOCK");
       const history = array(metadata.recenterHistory, "recenterHistory");
       requireState(history.every(at => time(at, "recenterHistory") <= t0), "POST_CLOSE_REVISION");
@@ -203,8 +211,17 @@ export function prepareShadowJevV3Replay(input: ShadowJevV3EvaluationRequest) {
           costQuote: number(lot.costQuote, "costQuote"), exitPrice, entrySpacing, economicRule };
       });
       requireState(commitments.length === initialLots.filter(lot => lot.kind === "trading").length, "ORPHAN_EXIT_COMMITMENT");
-      requireState(close(initialLots.reduce((sum, lot) => sum + lot.remainingBaseAmount, 0), number(position.baseAmount, "position.baseAmount")) &&
-        close(initialLots.reduce((sum, lot) => sum + lot.costQuote, 0), number(band.deployedCostQuote, "deployedCostQuote")), "UNRECONCILED_POSITION");
+      const quantity = reconcileShadowInventory({ bot: bot as any, position: position as any,
+        lots: array(bot.positionLots, "positionLots") as any,
+        evidence: input.inventoryEvidence?.find(e => e.botId === bot.id) });
+      inventoryReconciliation.push(quantity);
+      requireState(quantity.status !== "unreconciled", "UNRECONCILED_POSITION");
+      requireState(close(initialLots.reduce((sum, lot) => sum + lot.costQuote, 0),
+        number(band.deployedCostQuote, "deployedCostQuote")), "UNRECONCILED_LOT_COST");
+      const capital = reconcileShadowBandCapital({ band: band as any, portfolioId: String(portfolio.id),
+        evidence: input.capitalEvidence?.find(e => e.bandId === band.id) });
+      capitalReconciliation.push(capital);
+      requireState(capital.status !== "unreconciled", "UNRECONCILED_BAND_CAPITAL");
       if (band.id === input.observation.bandId) {
         targetRevisionId = revision.id; targetStrategyId = strategy.id; targetBotId = bot.id;
       }
@@ -213,6 +230,7 @@ export function prepareShadowJevV3Replay(input: ShadowJevV3EvaluationRequest) {
         series: { symbol, pair: `${symbol}/USDC`, resolution: "1h", candles: [] }, warmupCandles: market.warmupCandles,
         initialBudgetUsd: allocated, initialIdleQuoteUsd: number(band.availableQuoteAmount, "availableQuoteAmount"),
         initialRealizedLossUsd: number(band.realizedLossQuote, "realizedLossQuote"), initialLots,
+        initialExternalFeeBookUsd: capital.initialExternalFeeBookUsd,
         initialPreviousPrice: market.warmupCandles.at(-1)!.close, lowPrice, highPrice, levelCount,
         initialStatus: band.status === "PARKED_BELOW" ? "parked" : "active",
         initialLastRevisionAt: new Date(time(revision.observedAt, "revision.observedAt")),
@@ -228,7 +246,7 @@ export function prepareShadowJevV3Replay(input: ShadowJevV3EvaluationRequest) {
   requireState(allocations.length > 0 && allocations.some(a => a.bandId === input.observation.bandId), "MISSING_TARGET_ALLOCATION");
   requireState(new Set(minimumOrders).size === 1, "HETEROGENEOUS_MINIMUM_ORDER");
   const set = record(input.observation.candidateSet, "candidateSet");
-  requireState(set.version === "shadow-grid-candidates-v3" || set.version === "shadow-grid-candidates-v3.1",
+  requireState(["shadow-grid-candidates-v3", "shadow-grid-candidates-v3.1", "shadow-grid-candidates-v3.2"].includes(String(set.version)),
     "UNSUPPORTED_CANDIDATE_VERSION");
   const candidates = array(set.candidates, "candidates").map(c => record(c, "candidate"));
   requireState(candidates.length > 0 && candidates.length <= 6 && new Set(candidates.map(c => c.id)).size === candidates.length, "INVALID_CANDIDATE_SET");

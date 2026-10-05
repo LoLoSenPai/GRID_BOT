@@ -108,6 +108,7 @@ services:
     environment:
       NODE_ENV: production
       EXECUTION_WALLET_SECRET_KEY_PATH: /run/secrets/execution-wallet.json
+      SHADOW_CAPTURE_SPOOL_DIR: /var/lib/grid-bot/shadow-capture
     depends_on:
       postgres:
         condition: service_healthy
@@ -115,6 +116,34 @@ services:
         condition: service_completed_successfully
     volumes:
       - ${EXECUTION_WALLET_HOST_PATH}:/run/secrets/execution-wallet.json:ro
+      - shadow_capture_spool:/var/lib/grid-bot/shadow-capture
+
+  shadow-capture:
+    profiles: ["shadow"]
+    container_name: grid-bot-shadow-capture
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["pnpm", "--filter", "@grid-bot/worker", "shadow:capture"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "const l=JSON.parse(require('node:fs').readFileSync('/var/lib/grid-bot/shadow-capture/.consumer/lease.json','utf8'));process.kill(l.pid,0);if(Date.now()-l.touchedAt>30000)process.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 75s
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      SHADOW_CAPTURE_SPOOL_DIR: /var/lib/grid-bot/shadow-capture
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - shadow_capture_spool:/var/lib/grid-bot/shadow-capture
 
   shadow-jev:
     profiles: ["shadow"]
@@ -152,3 +181,4 @@ services:
 
 volumes:
   postgres_data:
+  shadow_capture_spool:

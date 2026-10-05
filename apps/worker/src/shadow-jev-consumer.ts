@@ -65,9 +65,10 @@ export class ShadowJevConsumer {
             confidence: result.confidence } },
           modelVersion: result.modelResolved, latencyMs: elapsedMs(startedAt) });
       } else if ((job.questionSetVersion === v3QuestionSetVersion ||
-        job.questionSetVersion === currentV3QuestionSetVersion) && job.modelRequested === v3ModelRequested) {
+        job.questionSetVersion === "shadow-jev-v3.1" || job.questionSetVersion === currentV3QuestionSetVersion) && job.modelRequested === v3ModelRequested) {
         const candidateSet = job.observation.candidateSet as ShadowGridCandidateSet;
         const expectedCandidateVersion = job.questionSetVersion === currentV3QuestionSetVersion
+          ? "shadow-grid-candidates-v3.2" : job.questionSetVersion === "shadow-jev-v3.1"
           ? "shadow-grid-candidates-v3.1" : "shadow-grid-candidates-v3";
         if (candidateSet?.version !== expectedCandidateVersion) {
           throw new Error("V3 shadow question and candidate-set versions do not match.");
@@ -86,7 +87,13 @@ export class ShadowJevConsumer {
             probabilities: candidateProbabilities, option_probabilities: result.probabilities,
             confidence: result.confidence } },
           modelVersion: result.modelResolved, latencyMs: elapsedMs(startedAt) });
-      } else if (job.questionSetVersion === v4QuestionSetVersion && job.modelRequested === v4ModelRequested) {
+      } else if (["shadow-jev-v4", v4QuestionSetVersion].includes(job.questionSetVersion) && job.modelRequested === v4ModelRequested) {
+        const set = job.observation.candidateSet as ShadowDecisionCandidateSet;
+        const legacy = job.questionSetVersion === "shadow-jev-v4";
+        if (set?.version !== (legacy ? "shadow-decisions-v4" : "shadow-decisions-v4.1") ||
+          set.grid?.version !== (legacy ? "shadow-grid-candidates-v3.1" : "shadow-grid-candidates-v3.2")) {
+          throw new Error("V4 shadow question and candidate-set versions do not match.");
+        }
         const prepared = buildJevV4Request({ observedAt: job.observation.observedAt,
           stateReadAt: readV3StateReadAt(job.observation.context), policyInput: restorePolicyInput(job),
           objective: readV2Objective(job.observation.context), candidateSet: job.observation.candidateSet as ShadowDecisionCandidateSet,

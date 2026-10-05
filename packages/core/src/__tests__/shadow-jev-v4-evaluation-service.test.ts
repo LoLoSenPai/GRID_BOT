@@ -68,6 +68,35 @@ function v4Fixture(): ShadowJevV4EvaluationRequest {
 }
 
 describe("ShadowJevV4EvaluationService", () => {
+  it("keeps fixed geometry distinct from policy adaptation, with abstention exactly following policy", () => {
+    const input = v4Fixture(); input.selectedGridCandidateId = "abstain";
+    const p = input.observation.policyInput as any;
+    p.parameters.cooldownMs = 0; p.parameters.persistenceClosedBars = 1;
+    p.parameters.maxDailyRevisions = 20;
+    input.markets[0]!.futureCandles.forEach(c => { c.open = 130; c.high = 130; c.low = 130; c.close = 130; });
+    input.markets[0]!.futureExecutionCandles!.forEach(c => { c.open = 130; c.high = 130; c.low = 130; c.close = 130; });
+    const result = new ShadowJevV4EvaluationService().evaluate(input);
+    expect(result.status).toBe("evaluated");
+    const last = result.horizons.at(-1)!.branches!;
+    expect(last.keep.gridRevisions).toBe(0);
+    expect(last.currentPolicy.gridRevisions).toBeGreaterThan(0);
+    expect(last.gridOnly).toEqual(last.currentPolicy); expect(last.exitOnly).toEqual(last.currentPolicy);
+  });
+  it("uses the recorded rejection at t0 rather than delaying the unapplied proposal", () => {
+    const input = v4Fixture(); input.selectedGridCandidateId = "abstain";
+    input.observation.proposedDecision = { ...(input.observation.proposedDecision as any), action: "park" };
+    input.observation.initialEngineDecision = { ...(input.observation.proposedDecision as any), action: "wait", reason: "Engine rejected" };
+    const result = new ShadowJevV4EvaluationService().evaluate(input);
+    expect(result.status).toBe("evaluated"); expect(result.policyBaselineSource).toBe("recorded_engine_outcome");
+    expect(result.horizons[0]!.branches!.currentPolicy.closedCycles).toBeGreaterThan(0);
+    expect(result.horizons[0]!.branches!.gridOnly).toEqual(result.horizons[0]!.branches!.currentPolicy);
+  });
+  it("explicitly uses hourly fills for empty fine inputs while censoring partial fine inputs", () => {
+    const input = v4Fixture(); input.markets.forEach(m => { m.futureExecutionCandles = []; });
+    const result = new ShadowJevV4EvaluationService().evaluate(input);
+    expect(result.horizons[0]!.reasons).toContain("DECISION_DEFERRED_BEYOND_HORIZON");
+    expect(result.horizons[1]!.executionResolution).toBe("1h");
+  });
   it("compares five branches with delayed five-minute execution and unchanged hourly policy cadence", () => {
     const input = v4Fixture(), before = structuredClone(input);
     const result = new ShadowJevV4EvaluationService().evaluate(input);

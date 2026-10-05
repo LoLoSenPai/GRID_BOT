@@ -35,6 +35,8 @@ export * from "./services/shadow-jev-v3-evaluation-service";
 export * from "./services/shadow-observed-cost-service";
 export * from "./services/shadow-decision-candidate-service";
 export * from "./services/shadow-jev-v4-evaluation-service";
+export * from "./services/shadow-inventory-reconciliation-service";
+export * from "./services/shadow-band-capital-reconciliation-service";
 export * from "./services/flat-recenter-service";
 export * from "./services/risk-manager-service";
 export * from "./services/strategy-registry-service";

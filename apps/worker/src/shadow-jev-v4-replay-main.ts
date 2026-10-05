@@ -5,21 +5,27 @@ import { ShadowJevV4EvaluationService, type ShadowJevV3EvaluationRequest, type S
 import { createShadowObservationClient, type ShadowObservationClientHandle } from "@grid-bot/db";
 import { evaluateStoredShadowV3, parseReplayArgs } from "./shadow-jev-v3-replay-main";
 
-type Client = Pick<ShadowObservationClientHandle["client"], "shadowJevObservation" | "marketCandle">;
+type Client = Pick<ShadowObservationClientHandle["client"], "shadowJevObservation" | "marketCandle"> &
+  Partial<Pick<ShadowObservationClientHandle["client"], "execution" | "capitalLedgerEntry">>;
 export async function evaluateStoredShadowV4(client: Client, observationId: string, nativeFeeUsd: number,
   cashflows: Array<{ id: string; at: Date; amountUsd: number }> = []) {
-  const observation = await client.shadowJevObservation.findUnique({ where: { id: observationId }, include: { snapshot: true, outbox: true } });
+  const observation = await client.shadowJevObservation.findUnique({ where: { id: observationId }, include: { snapshot: true, outbox: true, outcome: true } });
   const censor = (reason: string) => ({ observationId, status: "censored", reasons: [reason] });
-  if (!observation || observation.questionSetVersion !== "shadow-jev-v4") return censor("not_v4_observation");
+  if (!observation || !["shadow-jev-v4", "shadow-jev-v4.1"].includes(observation.questionSetVersion)) return censor("not_v4_observation");
   const set = observation.candidateSet as unknown as ShadowDecisionCandidateSet;
-  if (set?.version !== "shadow-decisions-v4") return censor("invalid_v4_candidate_version");
+  const legacy = observation.questionSetVersion === "shadow-jev-v4";
+  if (set?.version !== (legacy ? "shadow-decisions-v4" : "shadow-decisions-v4.1") ||
+    set.grid?.version !== (legacy ? "shadow-grid-candidates-v3.1" : "shadow-grid-candidates-v3.2")) return censor("invalid_v4_candidate_version");
   if (!observation.outbox?.completedAt || observation.outbox.status !== "completed") return censor("jev_not_completed");
   const probabilities = observation.outbox.probabilities as { grid_candidate?: { candidate_id?: string }; exit_candidate?: { candidate_id?: string } } | null;
   if (!probabilities?.grid_candidate?.candidate_id || !probabilities.exit_candidate?.candidate_id) return censor("missing_v4_choices");
+  const outcome = observation.outcome;
+  if (!outcome?.effectiveDecision || !["wait", "applied", "rejected"].includes(outcome.status)) return censor("missing_effective_engine_outcome");
   let prepared: ShadowJevV3EvaluationRequest | undefined;
   // Reuse the strict historical source loader, without weakening the V3 replay's provenance checks.
-  const adapted = { ...observation, questionSetVersion: "shadow-jev-v3.1", candidateSet: set.grid };
+  const adapted = { ...observation, questionSetVersion: legacy ? "shadow-jev-v3.1" : "shadow-jev-v3.2", candidateSet: set.grid };
   const loaded = await evaluateStoredShadowV3({ marketCandle: client.marketCandle,
+    execution: client.execution, capitalLedgerEntry: client.capitalLedgerEntry,
     shadowJevObservation: { findUnique: async () => adapted } } as unknown as Client,
     observationId, nativeFeeUsd, input => { prepared = input; });
   if (!prepared) return { ...loaded, observationId, reasons: loaded.reasons };
@@ -36,7 +42,8 @@ export async function evaluateStoredShadowV4(client: Client, observationId: stri
     markets.push({ ...market, futureExecutionCandles: candles });
     fineProvenance.push({ symbol: market.assetSymbol, resolution: "5m", rowIds: rows.map(r => r.id) });
   }
-  const input = { ...prepared, observation: { ...prepared.observation, candidateSet: set }, markets,
+  const input = { ...prepared, observation: { ...prepared.observation, candidateSet: set,
+    initialEngineDecision: outcome.effectiveDecision }, markets,
     selectedGridCandidateId: probabilities.grid_candidate.candidate_id,
     selectedExitCandidateId: probabilities.exit_candidate.candidate_id,
     decisionAvailableAt: observation.outbox.completedAt, cashflows };

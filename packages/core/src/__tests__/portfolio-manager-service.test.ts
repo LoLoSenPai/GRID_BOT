@@ -80,6 +80,27 @@ describe("portfolio manager", () => {
     await vi.waitFor(() => expect(shadow.capture).toHaveBeenCalledTimes(1));
     expect(shadow.recordOutcome).not.toHaveBeenCalled();
   });
+  it("queues input and its known outcome after the cycle, without awaiting durable storage", async () => {
+    const shadow = { capture: vi.fn(async () => "unused"), recordOutcome: vi.fn(async () => {}),
+      enqueue: vi.fn(() => new Promise<void>(() => {})) };
+    const s = setup(BotMode.Paper, shadow);
+    await s.manager.runCycle(now);
+    expect(s.store.applyDecision).toHaveBeenCalledTimes(1);
+    expect(shadow.enqueue).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(shadow.enqueue).toHaveBeenCalledWith(expect.objectContaining({ observedAt: now }),
+      { status: "applied", effectiveDecision: expect.objectContaining({ action: "revise" }) }));
+    expect(shadow.capture).not.toHaveBeenCalled(); expect(shadow.recordOutcome).not.toHaveBeenCalled();
+  });
+  it("keeps the policy result intact when durable filesystem enqueue fails", async () => {
+    const shadow = { capture: vi.fn(async () => "unused"), recordOutcome: vi.fn(async () => {}),
+      enqueue: vi.fn(async () => { throw new Error("disk unavailable"); }) };
+    const s = setup(BotMode.Paper, shadow);
+    await s.manager.runCycle(now);
+    await vi.waitFor(() => expect(shadow.enqueue).toHaveBeenCalledTimes(1));
+    expect(s.store.applyDecision).toHaveBeenCalledTimes(1);
+    expect(s.store.recordDecision).toHaveBeenCalledWith("bot", expect.objectContaining({ action: "revise" }), now);
+    expect(shadow.capture).not.toHaveBeenCalled(); expect(shadow.recordOutcome).not.toHaveBeenCalled();
+  });
   it("never waits for a stalled shadow capture or outcome write", async () => {
     let resolveCapture!: (id: string) => void;
     const shadow = { capture: vi.fn(() => new Promise<string>(resolve => { resolveCapture = resolve; })),

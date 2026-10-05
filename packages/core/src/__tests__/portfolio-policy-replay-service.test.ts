@@ -9,6 +9,39 @@ function series(symbol: string, values: number[]): { symbol: string; pair: strin
 function request(overrides: Partial<PortfolioPolicyReplayRequest> = {}): PortfolioPolicyReplayRequest { return { allocations: [{ assetSymbol: "BTC", series: series("BTC", Array(20).fill(100).concat([90, 120, 120, 120])), initialBudgetUsd: 500, lowPrice: 90, highPrice: 110, levelCount: 5, strategy: "accumulate_base" }, { assetSymbol: "SOL", series: series("SOL", Array(24).fill(20)), initialBudgetUsd: 500, lowPrice: 18, highPrice: 22, levelCount: 5, strategy: "accumulate_usdc" }], totalStartingCapitalUsd: 1000, freeCashUsd: 0, policyParameters: params, feeBps: 10, minOrderQuoteUsd: 25, ...overrides }; }
 
 describe("PortfolioPolicyReplayService", () => {
+  it("preserves accumulated zero-cost BTC fragments with zero entry price without creating a sale", () => {
+    const fragment = { kind: "retained" as const, entryPrice: 0, remainingBaseAmount: 0.01,
+      costQuote: 0, exitPrice: 0, entrySpacing: 5 };
+    const allocation = { ...request().allocations[0]!, series: series("BTC", [100, 100]),
+      initialIdleQuoteUsd: 500, initialPreviousPrice: 100, initialLots: [fragment] };
+    allocation.series.candles.forEach(c => { c.high = 100; c.low = 100; });
+    const input = request({ allocations: [allocation], totalStartingCapitalUsd: 500, adaptive: false });
+    const result = new PortfolioPolicyReplayService().replay(input);
+    expect(result.initialPoint.equityUsd).toBe(501); expect(result.endingEquityUsd).toBe(501);
+    expect(result.retainedBaseByAsset.BTC).toBe(0.01); expect(result.trades).toEqual([]);
+    expect(() => new PortfolioPolicyReplayService().replay({ ...input, allocations: [{ ...allocation,
+      initialIdleQuoteUsd: 499, initialLots: [{ ...fragment, kind: "trading", costQuote: 1 }] }] })).toThrow(/Invalid initial lot/);
+    expect(() => new PortfolioPolicyReplayService().replay({ ...input, allocations: [{ ...allocation,
+      initialIdleQuoteUsd: 499, initialLots: [{ ...fragment, costQuote: 1 }] }] })).toThrow(/Invalid initial lot/);
+  });
+  it("uses an explicit initial fee book only for validation while preserving nominal risk capital and cash", () => {
+    const allocation = { ...request().allocations[0]!, series: series("BTC", [100, 100]), lowPrice: 50, highPrice: 150,
+      levelCount: 2, initialIdleQuoteUsd: 400, initialPreviousPrice: 100, initialExternalFeeBookUsd: 0.1,
+      initialLots: [{ kind: "trading" as const, entryPrice: 100.1, remainingBaseAmount: 1,
+        costQuote: 100.1, exitPrice: 120, entrySpacing: 100 }] };
+    allocation.series.candles.forEach(c => { c.high = 100; c.low = 100; });
+    const capitals: number[] = [], allocated: number[] = [];
+    const input = request({ allocations: [allocation], totalStartingCapitalUsd: 500,
+      candidateSelector: ({ policyInput }) => { capitals.push(policyInput.totalPortfolioCapitalUsd);
+        allocated.push(policyInput.band.allocatedCapitalUsd); return "keep"; } });
+    const result = new PortfolioPolicyReplayService().replay(input);
+    expect(result.initialPoint.equityUsd).toBe(500); expect(result.initialPoint.cashUsd).toBe(400);
+    expect(result.endingEquityUsd).toBe(500); expect(result.feesUsd).toBe(0);
+    expect(result.externalCashflowUsd).toBe(0); expect(result.realizedProfitUsd).toBe(0);
+    expect(capitals).toEqual([500, 500]); expect(allocated).toEqual([500, 500]);
+    expect(() => new PortfolioPolicyReplayService().replay({ ...input, allocations: [{ ...allocation,
+      initialExternalFeeBookUsd: 0 }] })).toThrow(/must equal assigned capital/);
+  });
   it("replays multiple assets with shared nonnegative cash and equal starting capital", () => {
     const result = new PortfolioPolicyReplayService().replay(request());
     expect(result.points.length).toBeGreaterThan(0);
@@ -291,6 +324,35 @@ describe("PortfolioPolicyReplayService", () => {
     expect(result.endingBands).toHaveLength(2);
     expect(result.endingBands[1]!.allocatedCapitalUsd).toBe(5);
     expect(result.realizedProfitUsd).toBeGreaterThan(50);
+  });
+  it("does not let a future deposit change earlier policy capital or funding admission", () => {
+    const allocation = { ...request().allocations[0]!, bandId: "band", lowPrice: 50, highPrice: 90,
+      levelCount: 2, initialStatus: "parked" as const, initialIdleQuoteUsd: 400,
+      initialLots: [{ kind: "trading" as const, entryPrice: 50, remainingBaseAmount: 2, costQuote: 100,
+        exitPrice: 60, entrySpacing: 40, economicRule: "accumulate_usdc" as const }], series: series("BTC", [80, 80, 80]) };
+    const start = +allocation.series.candles[0]!.timestamp;
+    const flow = { id: "later", at: new Date(start + 2.5 * 3_600_000), amountUsd: 100 };
+    const run = (flows: typeof flow[]) => {
+      const observations: Array<{ at: number; capital: number }> = [];
+      const result = new PortfolioPolicyReplayService().replay(request({ allocations: [allocation], totalStartingCapitalUsd: 500,
+        cashflows: flows, candidateSelector: ({ policyInput }) => {
+          observations.push({ at: +policyInput.now, capital: policyInput.totalPortfolioCapitalUsd }); return "keep";
+        } }));
+      return { result, prefix: observations.filter(o => o.at < +flow.at) };
+    };
+    const base = run([]), funded = run([flow]);
+    expect(base.result.realizedProfitUsd).toBeGreaterThan(50);
+    expect(base.prefix).toHaveLength(2); expect(funded.prefix).toEqual(base.prefix);
+    expect(funded.prefix.every(o => o.capital === 500)).toBe(true);
+    expect(funded.result.points.filter(p => +p.timestamp < +flow.at)).toEqual(base.result.points.filter(p => +p.timestamp < +flow.at));
+    const create: PortfolioPolicyDecision = { action: "create_band", reason: "Earlier funding check",
+      nextLowPrice: null, nextHighPrice: null, nextLevelCount: null, nextSpacing: null,
+      protectedLowPrice: null, protectedHighPrice: null,
+      candidate: { lowPrice: 50, highPrice: 60, levelCount: 2, spacing: 10, requestedCapitalUsd: 5 } };
+    for (const cashflows of [[], [flow]]) expect(() => new PortfolioPolicyReplayService().replay(request({
+      allocations: [allocation], totalStartingCapitalUsd: 500, adaptive: false, cashflows,
+      timedIntervention: { availableAt: new Date(start + 3_600_000), grid: { bandId: "band", decision: create } },
+    }))).toThrow(/cannot fund or admit/);
   });
 
   it("rejects unaccounted initial capital and future warmup instead of silently dropping them", () => {

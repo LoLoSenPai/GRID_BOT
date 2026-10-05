@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 import { GECKOTERMINAL_POOLS, MINTS } from "@grid-bot/common";
-import { ShadowJevV3EvaluationService, type HistoricalCandle, type ShadowJevV3EvaluationRequest } from "@grid-bot/core";
+import { ShadowJevV3EvaluationService, type HistoricalCandle, type ShadowJevV3EvaluationRequest, type ShadowInventoryEvidence, type ShadowBandCapitalEvidence } from "@grid-bot/core";
 import { createShadowObservationClient, type ShadowObservationClientHandle } from "@grid-bot/db";
 
 const HOUR_MS = 3_600_000;
@@ -8,7 +9,8 @@ const WARMUP_HOURS = 80;
 const HORIZON_HOURS = 24;
 const SYMBOLS = ["BTC", "SOL"] as const;
 type SymbolName = typeof SYMBOLS[number];
-type ReadClient = Pick<ShadowObservationClientHandle["client"], "shadowJevObservation" | "marketCandle">;
+type ReadClient = Pick<ShadowObservationClientHandle["client"], "shadowJevObservation" | "marketCandle"> &
+  Partial<Pick<ShadowObservationClientHandle["client"], "execution" | "capitalLedgerEntry">>;
 
 interface ReplayOutput {
   observationId: string;
@@ -37,7 +39,8 @@ export async function evaluateStoredShadowV3(client: ReadClient, observationId: 
   provenance.decisionTiming = "hypothetical_at_candle_close";
   provenance.jevCompletedAt = observation.outbox?.completedAt?.toISOString() ?? null;
   provenance.jevLatencyMs = observation.outbox?.latencyMs ?? null;
-  const expectedCandidateVersion = observation.questionSetVersion === "shadow-jev-v3.1"
+  const expectedCandidateVersion = observation.questionSetVersion === "shadow-jev-v3.2"
+    ? "shadow-grid-candidates-v3.2" : observation.questionSetVersion === "shadow-jev-v3.1"
     ? "shadow-grid-candidates-v3.1" : observation.questionSetVersion === "shadow-jev-v3"
       ? "shadow-grid-candidates-v3" : null;
   if (!expectedCandidateVersion) return censor("not_v3_observation");
@@ -123,17 +126,71 @@ export async function evaluateStoredShadowV3(client: ReadClient, observationId: 
     nativeFeeSource: "explicit_cli_estimate_per_trade" };
   provenance.mintEvidence = "Portfolio bot/strategy mints checked against configured Solana mints; cache rows do not attest pool token mints.";
   try {
+    const inventoryEvidence = await loadShadowInventoryEvidence(client, strategies);
+    const capitalEvidence = await loadShadowCapitalEvidence(client, strategies, String(portfolio.id), observation.observedAt);
+    provenance.inventoryEvidence = { source: "reconstructed_after_capture", exhaustiveQuery: !!client.execution,
+      hash: createHash("sha256").update(JSON.stringify(inventoryEvidence)).digest("hex"),
+      scope: "all_bot_executions_through_position_state", extractedAt: inventoryEvidence[0]?.extractedAt ?? null,
+      warning: "Persisted receipts attest compatibility; the hash does not prove completeness or exclude past operator repairs." };
+    provenance.capitalEvidence = { source: "reconstructed_after_capture", exhaustiveQuery: !!client.capitalLedgerEntry,
+      hash: createHash("sha256").update(JSON.stringify(capitalEvidence)).digest("hex"), scope: "all_band_entries_through_state" };
     const replayInput: ShadowJevV3EvaluationRequest = { observation: {
       observedAt: observation.observedAt, bandId: observation.bandId, context: observation.context,
       candidateSet: observation.candidateSet, proposedDecision: observation.proposedDecision,
       policyInput: observation.policyInput,
-    }, selectedCandidateId, markets, feeBps, slippageBps, nativeFeeUsd };
+    }, selectedCandidateId, markets, feeBps, slippageBps, nativeFeeUsd, inventoryEvidence, capitalEvidence };
     onPrepared?.(replayInput);
     const evaluation = new ShadowJevV3EvaluationService().evaluate(replayInput);
     return { observationId, status: evaluation.status, reasons: evaluation.reasons, provenance, evaluation };
   } catch (error) {
     return censor(`replay_invalid:${error instanceof Error ? error.message : "unknown"}`);
   }
+}
+
+/** Exhaustive persisted executions, including failure/unknown statuses. No network or state mutation. */
+export async function loadShadowInventoryEvidence(client: ReadClient, strategies: unknown[]): Promise<ShadowInventoryEvidence[]> {
+  if (!client.execution) return [];
+  const evidence: ShadowInventoryEvidence[] = [], extractedAt = new Date().toISOString();
+  for (const strategyValue of strategies) {
+    const strategy = object(strategyValue);
+    for (const rawBand of Array.isArray(strategy?.bands) ? strategy.bands : []) {
+      const bot = object(object(rawBand)?.bot), position = object(bot?.position);
+      if (!bot || !position || typeof bot.id !== "string" || !["live", "paper"].includes(String(bot.mode)) ||
+        typeof bot.createdAt !== "string" || typeof position.updatedAt !== "string" ||
+        !Number.isFinite(Date.parse(position.updatedAt))) throw new Error("Invalid receipt extraction boundary.");
+      // No status filter, LIMIT, or start-date truncation: each bot's full history through its frozen state.
+      const rows = await client.execution.findMany({ where: { botId: bot.id,
+        createdAt: { lte: new Date(position.updatedAt) } }, include: { order: { select: { side: true, botId: true } } },
+        orderBy: [{ completedAt: "asc" }, { id: "asc" }] });
+      if (rows.some(row => row.order.botId !== bot.id)) throw new Error("Execution/order bot mismatch.");
+      evidence.push({ version: "ordered-receipts-v1", scope: "all_bot_executions_through_position_state",
+        botId: bot.id, mode: bot.mode as "live" | "paper", baseMint: String(bot.baseMint), quoteMint: String(bot.quoteMint),
+        botCreatedAt: bot.createdAt, stateAt: position.updatedAt, extractedAt,
+        rows: rows.map(row => ({ id: row.id, botId: row.botId, mode: row.mode, side: row.order.side,
+          status: row.status, createdAt: row.createdAt.toISOString(), completedAt: row.completedAt?.toISOString() ?? null,
+          executedInputAmount: row.executedInputAmount?.toString() ?? null,
+          executedOutputAmount: row.executedOutputAmount?.toString() ?? null })) });
+    }
+  }
+  return evidence;
+}
+
+export async function loadShadowCapitalEvidence(client: ReadClient, strategies: unknown[], portfolioId: string,
+  observedAt: Date): Promise<ShadowBandCapitalEvidence[]> {
+  if (!client.capitalLedgerEntry) return [];
+  const evidence: ShadowBandCapitalEvidence[] = [], extractedAt = new Date().toISOString();
+  for (const value of strategies) for (const raw of Array.isArray(object(value)?.bands) ? object(value)!.bands as unknown[] : []) {
+    const band = object(raw); if (!band || typeof band.id !== "string") throw new Error("Invalid ledger band.");
+    const rows = await client.capitalLedgerEntry.findMany({ where: { bandId: band.id, createdAt: { lte: observedAt } },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
+    evidence.push({ version: "band-ledger-v1", scope: "all_band_entries_through_state", bandId: band.id, portfolioId,
+      stateAt: observedAt.toISOString(), extractedAt, rows: rows.map(row => ({ id: row.id, portfolioId: row.portfolioId,
+        bandId: row.bandId!, entryType: row.entryType, createdAt: row.createdAt.toISOString(), executionId: row.executionId,
+        allocatedDelta: row.bandAllocatedQuoteDelta.toString(), availableDelta: row.bandAvailableQuoteDelta.toString(),
+        deployedDelta: row.bandDeployedCostDelta.toString(), reservedDelta: row.bandReservedQuoteDelta.toString(),
+        externalFeeDelta: row.externalFeeQuoteDelta.toString(), metadata: row.metadata })) });
+  }
+  return evidence;
 }
 
 function object(value: unknown): Record<string, unknown> | null {
