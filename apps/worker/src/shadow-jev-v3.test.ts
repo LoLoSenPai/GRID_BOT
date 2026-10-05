@@ -104,7 +104,29 @@ describe("Jev V3 candidate question", () => {
       economic_validation_reasons: ["Spacing below current cost floor"] });
     const keepOption = Object.entries(optionToCandidateId).find(([, id]) => id === "keep")?.[0];
     expect(keepOption).toBeDefined();
-    expect(request.questions.grid_candidate.criteria[keepOption!]).toContain("Existing baseline");
+    expect(request.questions.grid_candidate.criteria[keepOption!]).toContain("Existing baseline; current cost rules would reject it for a new grid.");
+  });
+
+  it("admits only a boundary policy revision as a baseline and explains its economic failure", () => {
+    const baselinePolicy: ShadowGridCandidateSet = { ...candidateSet,
+      version: "shadow-grid-candidates-v3.2",
+      candidates: [candidateSet.candidates[0]!, { ...candidateSet.candidates[1]!, lowPrice: 97.00000000000001,
+        highPrice: 103, spacing: 2, validation: "baseline", economicallyValid: false,
+        economicValidationReasons: ["Spacing below current policy/cost floor"] }] };
+    const { request, optionToCandidateId } = prepared(baselinePolicy);
+    const policyOption = Object.entries(optionToCandidateId).find(([, id]) => id === "policy")?.[0];
+    expect(policyOption).toBeDefined();
+    expect(request.questions.grid_candidate.criteria[policyOption!]).toContain("Spacing below current policy/cost floor");
+
+    const tooNarrow = { ...baselinePolicy, candidates: [baselinePolicy.candidates[0]!, {
+      ...baselinePolicy.candidates[1]!, lowPrice: 97.00001, highPrice: 102.99999,
+    }] };
+    expect(() => prepared(tooNarrow)).toThrow("Invalid or duplicate V3 candidate.");
+
+    const invalidVariant = { ...baselinePolicy, candidates: [baselinePolicy.candidates[0]!, {
+      ...baselinePolicy.candidates[1]!, id: "donchian_20", kind: "donchian_variant" as const,
+    }] };
+    expect(() => prepared(invalidVariant)).toThrow("Invalid or duplicate V3 candidate.");
   });
 
   it("rejects missing probability options", async () => {

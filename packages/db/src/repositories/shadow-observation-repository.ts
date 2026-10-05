@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../client";
 import { logger } from "@grid-bot/common";
@@ -61,7 +62,7 @@ export class PrismaShadowObservationRepository {
     const proposedDecision = jsonValue(input.proposedDecision);
     let candidateSet = input.candidateSet === undefined ? null : jsonValue(input.candidateSet);
     let costProfile: ShadowObservedCostProfile | null = null;
-    if (input.questionSetVersion === "shadow-jev-v4") {
+    if (isV4Question(input.questionSetVersion)) {
       try {
         costProfile = await new PrismaShadowCostRepository(this.client).readProfile(input.portfolioId, input.botId, observedAt);
       } catch (error) {
@@ -76,18 +77,29 @@ export class PrismaShadowObservationRepository {
       sourceMarket: input.marketMeta.sourceMarket ?? null,
     });
     const contentHash = shadowMarketContentHash(input.marketMeta, candles);
-    return this.client.$transaction(async (tx) => {
+    const immutableObservationHash = isV3Question(input.questionSetVersion)
+      ? canonicalHash({ portfolioId: input.portfolioId, strategyId: input.strategyId,
+        bandId: input.bandId, botId: input.botId, observedAt,
+        questionSetVersion: input.questionSetVersion, modelRequested: input.modelRequested }) : undefined;
+    return retryCaptureTransaction(() => this.client.$transaction(async (tx) => {
+      if (immutableObservationHash) {
+        const existing = await tx.shadowJevObservation.findUnique({ where: { observationHash: immutableObservationHash } });
+        // A committed observation already includes its outbox. A durable outcome
+        // retry must still work after the original band has closed or changed.
+        if (existing) return { observationId: existing.id, snapshotId: existing.snapshotId };
+      }
       // The replay state must come from one MVCC view of the shadow database. The
       // normal portfolio cycle has already returned before this transaction runs.
       let context = isV3Question(input.questionSetVersion)
         ? jsonValue({ ...(suppliedContext as object), shadowReplayV3:
           await readShadowReplayV3(tx, input.portfolioId, input.strategyId, input.bandId, input.botId) })
         : suppliedContext;
-      if (input.questionSetVersion === "shadow-jev-v4") {
+      if (isV4Question(input.questionSetVersion)) {
         const full = context as unknown as Record<string, unknown>;
         const snapshot = full.shadowReplayV3 as { capturedAt: string; strategies: Array<{ baseSymbol: string; allocatedQuoteAmount: string }> };
         const supplied = suppliedContext as unknown as { exitCommitments?: Array<{ targetStatus: string; fulfilledAt?: unknown }> };
         candidateSet = jsonValue(buildShadowDecisionCandidates({
+          decisionVersion: input.questionSetVersion === "shadow-jev-v4" ? "shadow-decisions-v4" : "shadow-decisions-v4.1",
           policyInput: restorePolicyInput(input.policyInput), proposedDecision: input.proposedDecision as PortfolioPolicyDecision,
           replaySnapshot: snapshot, costProfile,
           options: { assetAllocations: snapshot.strategies.map(strategy => ({ assetSymbol: strategy.baseSymbol,
@@ -100,11 +112,7 @@ export class PrismaShadowObservationRepository {
       // A V3 retry can read the same portfolio a few seconds later. Keep the
       // first immutable observation for that band/hour instead of enqueuing a
       // second judgment solely because capturedAt or a bot tick changed.
-      const observationHash = isV3Question(input.questionSetVersion)
-        ? canonicalHash({ portfolioId: input.portfolioId, strategyId: input.strategyId,
-          bandId: input.bandId, botId: input.botId, observedAt,
-          questionSetVersion: input.questionSetVersion, modelRequested: input.modelRequested })
-        : canonicalHash({
+      const observationHash = immutableObservationHash ?? canonicalHash({
           portfolioId: input.portfolioId, strategyId: input.strategyId, bandId: input.bandId, botId: input.botId,
           observedAt, questionSetVersion: input.questionSetVersion, modelRequested: input.modelRequested,
           contentHash, policyInput, context, botState, marketMeta, proposedDecision,
@@ -156,10 +164,10 @@ export class PrismaShadowObservationRepository {
       if (outbox.observationId !== observation.id) {
         throw new Error("Shadow outbox idempotency collision.");
       }
-      return { observationId: observation.id, snapshotId: snapshot.id };
+      return { observationId: observation.id, snapshotId: observation.snapshotId };
     }, isV3Question(input.questionSetVersion)
       ? { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
-      : undefined);
+      : undefined), input.botId);
   }
 
   async finalizeOutcome(observationId: string, input: FinalizeShadowOutcomeInput): Promise<void> {
@@ -189,6 +197,40 @@ export class PrismaShadowObservationRepository {
       if (concurrent.outcomeHash !== outcomeHash) throw new Error("Shadow engine outcome is immutable.");
     }
   }
+}
+
+// Repeat the complete transaction after serialization/deadlock rollback. Do not
+// retry individual statements or general database failures. The immutable key
+// and ON CONFLICT writes preserve the first successfully committed observation.
+async function retryCaptureTransaction<T>(operation: () => Promise<T>, botId: string): Promise<T> {
+  const delays = [50, 100, 200];
+  for (let attempt = 1; ; attempt++) {
+    try { return await operation(); }
+    catch (error) {
+      const code = captureConflictCode(error);
+      if (!code) throw error;
+      const delayMs = delays[attempt - 1];
+      logger.warn({ botId, code, attempt, maxAttempts: delays.length + 1, exhausted: delayMs === undefined },
+        "Shadow capture transaction conflict");
+      if (delayMs === undefined) throw error;
+      await delay(delayMs);
+    }
+  }
+}
+
+function captureConflictCode(error: unknown, depth = 0): string | undefined {
+  if (!error || typeof error !== "object" || depth > 5) return undefined;
+  const record = error as Record<string, unknown>;
+  for (const key of ["code", "originalCode"] as const) {
+    if (["P2034", "40001", "40P01"].includes(String(record[key]))) return String(record[key]);
+  }
+  // Prisma's pg adapter wraps SQLSTATE under meta.driverAdapterError.cause.
+  // Inspect only documented wrappers, never arbitrary message text.
+  for (const key of ["meta", "driverAdapterError", "cause"] as const) {
+    const code = captureConflictCode(record[key], depth + 1);
+    if (code) return code;
+  }
+  return undefined;
 }
 
 async function readShadowReplayV3(tx: Prisma.TransactionClient, portfolioId: string,
@@ -256,7 +298,7 @@ function validateCapture(input: CaptureShadowObservationInput): void {
   if (!Array.isArray(input.policyInput?.candles) || input.policyInput.candles.length === 0) {
     throw new Error("A shadow observation requires the complete effective candle series.");
   }
-  if (["shadow-jev-v2", "shadow-jev-v3", "shadow-jev-v3.1"].includes(input.questionSetVersion) &&
+  if (["shadow-jev-v2", "shadow-jev-v3", "shadow-jev-v3.1", "shadow-jev-v3.2"].includes(input.questionSetVersion) &&
     input.candidateSet === undefined) {
     throw new Error("A V2/V3 shadow observation requires its immutable candidate set.");
   }
@@ -268,7 +310,11 @@ function validateCapture(input: CaptureShadowObservationInput): void {
 }
 
 function isV3Question(version: string): boolean {
-  return version === "shadow-jev-v3" || version === "shadow-jev-v3.1" || version === "shadow-jev-v4";
+  return version === "shadow-jev-v3" || version === "shadow-jev-v3.1" || version === "shadow-jev-v3.2" || isV4Question(version);
+}
+
+function isV4Question(version: string): boolean {
+  return version === "shadow-jev-v4" || version === "shadow-jev-v4.1";
 }
 
 function restorePolicyInput(raw: CaptureShadowObservationInput["policyInput"]): PortfolioPolicyInput {

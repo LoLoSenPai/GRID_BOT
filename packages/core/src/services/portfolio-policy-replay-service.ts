@@ -20,6 +20,8 @@ export interface PortfolioReplayAllocation { assetSymbol: string; series: Backte
   executionSeries?: BacktestMarketSeries;
   bandId?: string; baseMint?: string; quoteMint?: string; baseDecimals?: number;
   initialPreviousPrice?: number; initialRealizedLossUsd?: number;
+  /** Proven historical native-fee book difference. Validation only: never extra cash, profit, or policy allocation. */
+  initialExternalFeeBookUsd?: number;
   warmupCandles?: HistoricalCandle[]; initialBudgetUsd: number; initialIdleQuoteUsd?: number;
   initialLots?: PortfolioReplayInitialLot[]; lowPrice: number; highPrice: number; levelCount: number;
   initialStatus?: "active" | "parked"; initialLastRevisionAt?: Date; initialRevisionsToday?: number;
@@ -140,7 +142,7 @@ export class PortfolioPolicyReplayService {
         const least = markets.map(a => a.assetSymbol).sort((a, b) => attributions(a) - attributions(b) || a.localeCompare(b))[0];
         if (least !== band.assetSymbol || candidate.requestedCapitalUsd > freeCash ||
           bands.filter(b => b.assetSymbol === band.assetSymbol).length >= request.policyParameters.maxBands ||
-          (attributions(band.assetSymbol) + candidate.requestedCapitalUsd) / (request.cashflows?.length
+          (attributions(band.assetSymbol) + candidate.requestedCapitalUsd) / (appliedCashflows.length
             ? freeCash + bands.reduce((sum, b) => sum + b.allocatedCapitalUsd, 0) : request.totalStartingCapitalUsd) * 100 > request.policyParameters.maxExposurePct) {
           if (strict) throw new Error("Initial intervention cannot fund or admit the new band.");
           return false;
@@ -272,7 +274,7 @@ export class PortfolioPolicyReplayService {
               band: { ...band, revisionsToday: sameDay ? band.revisionsToday : 0, openTradingLots: assetLots },
               bandCount: bands.filter(b => b.assetSymbol === event.asset).length, assetAttributedCapitalUsd: attributions(event.asset),
               candles: closed[event.asset]!.slice(-80), candleIntervalMs: interval, maxCandleAgeMs: interval * 2,
-              availableCashUsd: freeCash, totalPortfolioCapitalUsd: request.cashflows?.length
+              availableCashUsd: freeCash, totalPortfolioCapitalUsd: appliedCashflows.length
                 ? freeCash + bands.reduce((sum, b) => sum + b.allocatedCapitalUsd, 0) : request.totalStartingCapitalUsd,
               parameters: request.policyParameters };
             const decision = evaluatePortfolioPolicy(policyInput);
@@ -346,6 +348,7 @@ function validateRequest(r: PortfolioPolicyReplayRequest) {
       (a.baseMint !== undefined && !a.baseMint.trim()) || (a.quoteMint !== undefined && !a.quoteMint.trim()) ||
       !Number.isInteger(a.baseDecimals ?? 8) || (a.baseDecimals ?? 8) < 0 || (a.baseDecimals ?? 8) > 12 ||
       !Number.isFinite(a.initialRealizedLossUsd ?? 0) || (a.initialRealizedLossUsd ?? 0) < 0 ||
+      !Number.isFinite(a.initialExternalFeeBookUsd ?? 0) || (a.initialExternalFeeBookUsd ?? 0) < 0 ||
       (a.initialPreviousPrice !== undefined && (!Number.isFinite(a.initialPreviousPrice) || a.initialPreviousPrice <= 0))) {
       throw new Error("Invalid initial asset state.");
     }
@@ -353,7 +356,7 @@ function validateRequest(r: PortfolioPolicyReplayRequest) {
       throw new Error("Seeded lots require explicit initial idle cash.");
     }
     if (a.initialIdleQuoteUsd !== undefined && (!Number.isFinite(a.initialIdleQuoteUsd) || a.initialIdleQuoteUsd < 0 ||
-      a.initialIdleQuoteUsd > a.initialBudgetUsd + 1e-8)) throw new Error("Invalid initial idle cash.");
+      a.initialIdleQuoteUsd > a.initialBudgetUsd + (a.initialExternalFeeBookUsd ?? 0) + 1e-8)) throw new Error("Invalid initial idle cash.");
     if (a.initialStatus !== undefined && a.initialStatus !== "active" && a.initialStatus !== "parked") {
       throw new Error("Invalid initial band status.");
     }
@@ -365,7 +368,8 @@ function validateRequest(r: PortfolioPolicyReplayRequest) {
       a.initialRevisionsToday < 0)) throw new Error("Invalid initial revision count.");
     if ((a.initialLots ?? []).some(lot => ![lot.entryPrice, lot.remainingBaseAmount, lot.costQuote,
       lot.exitPrice, lot.entrySpacing].every(value => Number.isFinite(value) && value >= 0) ||
-      lot.entryPrice <= 0 || lot.remainingBaseAmount <= 0 || lot.exitPrice <= 0 || lot.entrySpacing <= 0 ||
+      lot.remainingBaseAmount <= 0 || lot.entrySpacing <= 0 ||
+      (lot.kind === "trading" && (lot.entryPrice <= 0 || lot.exitPrice <= 0)) ||
       (lot.kind !== "retained" && lot.kind !== "trading") ||
       (lot.economicRule !== undefined && lot.economicRule !== "accumulate_base" && lot.economicRule !== "accumulate_usdc") ||
       (lot.kind === "retained" && lot.costQuote !== 0) ||
@@ -374,7 +378,7 @@ function validateRequest(r: PortfolioPolicyReplayRequest) {
     if (sourceIds.some(id => !id.trim()) || new Set(sourceIds).size !== sourceIds.length) throw new Error("Invalid source lot identities.");
     const seededBookCapital = (a.initialIdleQuoteUsd ?? a.initialBudgetUsd) +
       (a.initialLots ?? []).reduce((sum, lot) => sum + lot.costQuote, 0);
-    if (Math.abs(seededBookCapital + (a.initialRealizedLossUsd ?? 0) - a.initialBudgetUsd) > 1e-8) {
+    if (Math.abs(seededBookCapital + (a.initialRealizedLossUsd ?? 0) - a.initialBudgetUsd - (a.initialExternalFeeBookUsd ?? 0)) > 1e-8) {
       throw new Error("Seeded cash, lot cost and declared realized loss must equal assigned capital.");
     }
     if (!a.series.candles.every((c, i) => c.timestamp instanceof Date && Number.isFinite(+c.timestamp) &&

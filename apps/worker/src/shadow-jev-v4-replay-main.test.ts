@@ -13,6 +13,7 @@ function fixture() {
   const set = { version: "shadow-decisions-v4", grid: { version: "shadow-grid-candidates-v3.1", candidates: [] },
     exit: { version: "shadow-exits-v1", candidates: [] }, costProfile: null };
   const row = { id: "obs", observedAt, questionSetVersion: "shadow-jev-v4", candidateSet: set,
+    outcome: { status: "wait", effectiveDecision: { action: "wait", reason: "Recorded engine" } },
     outbox: { completedAt, status: "completed", probabilities: {
       grid_candidate: { candidate_id: "grid" }, exit_candidate: { candidate_id: "closer" } } } };
   const market = { provider: "gecko-terminal", assetSymbol: "BTC", sourceMarket: "solana:pool", futureCandles: [] };
@@ -36,10 +37,25 @@ describe("read-only V4 replay orchestration", () => {
     const { client } = fixture();
     const cashflows = [{ id: "deposit", at: new Date(+observedAt + 60_000), amountUsd: 100 }];
     const output = await evaluateStoredShadowV4(client as never, "obs", 0.02, cashflows);
-    expect(mocks.evaluate).toHaveBeenCalledWith(expect.objectContaining({ decisionAvailableAt: completedAt,
+    expect(mocks.evaluate).toHaveBeenCalledWith(expect.objectContaining({ observation: expect.objectContaining({
+      initialEngineDecision: { action: "wait", reason: "Recorded engine" } }), decisionAvailableAt: completedAt,
       cashflows, selectedGridCandidateId: "grid", selectedExitCandidateId: "closer" }));
     expect(output).toMatchObject({ status: "partial", frozenReplayInput: { decisionAvailableAt: completedAt },
       provenance: { source: "strict-loader", decisionTiming: "after_recorded_response_completion", replayInputHash: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+  });
+  it("refuses a missing engine outcome instead of assuming the proposal was applied", async () => {
+    const { client, row } = fixture(); delete (row as any).outcome;
+    expect(await evaluateStoredShadowV4(client as never, "obs", 0.02)).toMatchObject({ reasons: ["missing_effective_engine_outcome"] });
+    expect(mocks.evaluate).not.toHaveBeenCalled();
+  });
+  it("adapts the V4.1 generation to V3.2 and rejects mixed versions", async () => {
+    const { client, row } = fixture(); row.questionSetVersion = "shadow-jev-v4.1";
+    row.candidateSet.version = "shadow-decisions-v4.1";
+    row.candidateSet.grid.version = "shadow-grid-candidates-v3.2";
+    await evaluateStoredShadowV4(client as never, "obs", 0.02);
+    expect(mocks.load.mock.calls[0]![0].shadowJevObservation.findUnique()).resolves.toMatchObject({ questionSetVersion: "shadow-jev-v3.2" });
+    row.candidateSet.grid.version = "shadow-grid-candidates-v3.1";
+    expect(await evaluateStoredShadowV4(client as never, "obs", 0.02)).toMatchObject({ reasons: ["invalid_v4_candidate_version"] });
   });
   it("rejects a 5m series from a different pool before simulation", async () => {
     const { client, market } = fixture();

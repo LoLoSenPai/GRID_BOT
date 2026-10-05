@@ -55,6 +55,40 @@ function fixture() {
 }
 
 describe("ShadowJevV3EvaluationService", () => {
+  it("ignores only locks proven expired at the observation, including the equality boundary", () => {
+    const input = fixture(), metadata = input.observation.context.shadowReplayV3.strategies[0]!.bands[0]!.bot.stateSnapshots[0]!.metadata;
+    metadata.levelLocks = { "0": old, "1": at };
+    expect(new ShadowJevV3EvaluationService().evaluate(input).status).toBe("evaluated");
+    for (const expiry of [after, "invalid", 123]) {
+      metadata.levelLocks = { "0": expiry } as never;
+      expect(new ShadowJevV3EvaluationService().evaluate(input).reasons).toContain("PENDING_RUNTIME_SIGNAL_OR_LEVEL_LOCK");
+    }
+  });
+  it("requires exact ordered receipt proof for cumulative rounding and independently checks lot cost", () => {
+    const input = fixture(), strategy = input.observation.context.shadowReplayV3.strategies[1]!, band = strategy.bands[0]!;
+    Object.assign(band.bot, { mode: "live", createdAt: old });
+    band.bot.position.updatedAt = new Date(t0 - HOUR + 60_000).toISOString();
+    band.bot.position.baseAmount = "3.00000003";
+    band.availableQuoteAmount = "200"; band.deployedCostQuote = "300";
+    band.bot.positionLots = [{ id: "lot", botId: band.bot.id, kind: "trading", entryPrice: "18",
+      remainingBaseAmount: "3.0000000183", costQuote: "300", openedAt: old, closedAt: null }] as never;
+    band.exitCommitments = [{ lotId: "lot", bandId: band.id, originRevisionId: "SOL-revision", targetStatus: "KNOWN",
+      fulfilledAt: null, createdAt: old, sellTargetPrice: "25", economicRule: "accumulate_usdc" }] as never;
+    const service = new ShadowJevV3EvaluationService();
+    expect(service.evaluate(input).reasons).toContain("UNRECONCILED_POSITION");
+    const evidence = { version: "ordered-receipts-v1", botId: band.bot.id, mode: "live", baseMint: "SOL-mint",
+      quoteMint: "usdc-mint", botCreatedAt: old, stateAt: band.bot.position.updatedAt, extractedAt: after,
+      scope: "all_bot_executions_through_position_state", rows: [1, 2, 3].map(i => ({ id: `receipt-${i}`,
+        botId: band.bot.id, mode: "live", side: "buy", status: "filled", createdAt: old,
+        completedAt: new Date(t0 - HOUR + i * 1000).toISOString(), executedInputAmount: "100", executedOutputAmount: "1.0000000061" })) };
+    (input as any).inventoryEvidence = [evidence];
+    expect(service.evaluate(input)).toMatchObject({ status: "evaluated", inventoryReconciliation: [
+      { status: "exact" }, { status: "ordered_receipts_match", receiptCount: 3 } ] });
+    band.deployedCostQuote = "301";
+    expect(service.evaluate(input).reasons).toContain("UNRECONCILED_LOT_COST");
+    band.deployedCostQuote = "300"; evidence.rows.pop();
+    expect(service.evaluate(input).reasons).toContain("UNRECONCILED_POSITION");
+  });
   it("evaluates immutable single interventions at four horizons without mutating the input", () => {
     const input = fixture(), saved = structuredClone(input);
     const result = new ShadowJevV3EvaluationService().evaluate(input);

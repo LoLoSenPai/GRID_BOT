@@ -2,13 +2,13 @@ import { createHash } from "node:crypto";
 import type { ShadowDecisionCandidateSet } from "@grid-bot/core";
 import { buildJevV3Request, type ShadowJevV3Input, type ShadowJevV3Request } from "./shadow-jev-v3-questions";
 
-export const v4QuestionSetVersion = "shadow-jev-v4" as const;
+export const v4QuestionSetVersion = "shadow-jev-v4.1" as const;
 export const v4ModelRequested = "jev-1.13.0" as const;
 type ChoiceQuestion = ShadowJevV3Request["questions"]["grid_candidate"];
 export interface ShadowJevV4Request {
   model: typeof v4ModelRequested;
   state: ShadowJevV3Request["state"] & {
-    experiment_version: "shadow-decisions-v4";
+    experiment_version: ShadowDecisionCandidateSet["version"];
     observed_cost_profile: ShadowDecisionCandidateSet["costProfile"];
     exit_candidates: Array<{ option: string; family: string; parameters: Record<string, number | string>;
       updates: ShadowDecisionCandidateSet["exit"]["candidates"][number]["updates"] }>;
@@ -23,12 +23,13 @@ export function buildJevV4Request(input: Omit<ShadowJevV3Input, "candidateSet"> 
   candidateSet: ShadowDecisionCandidateSet; fineMarketSnapshot?: { candles: unknown; candleCount: number; provenance: unknown };
 }) {
   const set = input.candidateSet;
-  if (set?.version !== "shadow-decisions-v4" || set.exit?.version !== "shadow-exits-v1" ||
+  if (!["shadow-decisions-v4", "shadow-decisions-v4.1"].includes(set?.version) || set.exit?.version !== "shadow-exits-v1" ||
     !Array.isArray(set.exit.candidates) || set.exit.candidates.length < 1 || set.exit.candidates.length > 3 ||
     set.exit.candidates[0]?.id !== "keep") throw new TypeError("Invalid V4 decision set.");
   const grid = buildJevV3Request({ ...input, candidateSet: set.grid });
   const ordered = [...set.exit.candidates];
-  const seed = createHash("sha256").update([v4QuestionSetVersion, grid.request.state.observed_at,
+  const questionVersion = set.version === "shadow-decisions-v4" ? "shadow-jev-v4" : v4QuestionSetVersion;
+  const seed = createHash("sha256").update([questionVersion, grid.request.state.observed_at,
     input.policyInput.band.id, "exits"].join("|")).digest();
   for (let i = ordered.length - 1; i > 0; i--) {
     const j = seed[i]! % (i + 1);

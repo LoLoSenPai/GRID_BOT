@@ -11,9 +11,9 @@ import { round } from "../utils/math";
  * already produced, and returns plain JSON values suitable for an observation
  * payload. It does not choose a winner or change the live policy.
  */
-export const SHADOW_GRID_CANDIDATE_VERSION = "shadow-grid-candidates-v3.1" as const;
+export const SHADOW_GRID_CANDIDATE_VERSION = "shadow-grid-candidates-v3.2" as const;
 export type ShadowGridCandidateSetVersion = typeof SHADOW_GRID_CANDIDATE_VERSION |
-  "shadow-grid-candidates-v3" | "shadow-grid-candidates-v2";
+  "shadow-grid-candidates-v3.1" | "shadow-grid-candidates-v3" | "shadow-grid-candidates-v2";
 
 export type ShadowGridCandidateKind = "keep" | "policy" | "range_variant" | "spacing_variant" |
   "donchian_variant" | "drift_variant" | "density_variant";
@@ -132,7 +132,8 @@ export function buildShadowGridCandidates(
     // band is now below a newer economic floor.
     policyCandidateId = "keep";
   } else if (proposal) {
-    add(proposal, proposal.action === "park" || proposal.action === "reactivate");
+    add(proposal, proposal.action === "park" || proposal.action === "reactivate" ||
+      (proposal.kind === "policy" && proposal.action === "revise" && isWidthBoundaryNoise(proposal, policyInput)));
     if (candidates.some(candidate => candidate.id === proposal.id)) policyCandidateId = proposal.id;
   }
 
@@ -364,7 +365,10 @@ function validateCandidate(input: PortfolioPolicyInput, candidate: Omit<ShadowGr
   // PortfolioPolicyService defines envelope width relative to its center.
   const center = (candidate.lowPrice + candidate.highPrice) / 2;
   const widthPct = center > 0 ? (candidate.highPrice - candidate.lowPrice) / center * 100 : Number.NaN;
-  if (Number.isFinite(widthPct) && (widthPct < p.minWidthPct || widthPct > p.maxWidthPct)) {
+  // Absorb only floating-point representation noise at the configured boundary;
+  // 1e-10 percentage points is many orders below any meaningful width change.
+  const widthTolerancePct = 1e-10;
+  if (Number.isFinite(widthPct) && (widthPct < p.minWidthPct - widthTolerancePct || widthPct > p.maxWidthPct + widthTolerancePct)) {
     reasons.push(`Width must stay between ${p.minWidthPct}% and ${p.maxWidthPct}%.`);
   }
 
@@ -421,6 +425,16 @@ function validateCandidate(input: PortfolioPolicyInput, candidate: Omit<ShadowGr
   // as a candidate, but it does not request capital or alter the band.
   if (candidate.action === "keep" && candidate.requestedCapitalUsd !== 0) reasons.push("KEEP cannot request additional capital.");
   return reasons;
+}
+
+function isWidthBoundaryNoise(candidate: Pick<ShadowGridCandidate, "lowPrice" | "highPrice">,
+  input: PortfolioPolicyInput): boolean {
+  const center = (candidate.lowPrice + candidate.highPrice) / 2;
+  if (!Number.isFinite(center) || center <= 0) return false;
+  const widthPct = (candidate.highPrice - candidate.lowPrice) / center * 100;
+  const tolerancePct = 1e-10;
+  return Math.abs(widthPct - input.parameters.minWidthPct) <= tolerancePct ||
+    Math.abs(widthPct - input.parameters.maxWidthPct) <= tolerancePct;
 }
 
 function requestedCapital(input: PortfolioPolicyInput, action: ShadowGridCandidateAction, levelCount: number): number {

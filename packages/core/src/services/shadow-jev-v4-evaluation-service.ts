@@ -4,6 +4,8 @@ import { PortfolioPolicyReplayService, type PortfolioReplayCashflow, type Portfo
 import { prepareShadowJevV3Replay, shadowReplayMetrics, type ShadowJevV3EvaluationRequest, type ShadowJevV3Metrics } from "./shadow-jev-v3-evaluation-service";
 import type { ShadowDecisionCandidateSet } from "./shadow-decision-candidate-service";
 import type { HistoricalCandle } from "../domain/types";
+import type { ShadowInventoryReconciliation } from "./shadow-inventory-reconciliation-service";
+import type { ShadowBandCapitalReconciliation } from "./shadow-band-capital-reconciliation-service";
 
 const HOUR = 3_600_000, HORIZONS = [1, 3, 6, 24] as const;
 export interface ShadowJevV4EvaluationRequest extends Omit<ShadowJevV3EvaluationRequest, "selectedCandidateId" | "markets"> {
@@ -14,12 +16,17 @@ export interface ShadowJevV4EvaluationRequest extends Omit<ShadowJevV3Evaluation
 export interface ShadowJevV4Metrics extends ShadowJevV3Metrics {
   externalCashflowUsd: number; equityChangeExcludingCashflowsUsd: number; maxDrawdownPct: number;
   exitRevisions: number; exitRevisionAppliedAt: string | null;
+  gridRevisions: number; bandsCreated: number;
 }
 export interface ShadowJevV4EvaluationResult {
-  version: "shadow-jev-v4-evaluation-v1"; mode: "single_delayed_shadow_intervention";
+  version: "shadow-jev-v4-evaluation-v2"; mode: "single_delayed_shadow_intervention";
+  inventoryReconciliation: ShadowInventoryReconciliation[];
+  capitalReconciliation: ShadowBandCapitalReconciliation[];
+  policyBaselineSource: "recorded_engine_outcome" | "frozen_proposal_assumption";
   status: "evaluated" | "partial" | "censored"; reasons: string[]; assumptions: string[];
   decisionAvailableAt: string | null; costProfile: ShadowDecisionCandidateSet["costProfile"];
   horizons: Array<{ hours: typeof HORIZONS[number]; status: "evaluated" | "censored"; reasons: string[];
+    executionResolution?: "5m" | "1h";
     branches?: Record<"keep" | "currentPolicy" | "gridOnly" | "exitOnly" | "combined", ShadowJevV4Metrics> }>;
   provenance: Array<{ assetSymbol: string; baseMint: string; quoteMint: string; provider: string; sourceMarket: string; inputId: string }>;
 }
@@ -29,18 +36,22 @@ export class ShadowJevV4EvaluationService {
   constructor(private readonly replay = new PortfolioPolicyReplayService()) {}
   evaluate(input: ShadowJevV4EvaluationRequest): ShadowJevV4EvaluationResult {
     const set = input.observation.candidateSet as ShadowDecisionCandidateSet;
-    const output: ShadowJevV4EvaluationResult = { version: "shadow-jev-v4-evaluation-v1",
+    const output: ShadowJevV4EvaluationResult = { version: "shadow-jev-v4-evaluation-v2",
+      inventoryReconciliation: [], capitalReconciliation: [], policyBaselineSource: input.observation.initialEngineDecision === undefined
+        ? "frozen_proposal_assumption" : "recorded_engine_outcome",
       mode: "single_delayed_shadow_intervention", status: "censored", reasons: [], decisionAvailableAt: null,
       costProfile: set?.costProfile ?? null, horizons: [], provenance: input.markets.map(({ assetSymbol, baseMint, quoteMint,
         provider, sourceMarket, inputId }) => ({ assetSymbol, baseMint, quoteMint, provider, sourceMarket, inputId })),
-      assumptions: ["One intervention, followed by the existing deterministic hourly policy in every branch; no continuous Jev expert is simulated.",
-        "Synthetic OHLC fills, on five-minute candles when all assets have complete execution coverage, otherwise hourly. Policy cadence remains hourly. Intervention starts at the first full execution candle open after availability.",
+      assumptions: ["KEEP is a fixed-entry-grid baseline. currentPolicy continues autonomously at each hourly close. Jev branches share the initial engine decision, then apply a single delayed intervention and continue the hourly policy; no continuous Jev expert is simulated.",
+        "Synthetic OHLC fills on five-minute candles with complete coverage. If no five-minute future candles exist for any asset, hourly fills are explicitly used; partial fine coverage stays censored. Intervention starts at the first full execution candle open after availability.",
+        "Receipt reconciliation is reconstructed after capture from exhaustive persisted execution reads, not part of the original immutable observation; it does not attest on-chain completeness.",
         "Observed asset costs, when usable, are a conservative model with safety margin; provider quotes and fill guarantees are not modeled.",
         "All branches receive identical dated external cashflows, which are excluded from reported equity change.",
         "USDC is valued at one USD. Native SOL reserve is excluded from modeled equity and spendable quote cash.",
         "Public candles remain a market proxy; exact declared mint provenance does not prove execution liquidity."] };
+    output.assumptions.push("The non-target asset warmup is reconstructed from the later cache; availability/version at t0 is not attested. This is a conditional historical-price replay, not a complete reconstruction of live information availability.");
     try {
-      ensure(set?.version === "shadow-decisions-v4" && set.grid && set.exit?.version === "shadow-exits-v1", "UNSUPPORTED_V4_CANDIDATE_VERSION");
+      ensure(["shadow-decisions-v4", "shadow-decisions-v4.1"].includes(set?.version) && set.grid && set.exit?.version === "shadow-exits-v1", "UNSUPPORTED_V4_CANDIDATE_VERSION");
       ensure(Array.isArray(set.exit.candidates) && set.exit.candidates.length > 0 && set.exit.candidates.length <= 3 &&
         new Set(set.exit.candidates.map(c => c.id)).size === set.exit.candidates.length, "INVALID_EXIT_CANDIDATE_SET");
       const keepExit = set.exit.candidates.find(c => c.id === "keep");
@@ -49,12 +60,13 @@ export class ShadowJevV4EvaluationService {
       const exit = set.exit.candidates.find(c => c.id === exitId);
       ensure(exit && Array.isArray(exit.updates), "UNKNOWN_JEV_EXIT_CANDIDATE");
       const prepared = prepareShadowJevV3Replay({ ...input, selectedCandidateId: input.selectedGridCandidateId,
-        observation: { ...input.observation, candidateSet: set.grid } });
+        observation: { ...input.observation, candidateSet: set.grid } }, output.inventoryReconciliation, output.capitalReconciliation);
       const { allocations, freeCashUsd, totalStartingCapitalUsd, minOrderQuoteUsd, parameters, decisions, t0 } = prepared;
       const context = input.observation.context as Record<string, any>, capturedAt = +new Date(context.shadowReplayV3.capturedAt);
       const availableAt = +new Date(input.decisionAvailableAt);
       ensure(Number.isFinite(availableAt) && availableAt >= capturedAt && availableAt >= t0, "DECISION_AVAILABILITY_PRECEDES_CAPTURE");
       output.decisionAvailableAt = new Date(availableAt).toISOString();
+      const engineDecision = (input.observation.initialEngineDecision ?? decisions.policy) as PortfolioPolicyDecision;
       const executionCostsByAsset: Record<string, PortfolioReplayExecutionCosts> = {};
       const profile = set.costProfile, target = allocations.find(a => a.bandId === input.observation.bandId)!;
       let usable = false;
@@ -101,7 +113,7 @@ export class ShadowJevV4EvaluationService {
         try {
           const end = t0 + hours * HOUR;
           ensure(availableAt < end, "DECISION_UNAVAILABLE_WITHIN_HORIZON");
-          const fine = input.markets.some(m => m.futureExecutionCandles !== undefined), executionInterval = fine ? 300_000 : HOUR;
+          const fine = input.markets.some(m => m.futureExecutionCandles?.length), executionInterval = fine ? 300_000 : HOUR;
           ensure(Math.ceil(availableAt / executionInterval) * executionInterval < end, "DECISION_DEFERRED_BEYOND_HORIZON");
           const ready = allocations.map(a => {
             const market = input.markets.find(m => m.assetSymbol === a.assetSymbol)!;
@@ -113,18 +125,24 @@ export class ShadowJevV4EvaluationService {
             return { ...a, series: { ...a.series, candles: future }, executionSeries: fine
               ? { ...a.series, resolution: "5m", candles: execution! } : undefined };
           });
-          const run = (decision: PortfolioPolicyDecision, candidateId: string, changeExits: boolean) => v4Metrics(this.replay.replay({
+          const run = (branch: "keep" | "currentPolicy" | "gridOnly" | "exitOnly" | "combined") => {
+            const changeGrid = (branch === "gridOnly" || branch === "combined") && input.selectedGridCandidateId !== "abstain";
+            const changeExits = branch === "exitOnly" || branch === "combined";
+            const timed = changeGrid || (changeExits && exit.updates.length > 0);
+            return v4Metrics(this.replay.replay({
             allocations: ready, totalStartingCapitalUsd, freeCashUsd, policyParameters: parameters, feeBps: input.feeBps,
             slippageBps: input.slippageBps, nativeFeeUsd: input.nativeFeeUsd, executionCostsByAsset,
-            candleIntervalMs: HOUR, minOrderQuoteUsd, adaptive: true,
+            candleIntervalMs: HOUR, minOrderQuoteUsd, adaptive: branch !== "keep",
             cashflows: input.cashflows?.filter(f => +f.at < end),
-            timedIntervention: { availableAt: new Date(availableAt),
-              grid: { bandId: input.observation.bandId, decision, candidateId }, exitUpdates: changeExits ? exit.updates : [] },
-          }));
-          output.horizons.push({ hours, status: "evaluated", reasons: [], branches: {
-            keep: run(decisions.keep, "keep", false), currentPolicy: run(decisions.policy, "policy", false),
-            gridOnly: run(decisions.jev, input.selectedGridCandidateId, false),
-            exitOnly: run(decisions.policy, "policy", true), combined: run(decisions.jev, input.selectedGridCandidateId, true) } });
+            initialIntervention: branch === "keep" ? undefined : { bandId: input.observation.bandId,
+              observedAt: new Date(t0), decision: engineDecision, candidateId: "engine_t0" },
+            timedIntervention: timed ? { availableAt: new Date(availableAt),
+              grid: changeGrid ? { bandId: input.observation.bandId, decision: decisions.jev,
+                candidateId: input.selectedGridCandidateId } : undefined, exitUpdates: changeExits ? exit.updates : [] } : undefined,
+          })); };
+          output.horizons.push({ hours, status: "evaluated", reasons: [], executionResolution: fine ? "5m" : "1h", branches: {
+            keep: run("keep"), currentPolicy: run("currentPolicy"), gridOnly: run("gridOnly"),
+            exitOnly: run("exitOnly"), combined: run("combined") } });
         } catch (error) { output.horizons.push({ hours, status: "censored", reasons: [message(error)] }); }
       }
       const evaluated = output.horizons.filter(h => h.status === "evaluated").length;
@@ -145,7 +163,9 @@ function v4Metrics(result: PortfolioPolicyReplayResult): ShadowJevV4Metrics {
   const changes = result.exitUpdates.filter(u => u.status === "applied");
   return { ...shadowReplayMetrics(result), externalCashflowUsd: result.externalCashflowUsd,
     equityChangeExcludingCashflowsUsd: result.endingEquityUsd - result.initialPoint.equityUsd - result.externalCashflowUsd,
-    maxDrawdownPct, exitRevisions: changes.length, exitRevisionAppliedAt: changes[0]?.appliedAt.toISOString() ?? null };
+    maxDrawdownPct, exitRevisions: changes.length, exitRevisionAppliedAt: changes[0]?.appliedAt.toISOString() ?? null,
+    gridRevisions: result.actions.filter(a => a.action === "revise").length,
+    bandsCreated: result.actions.filter(a => a.action === "create_band").length };
 }
 function ensure(condition: unknown, reason: string): asserts condition { if (!condition) throw new Error(reason); }
 function message(error: unknown) { return error instanceof Error ? error.message : "REPLAY_REJECTED:unknown"; }

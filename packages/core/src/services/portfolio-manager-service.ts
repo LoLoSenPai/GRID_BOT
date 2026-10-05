@@ -23,7 +23,13 @@ export interface PortfolioPolicyInputFactory {
 
 /** Observation and policy outcome only. Shadow judgments never enter the decision path. */
 export interface PortfolioShadowCapture {
-  capture(input: {
+  capture(input: PortfolioShadowCaptureInput): Promise<string | null>;
+  recordOutcome(observationId: string, outcome: PortfolioShadowOutcome): Promise<void>;
+  /** Persist the already known input and outcome together, outside the cycle. */
+  enqueue?(input: PortfolioShadowCaptureInput, outcome: PortfolioShadowOutcome): Promise<void>;
+}
+
+export interface PortfolioShadowCaptureInput {
     context: BandExecutionContext;
     bot: BotAggregate;
     peerContexts: BandExecutionContext[];
@@ -34,12 +40,11 @@ export interface PortfolioShadowCapture {
     observedAt: Date;
     /** Actual read time; the market candle in observedAt closed earlier. */
     stateReadAt: Date;
-  }): Promise<string | null>;
-  recordOutcome(observationId: string, outcome: {
+}
+export interface PortfolioShadowOutcome {
     status: "applied" | "wait" | "rejected" | "observed_only";
     effectiveDecision?: PortfolioPolicyDecision;
     error?: string;
-  }): Promise<void>;
 }
 
 /** Same pure policy is used in historical replay. This orchestrator only acquires observations and persists decisions. */
@@ -134,6 +139,13 @@ export class PortfolioManagerService {
       for (const pending of pendingShadow) {
         try {
           setImmediate(() => {
+            if (this.shadow?.enqueue) {
+              void Promise.resolve().then(() => this.shadow!.enqueue!(pending.input, pending.outcome)).catch(() => {
+                logger.warn({ botId: pending.botId, observedAt: pending.observedAt },
+                  "Shadow spool enqueue failed; observation is not durable");
+              });
+              return;
+            }
             const capture = this.scheduleShadowCapture(pending.input);
             this.scheduleShadowOutcome(capture, pending.outcome, pending.botId, pending.observedAt);
           });

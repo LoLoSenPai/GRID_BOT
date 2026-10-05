@@ -22,8 +22,7 @@ import {
   PrismaPortfolioManagerStore,
   resolveLiveNativeFeePolicy,
   PrismaBotStateRepository,
-  PrismaShadowObservationRepository,
-  createShadowObservationClient,
+  type CaptureShadowObservationInput,
   PrismaPriceSnapshotRepository,
   PrismaSystemLogRepository,
   PrismaTradeRepository,
@@ -38,6 +37,7 @@ import { getRuntimeMaintenanceIntervalMs, runRuntimeMaintenance } from "./runtim
 import { SymbolRunScheduler } from "./symbol-run-scheduler";
 import { ExecutionRecoveryPoller } from "./execution-recovery-poller";
 import { v4ModelRequested, v4QuestionSetVersion } from "./shadow-jev-v4-questions";
+import { ShadowCaptureSpool } from "./shadow-capture-spool";
 
 const env = getEnv();
 
@@ -59,15 +59,7 @@ async function main() {
   );
 
   const alertService = new AlertService(alertRepository, [new DiscordWebhookSink()]);
-  const shadow = (() => {
-    try {
-      const handle = createShadowObservationClient();
-      return { handle, repository: new PrismaShadowObservationRepository(handle.client) };
-    } catch (error) {
-      logger.warn({ error }, "Shadow observation storage could not initialize");
-      return null;
-    }
-  })();
+  const shadowSpool = new ShadowCaptureSpool(process.env.SHADOW_CAPTURE_SPOOL_DIR ?? ".shadow-capture-spool");
   const engine = new BotEngineService(
     botRepository,
     tradeRepository,
@@ -99,11 +91,11 @@ async function main() {
   );
   const portfolioManager = new PortfolioManagerService(new PrismaPortfolioManagerStore(),
     new CachedCandleHistoryProvider(new PrismaMarketCandleRepository(), new GeckoTerminalHistoryProvider()),
-    DEFAULT_PORTFOLIO_POLICY, buildPortfolioPolicyInput, shadow ? {
-      capture: async ({ context, bot, peerContexts, peerBots, policyInput, marketMeta, proposedDecision, observedAt, stateReadAt }) => {
+    DEFAULT_PORTFOLIO_POLICY, buildPortfolioPolicyInput, {
+      enqueue: async ({ context, bot, peerContexts, peerBots, policyInput, marketMeta, proposedDecision, observedAt, stateReadAt }, outcome) => {
         const preDecisionBot = (aggregate: typeof bot) => ({ bot: aggregate.bot, config: aggregate.config,
           position: aggregate.position, latestState: aggregate.latestState, openLots: aggregate.openLots });
-        const captured = await shadow.repository.capture({
+        const input: CaptureShadowObservationInput = {
           portfolioId: context.portfolio.id, strategyId: context.strategy.id, bandId: context.band.id,
           botId: bot.bot.id, observedAt, questionSetVersion: v4QuestionSetVersion,
           modelRequested: v4ModelRequested, policyInput,
@@ -113,11 +105,12 @@ async function main() {
               peerBots: peerBots.map(preDecisionBot) } },
           botState: bot.latestState,
           marketMeta, proposedDecision,
-        });
-        return captured.observationId;
+        };
+        await shadowSpool.enqueue(input, outcome);
       },
-      recordOutcome: (observationId, outcome) => shadow.repository.finalizeOutcome(observationId, outcome),
-    } : undefined);
+      capture: async () => { throw new Error("Shadow capture uses the durable spool."); },
+      recordOutcome: async () => { throw new Error("Shadow outcome uses the durable spool."); },
+    });
   let policyRun: Promise<void> = Promise.resolve();
   const policyInterval = setInterval(() => {
     policyRun = portfolioManager.runCycle().catch(() => logger.warn("Portfolio observation unavailable; adaptation deferred."));
@@ -148,10 +141,8 @@ async function main() {
     pricePoller.stop();
     await Promise.all([symbolRunScheduler.stop(), recoveryPoller.stop()]);
     await policyRun;
-    if (shadow) {
-      try { await shadow.handle.close(); }
-      catch (error) { logger.warn({ error }, "Shadow observation storage could not close cleanly"); }
-    }
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await shadowSpool.flush();
     await prisma.$disconnect();
     await botLockPool.end();
     process.exit(0);
