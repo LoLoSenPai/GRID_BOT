@@ -27,6 +27,22 @@ function fixture() {
 }
 
 describe("read-only V4 replay orchestration", () => {
+  it("does not switch a Gecko BTC snapshot to Coinbase merely because questions are V4.2", async () => {
+    const { client, row } = fixture();
+    row.questionSetVersion = "shadow-jev-v4.2"; row.candidateSet.version = "shadow-decisions-v4.2";
+    row.candidateSet.grid.version = "shadow-grid-candidates-v3.3";
+    (row as any).snapshot = { provenance: { provider: "gecko-terminal" } };
+    await evaluateStoredShadowV4(client as never, "obs", 0.02);
+    expect(mocks.load.mock.calls[0]![4]).toBe(false);
+  });
+  it("uses Coinbase futures for a persisted BTC reference snapshot", async () => {
+    const { client, row } = fixture();
+    row.questionSetVersion = "shadow-jev-v4.2"; row.candidateSet.version = "shadow-decisions-v4.2";
+    row.candidateSet.grid.version = "shadow-grid-candidates-v3.3";
+    (row as any).snapshot = { provenance: { provider: "coinbase-reference" } };
+    await evaluateStoredShadowV4(client as never, "obs", 0.02);
+    expect(mocks.load.mock.calls[0]![4]).toBe(true);
+  });
   beforeEach(() => { vi.clearAllMocks(); });
   it("requires both recorded choices and completion before reading outcomes", async () => {
     const { client, row } = fixture(); row.outbox.status = "processing";

@@ -29,6 +29,17 @@ function fixture(symbol = "SOL") {
   return { policyInput, proposedDecision: wait, replaySnapshot, costProfile };
 }
 describe("V4 shadow decisions", () => {
+  it("V4.2 excludes an unfundable policy proposal instead of exposing an invalid choice", () => {
+    const f = fixture("BTC");
+    const proposedDecision = { ...wait, action: "create_band" as const,
+      candidate: { lowPrice: 90, highPrice: 110, levelCount: 5, spacing: 5, requestedCapitalUsd: 100 } };
+    const set = buildShadowDecisionCandidates({ ...f, proposedDecision, decisionVersion: "shadow-decisions-v4.2",
+      options: { assetAllocations: [{ assetSymbol: "BTC", allocatedCapitalUsd: 400 }, { assetSymbol: "SOL", allocatedCapitalUsd: 300 }] } });
+    expect(set.grid.version).toBe("shadow-grid-candidates-v3.3");
+    expect(set.grid.candidates.some(c => c.id === "policy")).toBe(false);
+    expect(set.grid.policyCandidateId).toBeNull();
+    expect(set.grid.rejected).toEqual(expect.arrayContaining([expect.objectContaining({ id: "policy" })]));
+  });
   it("is reproducible and immutable, with exact fixed baselines and experimental finer grids", () => {
     const input = fixture(), saved = structuredClone(input), result = buildShadowDecisionCandidates(input);
     expect(input).toEqual(saved); expect(result).toEqual(buildShadowDecisionCandidates(input));

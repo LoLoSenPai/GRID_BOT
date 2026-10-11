@@ -6,7 +6,10 @@ export function shadowSpoolDirectory(): string {
   return process.env.SHADOW_CAPTURE_SPOOL_DIR ?? ".shadow-capture-spool";
 }
 async function main() {
-  const spool = new ShadowCaptureSpool(shadowSpoolDirectory());
+  const spool = new ShadowCaptureSpool(shadowSpoolDirectory(), Date.now, (failure, archived) => {
+    logger.warn({ ...failure, archived }, archived ? "Conflicting shadow attempt archived; original outcome preserved"
+      : "Shadow capture failed; durable input retained for retry");
+  });
   await spool.acquire();
   const handle = createShadowObservationClient(), storage = new PrismaShadowObservationRepository(handle.client);
   let stopped = false, running: Promise<void> | undefined, timer: ReturnType<typeof setTimeout> | undefined;
@@ -14,7 +17,9 @@ async function main() {
     try {
       const metrics = await spool.drain(storage);
       if (metrics.queued || metrics.completed || metrics.invalid) logger.info(metrics, "Shadow capture spool status");
-    } catch { logger.warn("Shadow capture spool drain failed; queued files retained"); }
+    } catch (error) { logger.warn({ errorName: error instanceof Error ? error.name : "UnknownError",
+      errorMessage: error instanceof Error ? error.message.slice(0, 300) : "Unknown failure" },
+      "Shadow capture spool drain failed; queued files retained"); }
     finally { running = undefined; if (!stopped) timer = setTimeout(() => { running = poll(); }, 5_000); }
   };
   const stop = async () => {
@@ -27,5 +32,7 @@ async function main() {
   running = poll();
 }
 if (process.argv[1]?.replace(/\\/g, "/").endsWith("/shadow-capture-main.ts")) {
-  main().catch(() => { logger.error("Shadow capture consumer could not start"); process.exitCode = 1; });
+  main().catch(error => { logger.error({ errorName: error instanceof Error ? error.name : "UnknownError",
+    errorMessage: error instanceof Error ? error.message.slice(0, 300) : "Unknown failure" },
+    "Shadow capture consumer could not start"); process.exitCode = 1; });
 }

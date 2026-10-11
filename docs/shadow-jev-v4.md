@@ -1,10 +1,47 @@
 # Jev shadow V4 — grilles, sorties de lots et coûts observés
 
-## Périmètre et versions
+## Corrections du 12 octobre : V4.2 et comparaison simple
+
+Les nouvelles observations utilisent `shadow-jev-v4.2`, `shadow-decisions-v4.2` et `shadow-grid-candidates-v3.3`. Le modèle reste `jev-1.13.0`. Les versions précédentes et leurs réponses ne sont pas réécrites. Une proposition de financement refusée par les contraintes économiques est désormais enregistrée parmi les rejets, sans être ajoutée aux choix Jev comme une option invalide.
+
+Le résultat moteur original reste immuable. Un second essai contradictoire est conservé avec ses deux empreintes sous `conflicts/` dans le volume de capture ; il ne réessaie plus indéfiniment. Les autres erreurs conservent leur reprise espacée et leur contexte d'échec. Les producteurs du worker et du collecteur partagent le journal persistant ; aucun appel shadow n'entre dans l'exécution des ordres.
+
+### BTC : référence séparée et observable sans bougies Gecko fraîches
+
+Le collecteur ajoute les bougies publiques Coinbase `BTC-USD`, sous l'identité **`coinbase-reference / BTC_REF / USD`**. Il ne remplace aucun enregistrement `BTC/USDC` ni aucune donnée consommée par la policy live. Les bougies fermées sont validées, les trous restent des trous, et les captures gardent leurs dates de réception.
+
+Un observateur indépendant capture les bands BTC à partir d'un préfixe horaire complet de cette référence et des états effectivement disponibles dans la base. L'identité de marché sépare ses observations des observations de la policy, même pour la même band et la même heure. Il garde les budgets, les lots et leurs engagements réels. Si un résultat moteur de cette heure est déjà enregistré, il le référence ; sinon le résultat est `observed_only`. Le replay annonce alors explicitement une hypothèse initiale de maintien, sans prétendre disposer d'une décision live manquante.
+
+La référence USD n'est ni le token BTC sur Solana ni une quote Jupiter en USDC. La conversion USD/USDC et l'absence de basis sont des hypothèses de replay. Le contrôle de prix compare des instants proches ; les séries et leurs sources restent identifiables dans les exports. Les deux flux BTC ne constituent pas des échantillons indépendants et doivent être analysés séparément.
+
+### Replay V3 : coût, prix de rail et grille dense sans Jev
+
+La CLI active `shadow-jev-v4-evaluation-v3` : prix de rail avec slippage, au plus une exécution par band et bougie, contraintes d'achat capturées de cooldown, fréquence, budget et drawdown. Aucune des six branches ne trade sur une bougie commencée avant la disponibilité du snapshot. Les coûts issus du profil observé, les estimations de repli et les trades hors de l'intervalle de notionnels sont comptés séparément. Deux chemins OHLC sont comparés : ils illustrent la sensibilité à l'ordre des extrema et ne constituent pas des bornes garanties.
+
+Une sixième branche `denseRule` prend systématiquement le candidat de densité validé disponible, ou conserve la policy lorsqu'il manque. Elle reçoit le même capital et les mêmes coûts et conserve les sorties initiales. Le choix de cette branche ne dépend ni de la réponse Jev ni des résultats futurs. Sa disponibilité ne peut précéder celle de l'état capturé. `--matched-clock` aligne son intervention sur la disponibilité réelle de Jev pour comparer le choix à délai égal.
+
+```bash
+pnpm --filter @grid-bot/worker shadow:replay:v4 -- --observation-id <id> --native-fee-usd 0.004 --matched-clock
+pnpm --filter @grid-bot/worker shadow:replay:v4 -- --observation-id <id> --native-fee-usd 0.004 --btc-reference --matched-clock
+```
+
+`--btc-reference` est explicite pour les observations historiques du pool. Leurs bougies initiales restent celles du snapshot, leurs bougies futures peuvent provenir de Coinbase : les deux sources sont déclarées dans la provenance. Ce scénario est conditionnel, pas une reconstitution de l'information effectivement accessible en live. `--legacy-fills` permet de reproduire l'ancien évaluateur V2 ; il doit être signalé dans les comparaisons.
+
+### Ce qui impose les espacements actuels
+
+La policy live part notamment d'une largeur minimale de 6 %, du maximum entre minimum de spacing, demi-ATR et coût aller-retour avec marge. Avec les défauts de 50 bps de slippage et 10 bps de frais par côté, le modèle donne environ 1,21 %, puis ajoute 0,25 point de marge. Pour une largeur de 6 %, son arrondi de niveaux peut produire quatre rails. Ce résultat vient des hypothèses prudentes et de l'arrondi, pas d'une mesure de frais réels de 1,46 %. Les nouvelles projections exposent ces paramètres ; aucun seuil live n'est modifié.
+
+Le prochain bilan doit comparer la policy, `denseRule` et Jev sur le même état, en distinguant coût net, capital immobilisé et valeur d'inventaire. Les fenêtres non superposées sont privilégiées. L'ajout d'indicateurs ou de familles de stratégies n'est pas nécessaire pour cette comparaison ; aucun résultat de cette étape n'autorise automatiquement une promotion live.
+
+### Interface
+
+Dashboard et liste du terminal regroupent les zones par portefeuille et stratégie, avec budget, valeur, inventaire et usage pondéré. Chaque zone garde sa plage et son lien vers le bot précis. Les commandes continuent à cibler un bot ; le regroupement visuel ne fusionne pas les grilles. Le cash libre affiché exclut les réservations.
+
+## Architecture V4/V4.1 conservée pour les observations historiques
 
 La V4 étend l'expérience sans donner à Jev accès aux ordres live. La policy et les paramètres de trading restent déterministes. Depuis la V4.1, le worker publie après son cycle un fichier atomique contenant l'entrée shadow et le résultat moteur connu. Le service indépendant `shadow-capture` transfère ce journal persistant vers la DB ; `shadow-jev` traite ensuite l'outbox. Le collecteur `shadow-data` reste indépendant.
 
-Versions courantes : questions `shadow-jev-v4.1`, décisions `shadow-decisions-v4.1`, sous-ensemble grid `shadow-grid-candidates-v3.2`, sorties `shadow-exits-v1`, coûts `shadow-observed-cost-v1`, évaluateur `shadow-jev-v4-evaluation-v2`. Modèle demandé : `jev-1.13.0` ; le modèle réellement retourné reste journalisé. Les observations et réponses historiques restent immuables ; les consommateurs et lecteurs acceptent leurs anciennes versions appariées.
+Versions de la V4.1 : questions `shadow-jev-v4.1`, décisions `shadow-decisions-v4.1`, sous-ensemble grid `shadow-grid-candidates-v3.2`, sorties `shadow-exits-v1`, coûts `shadow-observed-cost-v1`, évaluateur historique `shadow-jev-v4-evaluation-v2`. Les versions V4.2/V3 de replay sont décrites ci-dessus. Modèle demandé : `jev-1.13.0` ; le modèle réellement retourné reste journalisé. Les observations et réponses historiques restent immuables ; les consommateurs et lecteurs acceptent leurs anciennes versions appariées.
 
 La V3.2/V4.1 tolère uniquement une erreur numérique de `1e-10` point de pourcentage aux frontières de largeur. Une baseline retenue pour comparaison porte ses motifs économiques explicites dans la question ; les variantes réellement invalides restent refusées. Aucun seuil live n'est changé.
 

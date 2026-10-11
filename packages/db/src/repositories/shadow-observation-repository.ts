@@ -47,6 +47,15 @@ export interface FinalizeShadowOutcomeInput {
   error?: string | { code?: string; message: string; details?: unknown };
 }
 
+/** A second attempt may not replace the first persisted engine outcome. */
+export class ShadowEngineOutcomeConflictError extends Error {
+  readonly code = "SHADOW_ENGINE_OUTCOME_CONFLICT";
+  constructor(readonly observationId: string, readonly storedHash: string, readonly attemptedHash: string) {
+    super("Shadow engine outcome is immutable.");
+    this.name = "ShadowEngineOutcomeConflictError";
+  }
+}
+
 export class PrismaShadowObservationRepository {
   constructor(private readonly client: PrismaClient = prisma) {}
 
@@ -80,7 +89,10 @@ export class PrismaShadowObservationRepository {
     const immutableObservationHash = isV3Question(input.questionSetVersion)
       ? canonicalHash({ portfolioId: input.portfolioId, strategyId: input.strategyId,
         bandId: input.bandId, botId: input.botId, observedAt,
-        questionSetVersion: input.questionSetVersion, modelRequested: input.modelRequested }) : undefined;
+        questionSetVersion: input.questionSetVersion, modelRequested: input.modelRequested,
+        ...(input.questionSetVersion === "shadow-jev-v4.2" ? { marketIdentity: {
+          provider: input.marketMeta.provider, symbol: input.marketMeta.symbol, quoteSymbol: input.marketMeta.quoteSymbol,
+          sourceMarket: input.marketMeta.sourceMarket ?? null } } : {}) }) : undefined;
     return retryCaptureTransaction(() => this.client.$transaction(async (tx) => {
       if (immutableObservationHash) {
         const existing = await tx.shadowJevObservation.findUnique({ where: { observationHash: immutableObservationHash } });
@@ -99,7 +111,8 @@ export class PrismaShadowObservationRepository {
         const snapshot = full.shadowReplayV3 as { capturedAt: string; strategies: Array<{ baseSymbol: string; allocatedQuoteAmount: string }> };
         const supplied = suppliedContext as unknown as { exitCommitments?: Array<{ targetStatus: string; fulfilledAt?: unknown }> };
         candidateSet = jsonValue(buildShadowDecisionCandidates({
-          decisionVersion: input.questionSetVersion === "shadow-jev-v4" ? "shadow-decisions-v4" : "shadow-decisions-v4.1",
+          decisionVersion: input.questionSetVersion === "shadow-jev-v4" ? "shadow-decisions-v4"
+            : input.questionSetVersion === "shadow-jev-v4.2" ? "shadow-decisions-v4.2" : "shadow-decisions-v4.1",
           policyInput: restorePolicyInput(input.policyInput), proposedDecision: input.proposedDecision as PortfolioPolicyDecision,
           replaySnapshot: snapshot, costProfile,
           options: { assetAllocations: snapshot.strategies.map(strategy => ({ assetSymbol: strategy.baseSymbol,
@@ -183,7 +196,7 @@ export class PrismaShadowObservationRepository {
 
     const existing = await this.client.shadowEngineOutcome.findUnique({ where: { observationId } });
     if (existing) {
-      if (existing.outcomeHash !== outcomeHash) throw new Error("Shadow engine outcome is immutable.");
+      if (existing.outcomeHash !== outcomeHash) throw new ShadowEngineOutcomeConflictError(observationId, existing.outcomeHash, outcomeHash);
       return;
     }
     try {
@@ -194,7 +207,7 @@ export class PrismaShadowObservationRepository {
     } catch (caught) {
       if (!(caught instanceof Prisma.PrismaClientKnownRequestError) || caught.code !== "P2002") throw caught;
       const concurrent = await this.client.shadowEngineOutcome.findUniqueOrThrow({ where: { observationId } });
-      if (concurrent.outcomeHash !== outcomeHash) throw new Error("Shadow engine outcome is immutable.");
+      if (concurrent.outcomeHash !== outcomeHash) throw new ShadowEngineOutcomeConflictError(observationId, concurrent.outcomeHash, outcomeHash);
     }
   }
 }
@@ -314,7 +327,7 @@ function isV3Question(version: string): boolean {
 }
 
 function isV4Question(version: string): boolean {
-  return version === "shadow-jev-v4" || version === "shadow-jev-v4.1";
+  return version === "shadow-jev-v4" || version === "shadow-jev-v4.1" || version === "shadow-jev-v4.2";
 }
 
 function restorePolicyInput(raw: CaptureShadowObservationInput["policyInput"]): PortfolioPolicyInput {
@@ -326,7 +339,7 @@ function restorePolicyInput(raw: CaptureShadowObservationInput["policyInput"]): 
 /** Reference one immutable 5m snapshot rather than copying candles into every observation. */
 async function captureFineMarket(tx: Prisma.TransactionClient, input: CaptureShadowObservationInput, capturedAt: Date) {
   const rows = await tx.marketCandle.findMany({ where: {
-    provider: input.marketMeta.provider, symbol: input.marketMeta.symbol.toUpperCase(), quoteSymbol: "USDC", resolution: "5m",
+    provider: input.marketMeta.provider, symbol: input.marketMeta.symbol.toUpperCase(), quoteSymbol: input.marketMeta.quoteSymbol, resolution: "5m",
     sourceMarket: input.marketMeta.sourceMarket ?? undefined,
     closeTime: { lte: input.observedAt, gte: new Date(+input.observedAt - 2 * 3_600_000) }, fetchedAt: { lte: capturedAt },
   }, orderBy: { openTime: "asc" } });
@@ -339,7 +352,7 @@ async function captureFineMarket(tx: Prisma.TransactionClient, input: CaptureSha
     open: r.open.toNumber(), high: r.high.toNumber(), low: r.low.toNumber(), close: r.close.toNumber() }));
   const meta = { ...input.marketMeta, resolution: "5m" };
   const contentHash = shadowMarketContentHash(meta, candles);
-  const provenance = { provider: meta.provider, symbol: meta.symbol.toUpperCase(), quoteSymbol: "USDC",
+  const provenance = { provider: meta.provider, symbol: meta.symbol.toUpperCase(), quoteSymbol: meta.quoteSymbol,
     resolution: "5m", sourceMarket: meta.sourceMarket ?? null };
   await tx.$executeRaw(Prisma.sql`INSERT INTO shadow_market_snapshots
     (id, content_hash, candle_count, candles, provenance, observed_at, created_at)

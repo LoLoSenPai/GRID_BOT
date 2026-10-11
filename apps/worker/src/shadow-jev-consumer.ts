@@ -5,7 +5,7 @@ import type {
   ShadowJevClaim,
 } from "@grid-bot/db";
 import type { PortfolioPolicyInput, ShadowGridCandidateSet, ShadowDecisionCandidateSet } from "@grid-bot/core";
-import { buildJevV4Request, v4QuestionSetVersion, v4ModelRequested, type ShadowJevV4Request } from "./shadow-jev-v4-questions";
+import { buildJevV4Request, v4QuestionSetVersion, v4ReferenceQuestionSetVersion, v4ModelRequested, type ShadowJevV4Request } from "./shadow-jev-v4-questions";
 import { evaluateJevV4 } from "./shadow-jev-v4-client";
 
 import { evaluateJev, type JevClient, type ShadowJevEvaluation } from "./shadow-jev-client";
@@ -87,17 +87,19 @@ export class ShadowJevConsumer {
             probabilities: candidateProbabilities, option_probabilities: result.probabilities,
             confidence: result.confidence } },
           modelVersion: result.modelResolved, latencyMs: elapsedMs(startedAt) });
-      } else if (["shadow-jev-v4", v4QuestionSetVersion].includes(job.questionSetVersion) && job.modelRequested === v4ModelRequested) {
+      } else if (["shadow-jev-v4", v4QuestionSetVersion, v4ReferenceQuestionSetVersion].includes(job.questionSetVersion) && job.modelRequested === v4ModelRequested) {
         const set = job.observation.candidateSet as ShadowDecisionCandidateSet;
         const legacy = job.questionSetVersion === "shadow-jev-v4";
-        if (set?.version !== (legacy ? "shadow-decisions-v4" : "shadow-decisions-v4.1") ||
-          set.grid?.version !== (legacy ? "shadow-grid-candidates-v3.1" : "shadow-grid-candidates-v3.2")) {
+        const reference = job.questionSetVersion === v4ReferenceQuestionSetVersion;
+        if (set?.version !== (legacy ? "shadow-decisions-v4" : reference ? "shadow-decisions-v4.2" : "shadow-decisions-v4.1") ||
+          set.grid?.version !== (legacy ? "shadow-grid-candidates-v3.1" : reference ? "shadow-grid-candidates-v3.3" : "shadow-grid-candidates-v3.2")) {
           throw new Error("V4 shadow question and candidate-set versions do not match.");
         }
         const prepared = buildJevV4Request({ observedAt: job.observation.observedAt,
           stateReadAt: readV3StateReadAt(job.observation.context), policyInput: restorePolicyInput(job),
           objective: readV2Objective(job.observation.context), candidateSet: job.observation.candidateSet as ShadowDecisionCandidateSet,
-          fineMarketSnapshot: job.observation.fineMarketSnapshot });
+          fineMarketSnapshot: job.observation.fineMarketSnapshot,
+          marketReference: (job.observation.context as Record<string, unknown>)?.shadowMarketReference });
         request = prepared.request;
         const result = await evaluateJevV4(prepared.request, this.client, { timeoutMs: EVALUATION_TIMEOUT_MS });
         const probabilities = Object.fromEntries((["grid_candidate", "exit_candidate"] as const).map(id => {

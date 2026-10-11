@@ -15,6 +15,25 @@ export interface PortfolioReplayTimedIntervention { availableAt: Date;
 export interface PortfolioReplayCashflow { at: Date; amountUsd: number; id: string; }
 export interface PortfolioReplayExecutionCosts { feeBps: number; slippageBps: number; nativeFeeUsd: number;
   notionalBucket?: { minUsd: number; maxUsd: number }; }
+/** Captured bot constraints. Buy gates mirror RiskManager; sells still count toward recent executions. */
+export interface PortfolioReplayExecutionConstraints {
+  cooldownMs?: number; maxOrdersPerHour?: number; levelLockMs?: number;
+  initialLastExecutionAt?: Date; initialOrdersInTrailingHour?: Date[]; levelLocks?: Record<string, Date>;
+  blockedUntil?: Date; maxDeployableUsd?: number; maxDrawdownPct?: number; initialEquityHighWatermarkUsd?: number;
+}
+export interface PortfolioReplayExecutionFidelity {
+  model: "rail_one_intent_v1"; intrabarPath?: "high_low" | "low_high";
+  /** No fills from any execution candle that began before this captured state was available. */
+  stateAvailableAt?: Date;
+  constraintsByBand?: Record<string, PortfolioReplayExecutionConstraints>;
+}
+export interface PortfolioReplayExecutionDiagnostics {
+  model: "legacy_extreme_multi_fill" | "rail_one_intent_v1";
+  intrabarPath: "legacy" | "high_low" | "low_high";
+  observedCostTrades: number; fallbackCostTrades: number; outsideObservedBucketTrades: number;
+  observedCostFeesUsd: number; fallbackCostFeesUsd: number;
+  blocked: Record<"candle_limit" | "cooldown" | "hour_limit" | "level_lock" | "blocked_state" | "deployable" | "drawdown" | "state_unavailable", number>;
+}
 export interface PortfolioReplayAllocation { assetSymbol: string; series: BacktestMarketSeries;
   /** Optional five-minute fills; policy observations still follow the hourly series. */
   executionSeries?: BacktestMarketSeries;
@@ -36,7 +55,7 @@ export interface PortfolioPolicyReplayRequest { allocations: PortfolioReplayAllo
   initialIntervention?: PortfolioReplayInitialIntervention;
   /** Apply once at the first candle open at or after availability, never to an earlier OHLC path. */
   timedIntervention?: PortfolioReplayTimedIntervention; executionCostsByAsset?: Record<string, PortfolioReplayExecutionCosts>;
-  cashflows?: PortfolioReplayCashflow[]; }
+  cashflows?: PortfolioReplayCashflow[]; executionFidelity?: PortfolioReplayExecutionFidelity; }
 export interface PortfolioReplayPoint { timestamp: Date; priceByAsset: Record<string, number>; equityUsd: number; cashUsd: number;
   /** Remaining lot cost basis, not transaction fees. */
   tradingCostUsd: number; retainedBaseByAsset: Record<string, number>; openTradingLots: number; closedCycles: number;
@@ -48,6 +67,7 @@ export interface PortfolioReplayTrade { timestamp: Date; assetSymbol: string; ba
 export interface PortfolioPolicyReplayResult { initialPoint: PortfolioReplayPoint; points: PortfolioReplayPoint[]; actions: PortfolioReplayAction[]; trades: PortfolioReplayTrade[];
   endingEquityUsd: number; endingCashUsd: number; endingTradingCostUsd: number; retainedBaseByAsset: Record<string, number>; closedCycles: number; policyParameters: PortfolioPolicyParameters;
   feesUsd: number; slippageCostUsd: number; roundingCostUsd: number; realizedProfitUsd: number;
+  executionDiagnostics: PortfolioReplayExecutionDiagnostics;
   exitUpdates: Array<ShadowReplayExitUpdate & { appliedAt: Date; status: "applied" | "already_closed" }>;
   cashflows: PortfolioReplayCashflow[]; externalCashflowUsd: number;
   endingLots: Array<PortfolioReplayInitialLot & { id: number; bandId: string; assetSymbol: string }>;
@@ -77,12 +97,34 @@ export class PortfolioPolicyReplayService {
     let closedCycles = 0;
     const fee = request.feeBps / 10_000, slip = (request.slippageBps ?? 0) / 10_000;
     const nativeFee = request.nativeFeeUsd ?? 0;
+    const fidelity = request.executionFidelity;
+    const diagnostics: PortfolioReplayExecutionDiagnostics = {
+      model: fidelity?.model ?? "legacy_extreme_multi_fill", intrabarPath: fidelity?.intrabarPath ?? (fidelity ? "high_low" : "legacy"),
+      observedCostTrades: 0, fallbackCostTrades: 0, outsideObservedBucketTrades: 0, observedCostFeesUsd: 0,
+      fallbackCostFeesUsd: 0, blocked: { candle_limit: 0, cooldown: 0, hour_limit: 0, level_lock: 0,
+        blocked_state: 0, deployable: 0, drawdown: 0, state_unavailable: 0 },
+    };
+    type ConstraintState = { config: PortfolioReplayExecutionConstraints; lastExecution?: number;
+      recent: number[]; locks: Record<string, number>; lastCandle?: number; peak: number };
+    const constraintStates = new Map<string, ConstraintState>();
+    const constraintsFor = (band: Band) => {
+      let state = constraintStates.get(band.id);
+      if (!state) {
+        const config = fidelity?.constraintsByBand?.[band.id] ?? {};
+        state = { config, lastExecution: config.initialLastExecutionAt === undefined ? undefined : +config.initialLastExecutionAt,
+          recent: (config.initialOrdersInTrailingHour ?? []).map(t => +t),
+          locks: Object.fromEntries(Object.entries(config.levelLocks ?? {}).map(([index, until]) => [index, +until])),
+          peak: config.initialEquityHighWatermarkUsd ?? band.allocatedCapitalUsd };
+        constraintStates.set(band.id, state);
+      }
+      return state;
+    };
     const costsFor = (asset: string, notional?: number) => {
       const costs = request.executionCostsByAsset?.[asset];
       const bucket = costs?.notionalBucket;
       return costs && (!bucket || (notional !== undefined && notional >= bucket.minUsd && notional < bucket.maxUsd))
-        ? { fee: costs.feeBps / 10_000, slip: costs.slippageBps / 10_000, nativeFee: costs.nativeFeeUsd }
-        : { fee, slip, nativeFee };
+        ? { fee: costs.feeBps / 10_000, slip: costs.slippageBps / 10_000, nativeFee: costs.nativeFeeUsd, observed: true }
+        : { fee, slip, nativeFee, observed: false };
     };
     const bands: Band[] = request.allocations.map((a, i) => ({ id: a.bandId ?? `${a.assetSymbol}:${i}`, assetSymbol: a.assetSymbol,
       strategy: a.strategy, lowPrice: a.lowPrice, highPrice: a.highPrice, levelCount: a.levelCount,
@@ -105,10 +147,14 @@ export class PortfolioPolicyReplayService {
     let feesUsd = 0, slippageCostUsd = 0, roundingCostUsd = 0, realizedProfitUsd = 0;
     const prices: Record<string, number> = Object.fromEntries(markets.map(a => [a.assetSymbol, a.series.candles[0]!.open]));
     const closed: Record<string, PolicyCandle[]> = Object.fromEntries(markets.map(a => [a.assetSymbol, (a.warmupCandles ?? []).map(c => ({ openedAt: c.timestamp, closedAt: new Date(+c.timestamp + interval), open: c.open, high: c.high, low: c.low, close: c.close }))]));
-    type Event = { time: number; phase: number; asset: string; price: number; candle?: HistoricalCandle };
+    type Event = { time: number; phase: number; asset: string; price: number; candle?: HistoricalCandle;
+      executionCandleOpen?: number; previousPathTime?: number; previousPathPrice?: number };
     const events: Event[] = markets.flatMap(a => [
-      ...(a.executionSeries ?? a.series).candles.flatMap(c => this.path.buildIntrabougiePath(c, a.executionSeries ? 300_000 : interval)
-        .map((t, i) => ({ time: +t.timestamp, phase: i === 0 ? 2 : 0, asset: a.assetSymbol, price: t.price }))),
+      ...(a.executionSeries ?? a.series).candles.flatMap(c => this.path.buildIntrabougiePath(c, a.executionSeries ? 300_000 : interval,
+        diagnostics.intrabarPath).map((t, i, path) => ({ time: +t.timestamp, phase: i === 0 ? 2 : 0,
+          asset: a.assetSymbol, price: t.price, executionCandleOpen: +c.timestamp,
+          previousPathTime: i > 0 ? +path[i - 1]!.timestamp : undefined,
+          previousPathPrice: i > 0 ? path[i - 1]!.price : undefined }))),
       ...a.series.candles.map(c => ({ time: +c.timestamp + interval, phase: 1, asset: a.assetSymbol, price: c.close, candle: c })),
     ]);
     events.sort((a, b) => a.time - b.time || a.phase - b.phase || a.asset.localeCompare(b.asset));
@@ -123,10 +169,48 @@ export class PortfolioPolicyReplayService {
         openTradingLots: lots.filter(l => l.kind === "trading" && l.remainingBaseAmount > 0).length,
         closedCycles, feesUsd, slippageCostUsd, roundingCostUsd, realizedProfitUsd };
     };
-    const recordTrade = (trade: PortfolioReplayTrade) => {
+    const recordTrade = (trade: PortfolioReplayTrade, observed: boolean, marketNotional: number) => {
       trades.push(trade);
       feesUsd += trade.feesUsd; slippageCostUsd += trade.slippageCostUsd;
       roundingCostUsd += trade.roundingCostUsd; realizedProfitUsd += trade.realizedProfitUsd;
+      const bucket = request.executionCostsByAsset?.[trade.assetSymbol]?.notionalBucket;
+      if (bucket && (marketNotional < bucket.minUsd || marketNotional >= bucket.maxUsd)) diagnostics.outsideObservedBucketTrades++;
+      if (observed) { diagnostics.observedCostTrades++; diagnostics.observedCostFeesUsd += trade.feesUsd; }
+      else { diagnostics.fallbackCostTrades++; diagnostics.fallbackCostFeesUsd += trade.feesUsd; }
+    };
+    const crossingTime = (event: Event, rail: number) => {
+      if (!fidelity || event.previousPathTime === undefined || event.previousPathPrice === undefined ||
+        event.price === event.previousPathPrice) return event.time;
+      const fraction = (rail - event.previousPathPrice) / (event.price - event.previousPathPrice);
+      return event.previousPathTime + Math.round(Math.max(0, Math.min(1, fraction)) * (event.time - event.previousPathTime));
+    };
+    const canExecute = (band: Band, event: Event, side: "buy" | "sell", rail: number, spend = 0) => {
+      if (!fidelity) return true;
+      const state = constraintsFor(band), config = state.config, at = crossingTime(event, rail);
+      const blocked = (reason: keyof PortfolioReplayExecutionDiagnostics["blocked"]) => {
+        diagnostics.blocked[reason]++; return false;
+      };
+      if (fidelity.stateAvailableAt && event.executionCandleOpen! < +fidelity.stateAvailableAt) return blocked("state_unavailable");
+      if (state.lastCandle === event.executionCandleOpen) return blocked("candle_limit");
+      if (config.blockedUntil && at < +config.blockedUntil) return blocked("blocked_state");
+      if (side === "sell") return true;
+      if (state.lastExecution !== undefined && at - state.lastExecution < (config.cooldownMs ?? 0)) return blocked("cooldown");
+      state.recent = state.recent.filter(t => t >= at - 3_600_000);
+      if (state.recent.length >= (config.maxOrdersPerHour ?? Infinity)) return blocked("hour_limit");
+      const index = String(Math.round((rail - band.lowPrice) / band.spacing));
+      if ((state.locks[index] ?? -Infinity) > at) return blocked("level_lock");
+      const deployed = lots.filter(l => l.bandId === band.id).reduce((sum, l) => sum + l.costQuote, 0);
+      if (deployed + spend > (config.maxDeployableUsd ?? Infinity) + 1e-9) return blocked("deployable");
+      const equity = band.idleQuoteUsd + lots.filter(l => l.bandId === band.id).reduce((sum, l) => sum + l.remainingBaseAmount * rail, 0);
+      state.peak = Math.max(state.peak, equity);
+      if (state.peak > 0 && (state.peak - equity) / state.peak * 100 >= (config.maxDrawdownPct ?? Infinity)) return blocked("drawdown");
+      return true;
+    };
+    const executed = (band: Band, event: Event, rail: number) => {
+      if (!fidelity) return;
+      const state = constraintsFor(band), at = crossingTime(event, rail);
+      state.lastExecution = at; state.recent.push(at); state.lastCandle = event.executionCandleOpen;
+      state.locks[String(Math.round((rail - band.lowPrice) / band.spacing))] = at + (state.config.levelLockMs ?? 0);
     };
     const applyDecision = (band: Band, decision: PortfolioPolicyDecision, now: Date, strict: boolean) => {
       validateDecision(decision);
@@ -135,6 +219,7 @@ export class PortfolioPolicyReplayService {
         Object.assign(band, { lowPrice: decision.nextLowPrice!, highPrice: decision.nextHighPrice!,
           levelCount: decision.nextLevelCount!, spacing: decision.nextSpacing!, previousPrice: null,
           lastRevisionAt: now, revisionsToday: (sameDay ? band.revisionsToday ?? 0 : 0) + 1, status: "active" });
+        if (fidelity) constraintsFor(band).locks = {};
       } else if (decision.action === "park") band.status = "parked";
       else if (decision.action === "reactivate") { band.status = "active"; band.previousPrice = null; }
       else if (decision.action === "create_band") {
@@ -213,23 +298,41 @@ export class PortfolioPolicyReplayService {
       }
       prices[event.asset] = event.price;
       if (!event.candle) {
+        if (fidelity) for (const band of bands.filter(b => b.assetSymbol === event.asset)) {
+          const state = constraintsFor(band);
+          const equity = band.idleQuoteUsd + lots.filter(l => l.bandId === band.id)
+            .reduce((sum, l) => sum + l.remainingBaseAmount * event.price, 0);
+          state.peak = Math.max(state.peak, equity);
+        }
         // Lot ownership and target never depend on the current entry-grid revision.
-        for (const lot of lots.filter(l => l.assetSymbol === event.asset && l.kind !== "retained" && l.remainingBaseAmount > 0)) {
+        const exitLots = lots.filter(l => l.assetSymbol === event.asset && l.kind !== "retained" && l.remainingBaseAmount > 0);
+        if (fidelity) exitLots.sort((a, b) => a.exitPrice - b.exitPrice || a.id - b.id);
+        for (const lot of exitLots) {
           if (event.price < lot.exitPrice) continue;
           const band = bands.find(b => b.id === lot.bandId)!;
-          const { fee, slip, nativeFee } = costsFor(event.asset, lot.economicRule === "accumulate_base"
-            ? lot.costQuote : lot.remainingBaseAmount * event.price);
-          const netUnit = event.price * (1 - slip) * (1 - fee);
+          const fillPrice = fidelity ? lot.exitPrice : event.price;
+          let costs = costsFor(event.asset, lot.economicRule === "accumulate_base" ? lot.costQuote : lot.remainingBaseAmount * fillPrice);
           const scale = 10 ** band.baseDecimals;
-          const sold = lot.economicRule === "accumulate_base" ? Math.ceil((lot.costQuote + nativeFee) / netUnit * scale) / scale : lot.remainingBaseAmount;
+          const saleAmount = () => lot.economicRule === "accumulate_base"
+            ? Math.ceil((lot.costQuote + costs.nativeFee) / (fillPrice * (1 - costs.slip) * (1 - costs.fee)) * scale) / scale : lot.remainingBaseAmount;
+          let sold = saleAmount();
+          // Bucket membership is based on modeled wallet quote notional, not the old lot cost.
+          const notional = () => sold * fillPrice * (1 - costs.slip) * (1 - costs.fee);
+          if (fidelity && costs.observed && !costsFor(event.asset, notional()).observed) {
+            costs = { fee, slip, nativeFee, observed: false }; sold = saleAmount();
+          }
+          const { fee: exitFee, slip: exitSlip, nativeFee: exitNativeFee } = costs;
+          const netUnit = fillPrice * (1 - exitSlip) * (1 - exitFee);
           if (sold > lot.remainingBaseAmount || (lot.economicRule === "accumulate_base" && lot.remainingBaseAmount - sold + 1e-12 <
             (lot.minimumRetainedBaseAmount ?? 1 / scale))) continue;
-          const net = sold * netUnit - nativeFee;
+          const net = sold * netUnit - exitNativeFee;
           if (net + 1e-9 < lot.costQuote + (lot.minimumNetGainUsd ?? 0)) continue;
-          recordTrade({ timestamp: now, assetSymbol: event.asset, bandId: band.id, lotId: lot.id, side: "sell",
-            baseAmount: sold, quoteAmount: net, marketPrice: event.price, executionPrice: event.price * (1 - slip),
-            feesUsd: sold * event.price * (1 - slip) * fee + nativeFee,
-            slippageCostUsd: sold * event.price * slip, roundingCostUsd: 0, realizedProfitUsd: net - lot.costQuote });
+          if (!canExecute(band, event, "sell", fillPrice)) continue;
+          recordTrade({ timestamp: new Date(crossingTime(event, fillPrice)), assetSymbol: event.asset, bandId: band.id, lotId: lot.id, side: "sell",
+            baseAmount: sold, quoteAmount: net, marketPrice: fillPrice, executionPrice: fillPrice * (1 - exitSlip),
+            feesUsd: sold * fillPrice * (1 - exitSlip) * exitFee + exitNativeFee,
+            slippageCostUsd: sold * fillPrice * exitSlip, roundingCostUsd: 0, realizedProfitUsd: net - lot.costQuote }, costs.observed, notional());
+          executed(band, event, fillPrice);
           band.idleQuoteUsd += lot.costQuote;
           freeCash += Math.max(0, net - lot.costQuote);
           lot.remainingBaseAmount = Math.max(0, lot.remainingBaseAmount - sold);
@@ -248,15 +351,18 @@ export class PortfolioPolicyReplayService {
               currentPrice: rail, widerSpacing: Math.max(band.spacing, l.entrySpacing),
               openTradingLot: l.kind !== "retained" && l.remainingBaseAmount > 0 }))) continue;
             const spend = Math.max(request.minOrderQuoteUsd ?? 0, band.allocatedCapitalUsd / (band.levelCount - 1));
-            const { fee, slip, nativeFee } = costsFor(event.asset, spend);
+            const { fee, slip, nativeFee, observed } = costsFor(event.asset, spend);
             if (spend > band.idleQuoteUsd + 1e-9 || spend <= nativeFee) continue;
+            if (!canExecute(band, event, "buy", rail, spend)) continue;
+            const fillPrice = fidelity ? rail : event.price;
             const scale = 10 ** band.baseDecimals;
-            const base = Math.floor((spend - nativeFee) * (1 - fee) / (event.price * (1 + slip)) * scale) / scale;
+            const base = Math.floor((spend - nativeFee) * (1 - fee) / (fillPrice * (1 + slip)) * scale) / scale;
             if (base <= 0) continue;
-            recordTrade({ timestamp: now, assetSymbol: event.asset, bandId: band.id, lotId: lots.length, side: "buy",
-              baseAmount: base, quoteAmount: spend, marketPrice: event.price, executionPrice: event.price * (1 + slip),
-              feesUsd: (spend - nativeFee) * fee + nativeFee, slippageCostUsd: base * event.price * slip,
-              roundingCostUsd: Math.max(0, (spend - nativeFee) * (1 - fee) - base * event.price * (1 + slip)), realizedProfitUsd: 0 });
+            recordTrade({ timestamp: new Date(crossingTime(event, rail)), assetSymbol: event.asset, bandId: band.id, lotId: lots.length, side: "buy",
+              baseAmount: base, quoteAmount: spend, marketPrice: fillPrice, executionPrice: fillPrice * (1 + slip),
+              feesUsd: (spend - nativeFee) * fee + nativeFee, slippageCostUsd: base * fillPrice * slip,
+              roundingCostUsd: Math.max(0, (spend - nativeFee) * (1 - fee) - base * fillPrice * (1 + slip)), realizedProfitUsd: 0 }, observed, spend);
+            executed(band, event, rail);
             band.idleQuoteUsd = Math.max(0, band.idleQuoteUsd - spend);
             lots.push({ id: lots.length, bandId: band.id, assetSymbol: event.asset, entryPrice: rail,
               remainingBaseAmount: base, costQuote: spend, kind: "trading", exitPrice: rail + band.spacing,
@@ -308,6 +414,7 @@ export class PortfolioPolicyReplayService {
     return { initialPoint, points, actions, trades, endingCashUsd: totalCash(), endingEquityUsd: last?.equityUsd ?? totalCash(),
       endingTradingCostUsd: last?.tradingCostUsd ?? 0, retainedBaseByAsset: last?.retainedBaseByAsset ?? {},
       closedCycles, policyParameters: { ...request.policyParameters }, feesUsd, slippageCostUsd, roundingCostUsd, realizedProfitUsd,
+      executionDiagnostics: diagnostics,
       exitUpdates, cashflows: appliedCashflows, externalCashflowUsd,
       endingLots: lots.map(lot => ({ ...lot })),
       endingBands: bands.map(band => ({ bandId: band.id, assetSymbol: band.assetSymbol,
@@ -323,6 +430,26 @@ function validateRequest(r: PortfolioPolicyReplayRequest) {
   if (Math.abs(r.allocations.reduce((s, a) => s + a.initialBudgetUsd, r.freeCashUsd ?? 0) - r.totalStartingCapitalUsd) > 1e-8) throw new Error("Allocations and free cash must equal total starting capital.");
   const ids = r.allocations.map((a, i) => a.bandId ?? `${a.assetSymbol}:${i}`);
   if (ids.some(id => !id.trim()) || new Set(ids).size !== ids.length) throw new Error("Band IDs must be unique.");
+  if (r.executionFidelity) {
+    const fidelity = r.executionFidelity, t0 = +r.allocations[0]!.series.candles[0]!.timestamp;
+    if (fidelity.model !== "rail_one_intent_v1" || (fidelity.intrabarPath !== undefined &&
+      !["high_low", "low_high"].includes(fidelity.intrabarPath))) throw new Error("Invalid execution fidelity model.");
+    if (fidelity.stateAvailableAt !== undefined && (!(fidelity.stateAvailableAt instanceof Date) ||
+      !Number.isFinite(+fidelity.stateAvailableAt))) throw new Error("Invalid state availability time.");
+    for (const [bandId, config] of Object.entries(fidelity.constraintsByBand ?? {})) {
+      if (!ids.includes(bandId) || [config.cooldownMs, config.maxOrdersPerHour, config.levelLockMs,
+        config.maxDeployableUsd, config.maxDrawdownPct, config.initialEquityHighWatermarkUsd]
+        .some(value => value !== undefined && (!Number.isFinite(value) || value < 0)) ||
+        (config.maxOrdersPerHour !== undefined && !Number.isInteger(config.maxOrdersPerHour))) {
+        throw new Error("Invalid execution constraint.");
+      }
+      const historical = [config.initialLastExecutionAt, ...(config.initialOrdersInTrailingHour ?? [])]
+        .filter((date): date is Date => date !== undefined);
+      if (historical.some(date => !(date instanceof Date) || !Number.isFinite(+date) || +date > t0) ||
+        [...Object.values(config.levelLocks ?? {}), ...(config.blockedUntil === undefined ? [] : [config.blockedUntil])]
+          .some(date => !(date instanceof Date) || !Number.isFinite(+date))) throw new Error("Invalid execution constraint time.");
+    }
+  }
   if (r.initialIntervention && (!(r.initialIntervention.observedAt instanceof Date) ||
     !Number.isFinite(+r.initialIntervention.observedAt))) throw new Error("Invalid initial intervention time.");
   if (r.timedIntervention && (!(r.timedIntervention.availableAt instanceof Date) || !Number.isFinite(+r.timedIntervention.availableAt) ||

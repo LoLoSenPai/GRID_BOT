@@ -173,11 +173,14 @@ services:
       - .env.production
     environment:
       NODE_ENV: production
+      SHADOW_CAPTURE_SPOOL_DIR: /var/lib/grid-bot/shadow-capture
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    volumes:
+      - shadow_capture_spool:/var/lib/grid-bot/shadow-capture
 
 volumes:
   postgres_data:

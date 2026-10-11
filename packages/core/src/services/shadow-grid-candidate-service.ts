@@ -13,6 +13,7 @@ import { round } from "../utils/math";
  */
 export const SHADOW_GRID_CANDIDATE_VERSION = "shadow-grid-candidates-v3.2" as const;
 export type ShadowGridCandidateSetVersion = typeof SHADOW_GRID_CANDIDATE_VERSION |
+  "shadow-grid-candidates-v3.3" |
   "shadow-grid-candidates-v3.1" | "shadow-grid-candidates-v3" | "shadow-grid-candidates-v2";
 
 export type ShadowGridCandidateKind = "keep" | "policy" | "range_variant" | "spacing_variant" |

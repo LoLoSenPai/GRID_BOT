@@ -30,6 +30,21 @@ async function fixture() {
 async function queueFiles(directory: string) { return (await readdir(directory)).filter(name => name.endsWith(".json")); }
 
 describe("durable shadow capture handoff", () => {
+  it("archives a contradictory outcome without endless retries and retains both hashes", async () => {
+    const f = await fixture();
+    await f.spool.enqueue(input, { status: "rejected", error: "second engine attempt" });
+    await f.spool.acquire();
+    f.storage.finalizeOutcome.mockRejectedValue(Object.assign(new Error("Shadow engine outcome is immutable."), {
+      code: "SHADOW_ENGINE_OUTCOME_CONFLICT", observationId: "observation", storedHash: "first", attemptedHash: "second" }));
+    expect(await f.spool.drain(f.storage)).toMatchObject({ queued: 0, failed: 1, completed: 0 });
+    const archives = await readdir(join(f.directory, "conflicts"));
+    expect(archives).toHaveLength(1);
+    expect(JSON.parse(await readFile(join(f.directory, "conflicts", archives[0]!), "utf8"))).toMatchObject({
+      input: { bandId: "band" }, outcome: { status: "rejected", error: "second engine attempt" },
+      failure: { code: "SHADOW_ENGINE_OUTCOME_CONFLICT", storedHash: "first", attemptedHash: "second" } });
+    await f.spool.drain(f.storage);
+    expect(f.storage.finalizeOutcome).toHaveBeenCalledTimes(1);
+  });
   it("retains input and outcome while DB is down, respects backoff, then acknowledges both commits", async () => {
     const f = await fixture(); await f.spool.enqueue(input, { status: "observed_only" }); await f.spool.acquire();
     f.storage.capture.mockRejectedValueOnce(new Error("DB unavailable"));

@@ -13,6 +13,7 @@ interface Envelope {
   attempts: number;
   availableAt: number;
   status: "queued" | "processing";
+  failure?: { code: string; message: string; at: string; observationId?: string; storedHash?: string; attemptedHash?: string };
 }
 interface Lease { pid: number; host: string; token: string; touchedAt: number; processStart?: string }
 export interface ShadowCaptureStorage {
@@ -28,7 +29,8 @@ export class ShadowCaptureSpool {
   private heartbeat?: ReturnType<typeof setInterval>;
   private busy = false;
   private readonly writes = new Set<Promise<void>>();
-  constructor(readonly directory: string, private readonly now: () => number = Date.now) {}
+  constructor(readonly directory: string, private readonly now: () => number = Date.now,
+    private readonly onFailure: (failure: NonNullable<Envelope["failure"]>, archived: boolean) => void = () => undefined) {}
 
   enqueue(input: CaptureShadowObservationInput, outcome: FinalizeShadowOutcomeInput): Promise<void> {
     const id = spoolIdentity(input), path = join(this.directory, `${id}.json`);
@@ -142,14 +144,37 @@ export class ShadowCaptureSpool {
           await unlink(path);
           await syncDirectory(this.directory);
           metrics.completed++; metrics.queued--;
-        } catch {
+        } catch (error) {
           // Keep the exact original input/outcome through DB outages and restarts.
           envelope.attempts++;
+          const detail = error && typeof error === "object" ? error as Record<string, unknown> : {};
+          envelope.failure = { code: typeof detail.code === "string" ? detail.code : "SHADOW_CAPTURE_FAILURE",
+            message: error instanceof Error ? error.message.slice(0, 300) : "Unknown shadow capture failure",
+            at: new Date(this.now()).toISOString(),
+            ...(typeof detail.observationId === "string" ? { observationId: detail.observationId } : {}),
+            ...(typeof detail.storedHash === "string" ? { storedHash: detail.storedHash } : {}),
+            ...(typeof detail.attemptedHash === "string" ? { attemptedHash: detail.attemptedHash } : {}) };
+          if (envelope.failure.code === "SHADOW_ENGINE_OUTCOME_CONFLICT") {
+            // Preserve the contradictory attempt for inspection, without retrying
+            // an immutable conflict forever or overwriting the original DB result.
+            const archive = join(this.directory, "conflicts");
+            await mkdir(archive, { recursive: true, mode: 0o700 });
+            await this.replace(path, envelope);
+            const archivedPath = join(archive, `${envelope.id}-${envelope.failure.attemptedHash}.json`);
+            try { await link(path, archivedPath); }
+            catch (caught) { if (!hasCode(caught, "EEXIST")) throw caught; }
+            await syncDirectory(archive);
+            await unlink(path); await syncDirectory(this.directory);
+            metrics.failed++; metrics.queued--;
+            this.onFailure(envelope.failure, true);
+            continue;
+          }
           envelope.availableAt = this.now() + Math.min(300_000, 1_000 * 2 ** Math.min(envelope.attempts - 1, 9));
           envelope.status = "queued";
           await this.assertLease();
           await this.replace(path, envelope);
           metrics.failed++;
+          this.onFailure(envelope.failure, false);
         }
       }
       return metrics;
@@ -186,7 +211,9 @@ export class ShadowCaptureSpool {
 
 function spoolIdentity(input: CaptureShadowObservationInput): string {
   return createHash("sha256").update(JSON.stringify([input.portfolioId, input.strategyId, input.bandId, input.botId,
-    new Date(input.observedAt).toISOString(), input.questionSetVersion, input.modelRequested])).digest("hex");
+    new Date(input.observedAt).toISOString(), input.questionSetVersion, input.modelRequested,
+    ...(input.questionSetVersion === "shadow-jev-v4.2" ? [input.marketMeta.provider, input.marketMeta.symbol,
+      input.marketMeta.quoteSymbol, input.marketMeta.sourceMarket ?? null] : [])])).digest("hex");
 }
 function restoreInput(input: CaptureShadowObservationInput): CaptureShadowObservationInput {
   const policy = input.policyInput as typeof input.policyInput & { now?: string | Date };

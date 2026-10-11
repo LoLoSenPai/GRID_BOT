@@ -62,7 +62,7 @@ export function buildJevV3Request(input: ShadowJevV3Input): ShadowJevV3PreparedR
     throw new TypeError("Invalid V3 policy input.");
   }
   if ((set?.version !== "shadow-grid-candidates-v3" && set?.version !== "shadow-grid-candidates-v3.1" &&
-    set?.version !== "shadow-grid-candidates-v3.2") ||
+    set?.version !== "shadow-grid-candidates-v3.2" && set?.version !== "shadow-grid-candidates-v3.3") ||
     !Array.isArray(set.candidates) ||
     set.candidates.length < 1 || set.candidates.length > 6 || set.candidates[0]?.id !== "keep") {
     throw new TypeError("Invalid V3 candidate set.");
@@ -72,7 +72,8 @@ export function buildJevV3Request(input: ShadowJevV3Input): ShadowJevV3PreparedR
   // Balance option positions across observations so a fixed first-option bias
   // cannot masquerade as a preference for KEEP. The seed is reproducible.
   const ordered = set.candidates.map((candidate, originalIndex) => ({ candidate, originalIndex }));
-  const questionVersion = set.version === "shadow-grid-candidates-v3.2" ? currentV3QuestionSetVersion
+  const questionVersion = set.version === "shadow-grid-candidates-v3.3" ? "shadow-jev-v3.3"
+    : set.version === "shadow-grid-candidates-v3.2" ? currentV3QuestionSetVersion
     : set.version === "shadow-grid-candidates-v3.1" ? "shadow-jev-v3.1" : v3QuestionSetVersion;
   const seed = createHash("sha256").update([questionVersion, observedAt, policy.assetSymbol,
     policy.band.id].join("|")).digest();
@@ -148,7 +149,7 @@ export function buildJevV3Request(input: ShadowJevV3Input): ShadowJevV3PreparedR
       `${candidate.level_count} levels, spacing ${candidate.spacing_pct.toFixed(3)}%, ` +
       `new capital ${candidate.requested_capital_usd.toFixed(2)} USDC. ` +
       `Construction: ${candidate.rationale} ` +
-      `${candidate.economic_validation === "baseline" ? (set.version === "shadow-grid-candidates-v3.2"
+      `${candidate.economic_validation === "baseline" ? (["shadow-grid-candidates-v3.2", "shadow-grid-candidates-v3.3"].includes(set.version)
         ? `Baseline retained for comparison; current economic checks reject it: ${candidate.economic_validation_reasons.join("; ")}. `
         : "Existing baseline; current cost rules would reject it for a new grid. ") : ""}` +
       "Existing lot exit targets remain unchanged.";

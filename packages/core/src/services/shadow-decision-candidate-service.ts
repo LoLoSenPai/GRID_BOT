@@ -6,7 +6,7 @@ import { gridCostFloorPct } from "../utils/grid-cost-floor";
 
 export interface ShadowExitCandidate { id: string; kind: "keep" | "closer" | "farther";
   updates: ShadowReplayExitUpdate[]; strategyParameters: Record<string, number | string>; }
-export interface ShadowDecisionCandidateSet { version: "shadow-decisions-v4" | "shadow-decisions-v4.1"; grid: ShadowGridCandidateSet;
+export interface ShadowDecisionCandidateSet { version: "shadow-decisions-v4" | "shadow-decisions-v4.1" | "shadow-decisions-v4.2"; grid: ShadowGridCandidateSet;
   exit: { version: "shadow-exits-v1"; candidates: ShadowExitCandidate[]; rejected: Array<{ id: string; reasons: string[] }> };
   costProfile: ShadowObservedCostProfile | null; }
 type RecordValue = Record<string, any>;
@@ -21,7 +21,7 @@ export function buildShadowDecisionCandidates(input: { policyInput: PortfolioPol
   const target = targetBand(snapshot, policy.band.id);
   const usable = isShadowCostProfileUsable(profile, policy, target);
   const legacy = buildShadowGridCandidates(policy, input.proposedDecision, input.options);
-  if (input.proposedDecision.action !== "wait" && !legacy.candidates.some(c => c.kind === "policy")) {
+  if (decisionVersion !== "shadow-decisions-v4.2" && input.proposedDecision.action !== "wait" && !legacy.candidates.some(c => c.kind === "policy")) {
     const decision = structuredClone(input.proposedDecision), band = policy.band;
     const geometry = decision.action === "create_band" && decision.candidate ? decision.candidate : decision.action === "revise"
       ? { lowPrice: decision.nextLowPrice!, highPrice: decision.nextHighPrice!, levelCount: decision.nextLevelCount!,
@@ -34,6 +34,7 @@ export function buildShadowDecisionCandidates(input: { policyInput: PortfolioPol
     legacy.candidates = legacy.candidates.slice(0, 6); legacy.policyCandidateId = "policy";
   }
   let grid = structuredClone(legacy);
+  if (decisionVersion === "shadow-decisions-v4.2") grid.version = "shadow-grid-candidates-v3.3";
   if (usable && profile) {
     const minimumOrder = Math.max(policy.parameters.minUsefulOrderUsd, profile.notionalBucket.minUsd, 0.01);
     const fee = profile.feeBps! + profile.p90NativeFeeUsd! / minimumOrder * 10_000;

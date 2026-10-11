@@ -36,7 +36,7 @@ import { getPortfolioSnapshotIntervalMs, safeBackfillPortfolioSnapshots, safeCre
 import { getRuntimeMaintenanceIntervalMs, runRuntimeMaintenance } from "./runtime-maintenance";
 import { SymbolRunScheduler } from "./symbol-run-scheduler";
 import { ExecutionRecoveryPoller } from "./execution-recovery-poller";
-import { v4ModelRequested, v4QuestionSetVersion } from "./shadow-jev-v4-questions";
+import { v4ModelRequested, v4ReferenceQuestionSetVersion as v4QuestionSetVersion } from "./shadow-jev-v4-questions";
 import { ShadowCaptureSpool } from "./shadow-capture-spool";
 
 const env = getEnv();
