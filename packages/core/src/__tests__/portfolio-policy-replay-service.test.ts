@@ -5,10 +5,150 @@ import type { PortfolioPolicyDecision } from "../services/portfolio-policy-servi
 import { SHADOW_GRID_CANDIDATE_VERSION } from "../services/shadow-grid-candidate-service";
 
 const params = { persistenceClosedBars: 2, cooldownMs: 0, maxDailyRevisions: 5, atrMultiplier: 1, realizedVolMultiplier: 1, amplitudeMultiplier: 1, minWidthPct: 4, maxWidthPct: 12, minUsefulOrderUsd: 10, maxBands: 3, maxLevels: 6, maxExposurePct: 100, lowerBandOffsetPct: 2, lowerBandWidthPct: 8, minimumSpacingPct: 1 };
+const HOUR = 3_600_000;
 function series(symbol: string, values: number[]): { symbol: string; pair: string; candles: HistoricalCandle[] } { return { symbol, pair: `${symbol}/USDC`, candles: values.map((close, i) => ({ timestamp: new Date(Date.UTC(2026, 0, 1, i)), open: close, high: close * 1.01, low: close * .99, close })) }; }
 function request(overrides: Partial<PortfolioPolicyReplayRequest> = {}): PortfolioPolicyReplayRequest { return { allocations: [{ assetSymbol: "BTC", series: series("BTC", Array(20).fill(100).concat([90, 120, 120, 120])), initialBudgetUsd: 500, lowPrice: 90, highPrice: 110, levelCount: 5, strategy: "accumulate_base" }, { assetSymbol: "SOL", series: series("SOL", Array(24).fill(20)), initialBudgetUsd: 500, lowPrice: 18, highPrice: 22, levelCount: 5, strategy: "accumulate_usdc" }], totalStartingCapitalUsd: 1000, freeCashUsd: 0, policyParameters: params, feeBps: 10, minOrderQuoteUsd: 25, ...overrides }; }
 
 describe("PortfolioPolicyReplayService", () => {
+  const faithful = (overrides: Partial<PortfolioPolicyReplayRequest> = {}): PortfolioPolicyReplayRequest => {
+    const allocation = { ...request().allocations[0]!, bandId: "BTC-band", initialPreviousPrice: 100,
+      lowPrice: 90, highPrice: 130, levelCount: 3,
+      series: series("BTC", [100, 100]) };
+    allocation.series.candles.forEach(c => { c.high = 140; c.low = 80; c.close = 130; });
+    allocation.series.candles[1]!.open = 130;
+    return request({ allocations: [allocation], totalStartingCapitalUsd: 500, adaptive: false,
+      feeBps: 100, slippageBps: 100, nativeFeeUsd: 2,
+      executionFidelity: { model: "rail_one_intent_v1" }, ...overrides });
+  };
+  it("bounds faithful fills to one per band and candle at the crossed rail, preserving fee accounting", () => {
+    const input = faithful(), result = new PortfolioPolicyReplayService().replay(input);
+    expect(result.trades.map(t => t.side)).toEqual(["buy", "sell"]);
+    expect(result.trades[0]!.marketPrice).toBe(110);
+    expect(result.trades[0]!.executionPrice).toBeCloseTo(111.1);
+    expect(result.trades[1]!.marketPrice).toBe(130);
+    expect(result.trades[1]!.executionPrice).toBeCloseTo(128.7);
+    const buy = result.trades[0]!;
+    expect(buy.feesUsd).toBeCloseTo((250 - 2) * .01 + 2);
+    expect(result.points[0]!.equityUsd).toBeCloseTo(500 - buy.feesUsd - buy.slippageCostUsd - buy.roundingCostUsd +
+      buy.baseAmount * (130 - buy.marketPrice), 7);
+    expect(result.endingEquityUsd).toBeCloseTo(result.endingCashUsd +
+      result.endingLots.reduce((sum, lot) => sum + lot.remainingBaseAmount * 130, 0));
+    expect(result.executionDiagnostics.blocked.candle_limit).toBeGreaterThan(0);
+    const legacy = new PortfolioPolicyReplayService().replay({ ...input, executionFidelity: undefined });
+    expect(legacy.trades.length).toBeGreaterThan(result.trades.length);
+    expect(legacy.trades[0]!.marketPrice).toBe(80);
+  });
+  it("uses captured buy cooldown and trailing-hour gates while allowing committed exits", () => {
+    const config = { cooldownMs: 10 * HOUR, maxOrdersPerHour: 0, initialLastExecutionAt: new Date(Date.UTC(2026, 0, 1) - 1000) };
+    const blocked = new PortfolioPolicyReplayService().replay(faithful({ executionFidelity: {
+      model: "rail_one_intent_v1", constraintsByBand: { "BTC-band": config } } }));
+    expect(blocked.trades).toEqual([]); expect(blocked.executionDiagnostics.blocked.cooldown).toBeGreaterThan(0);
+    const input = faithful();
+    input.allocations[0]!.initialIdleQuoteUsd = 400;
+    input.allocations[0]!.initialLots = [{ kind: "trading", entryPrice: 90, remainingBaseAmount: 1.2,
+      costQuote: 100, exitPrice: 110, entrySpacing: 5 }];
+    input.executionFidelity = { model: "rail_one_intent_v1", constraintsByBand: { "BTC-band": config } };
+    const exits = new PortfolioPolicyReplayService().replay(input);
+    expect(exits.trades.map(t => t.side)).toEqual(["sell"]);
+    expect(exits.closedCycles).toBe(1);
+  });
+  it("honors captured entry-level locks, maximum deployable capital and noncausal-state rejection", () => {
+    const input = faithful(), until = new Date(Date.UTC(2026, 0, 2));
+    input.executionFidelity!.constraintsByBand = { "BTC-band": { levelLocks: { 0: until, 1: until, 2: until, 3: until } } };
+    const locked = new PortfolioPolicyReplayService().replay(input);
+    expect(locked.trades).toEqual([]); expect(locked.executionDiagnostics.blocked.level_lock).toBeGreaterThan(0);
+    input.executionFidelity!.constraintsByBand = { "BTC-band": { maxDeployableUsd: 249 } };
+    const capital = new PortfolioPolicyReplayService().replay(input);
+    expect(capital.trades).toEqual([]); expect(capital.executionDiagnostics.blocked.deployable).toBeGreaterThan(0);
+    input.executionFidelity!.constraintsByBand = { "BTC-band": { initialLastExecutionAt: until } };
+    expect(() => new PortfolioPolicyReplayService().replay(input)).toThrow(/constraint time/);
+  });
+  it("reports cost fallback beyond the observed notional bucket without labeling it observed", () => {
+    const result = new PortfolioPolicyReplayService().replay(faithful({ executionCostsByAsset: { BTC: {
+      feeBps: 0, slippageBps: 0, nativeFeeUsd: .5, notionalBucket: { minUsd: 25, maxUsd: 100 } } } }));
+    expect(result.executionDiagnostics.outsideObservedBucketTrades).toBe(2);
+    expect(result.executionDiagnostics.observedCostTrades).toBe(0);
+    expect(result.executionDiagnostics.fallbackCostTrades).toBe(2);
+    expect(result.executionDiagnostics.fallbackCostFeesUsd).toBeCloseTo(result.feesUsd);
+    const observed = new PortfolioPolicyReplayService().replay(faithful({ executionCostsByAsset: { BTC: {
+      feeBps: 10, slippageBps: 10, nativeFeeUsd: .5, notionalBucket: { minUsd: 25, maxUsd: 500 } } } }));
+    expect(observed.executionDiagnostics.observedCostTrades).toBe(2);
+    expect(observed.executionDiagnostics.fallbackCostTrades).toBe(0);
+    expect(observed.trades[0]!.feesUsd).toBeCloseTo((250 - .5) * .001 + .5);
+  });
+  it("counts sells in the rolling-hour buy gate on complete five-minute execution candles", () => {
+    const input = faithful(), allocation = input.allocations[0]!;
+    allocation.series.candles = allocation.series.candles.slice(0, 1);
+    allocation.executionSeries = { ...allocation.series, resolution: "5m", candles: Array.from({ length: 12 }, (_, i) => ({
+      timestamp: new Date(+allocation.series.candles[0]!.timestamp + i * 300_000),
+      open: i === 0 ? 100 : 130, high: 140, low: 80, close: 130 })) };
+    input.candleIntervalMs = HOUR;
+    input.executionFidelity!.constraintsByBand = { "BTC-band": { maxOrdersPerHour: 2 } };
+    const result = new PortfolioPolicyReplayService().replay(input);
+    expect(result.trades.map(t => t.side)).toEqual(["buy", "sell"]);
+    expect(result.trades[0]!.timestamp.getTime()).toBeLessThan(result.trades[1]!.timestamp.getTime());
+    expect(result.executionDiagnostics.blocked.hour_limit).toBeGreaterThan(0);
+    expect(result.endingLots.filter(l => l.kind === "trading")).toEqual([]);
+  });
+  it("protects buys on marked drawdown and does not discount gap fills to the candle low", () => {
+    const input = faithful();
+    input.allocations[0]!.initialIdleQuoteUsd = 300;
+    input.allocations[0]!.initialLots = [{ kind: "trading", entryPrice: 200, remainingBaseAmount: 1,
+      costQuote: 200, exitPrice: 220, entrySpacing: 20 }];
+    input.executionFidelity!.constraintsByBand = { "BTC-band": { maxDrawdownPct: 10, initialEquityHighWatermarkUsd: 500 } };
+    const result = new PortfolioPolicyReplayService().replay(input);
+    expect(result.trades).toEqual([]); expect(result.executionDiagnostics.blocked.drawdown).toBeGreaterThan(0);
+    const gap = faithful(); gap.allocations[0]!.initialPreviousPrice = 140;
+    const candle = gap.allocations[0]!.series.candles[0]!;
+    candle.open = 80; candle.high = 140;
+    expect(new PortfolioPolicyReplayService().replay(gap).trades[0]!.marketPrice).toBe(110);
+  });
+  it("selects sell cost buckets by wallet notional and charges only a new exit native fee on seeded fee-inclusive lots", () => {
+    const input = faithful(); input.allocations[0]!.initialIdleQuoteUsd = 400.1;
+    input.allocations[0]!.initialLots = [{ kind: "trading", entryPrice: 90, remainingBaseAmount: 1.2,
+      costQuote: 99.9, exitPrice: 110, entrySpacing: 5 }];
+    input.executionCostsByAsset = { BTC: { feeBps: 0, slippageBps: 0, nativeFeeUsd: .5,
+      notionalBucket: { minUsd: 25, maxUsd: 100 } } };
+    const result = new PortfolioPolicyReplayService().replay(input), sell = result.trades[0]!;
+    expect(sell.side).toBe("sell");
+    expect(sell.feesUsd).toBeCloseTo(sell.baseAmount * sell.executionPrice * .01 + 2);
+    expect(result.executionDiagnostics.observedCostTrades).toBe(0);
+    expect(result.executionDiagnostics.outsideObservedBucketTrades).toBe(result.trades.length);
+    expect(result.initialPoint.feesUsd).toBe(0); // Seeded cost basis already owns its historical fees.
+  });
+  it("preserves accumulated zero-cost BTC fragments with zero entry price without creating a sale", () => {
+    const fragment = { kind: "retained" as const, entryPrice: 0, remainingBaseAmount: 0.01,
+      costQuote: 0, exitPrice: 0, entrySpacing: 5 };
+    const allocation = { ...request().allocations[0]!, series: series("BTC", [100, 100]),
+      initialIdleQuoteUsd: 500, initialPreviousPrice: 100, initialLots: [fragment] };
+    allocation.series.candles.forEach(c => { c.high = 100; c.low = 100; });
+    const input = request({ allocations: [allocation], totalStartingCapitalUsd: 500, adaptive: false });
+    const result = new PortfolioPolicyReplayService().replay(input);
+    expect(result.initialPoint.equityUsd).toBe(501); expect(result.endingEquityUsd).toBe(501);
+    expect(result.retainedBaseByAsset.BTC).toBe(0.01); expect(result.trades).toEqual([]);
+    expect(() => new PortfolioPolicyReplayService().replay({ ...input, allocations: [{ ...allocation,
+      initialIdleQuoteUsd: 499, initialLots: [{ ...fragment, kind: "trading", costQuote: 1 }] }] })).toThrow(/Invalid initial lot/);
+    expect(() => new PortfolioPolicyReplayService().replay({ ...input, allocations: [{ ...allocation,
+      initialIdleQuoteUsd: 499, initialLots: [{ ...fragment, costQuote: 1 }] }] })).toThrow(/Invalid initial lot/);
+  });
+  it("uses an explicit initial fee book only for validation while preserving nominal risk capital and cash", () => {
+    const allocation = { ...request().allocations[0]!, series: series("BTC", [100, 100]), lowPrice: 50, highPrice: 150,
+      levelCount: 2, initialIdleQuoteUsd: 400, initialPreviousPrice: 100, initialExternalFeeBookUsd: 0.1,
+      initialLots: [{ kind: "trading" as const, entryPrice: 100.1, remainingBaseAmount: 1,
+        costQuote: 100.1, exitPrice: 120, entrySpacing: 100 }] };
+    allocation.series.candles.forEach(c => { c.high = 100; c.low = 100; });
+    const capitals: number[] = [], allocated: number[] = [];
+    const input = request({ allocations: [allocation], totalStartingCapitalUsd: 500,
+      candidateSelector: ({ policyInput }) => { capitals.push(policyInput.totalPortfolioCapitalUsd);
+        allocated.push(policyInput.band.allocatedCapitalUsd); return "keep"; } });
+    const result = new PortfolioPolicyReplayService().replay(input);
+    expect(result.initialPoint.equityUsd).toBe(500); expect(result.initialPoint.cashUsd).toBe(400);
+    expect(result.endingEquityUsd).toBe(500); expect(result.feesUsd).toBe(0);
+    expect(result.externalCashflowUsd).toBe(0); expect(result.realizedProfitUsd).toBe(0);
+    expect(capitals).toEqual([500, 500]); expect(allocated).toEqual([500, 500]);
+    expect(() => new PortfolioPolicyReplayService().replay({ ...input, allocations: [{ ...allocation,
+      initialExternalFeeBookUsd: 0 }] })).toThrow(/must equal assigned capital/);
+  });
   it("replays multiple assets with shared nonnegative cash and equal starting capital", () => {
     const result = new PortfolioPolicyReplayService().replay(request());
     expect(result.points.length).toBeGreaterThan(0);
@@ -291,6 +431,35 @@ describe("PortfolioPolicyReplayService", () => {
     expect(result.endingBands).toHaveLength(2);
     expect(result.endingBands[1]!.allocatedCapitalUsd).toBe(5);
     expect(result.realizedProfitUsd).toBeGreaterThan(50);
+  });
+  it("does not let a future deposit change earlier policy capital or funding admission", () => {
+    const allocation = { ...request().allocations[0]!, bandId: "band", lowPrice: 50, highPrice: 90,
+      levelCount: 2, initialStatus: "parked" as const, initialIdleQuoteUsd: 400,
+      initialLots: [{ kind: "trading" as const, entryPrice: 50, remainingBaseAmount: 2, costQuote: 100,
+        exitPrice: 60, entrySpacing: 40, economicRule: "accumulate_usdc" as const }], series: series("BTC", [80, 80, 80]) };
+    const start = +allocation.series.candles[0]!.timestamp;
+    const flow = { id: "later", at: new Date(start + 2.5 * 3_600_000), amountUsd: 100 };
+    const run = (flows: typeof flow[]) => {
+      const observations: Array<{ at: number; capital: number }> = [];
+      const result = new PortfolioPolicyReplayService().replay(request({ allocations: [allocation], totalStartingCapitalUsd: 500,
+        cashflows: flows, candidateSelector: ({ policyInput }) => {
+          observations.push({ at: +policyInput.now, capital: policyInput.totalPortfolioCapitalUsd }); return "keep";
+        } }));
+      return { result, prefix: observations.filter(o => o.at < +flow.at) };
+    };
+    const base = run([]), funded = run([flow]);
+    expect(base.result.realizedProfitUsd).toBeGreaterThan(50);
+    expect(base.prefix).toHaveLength(2); expect(funded.prefix).toEqual(base.prefix);
+    expect(funded.prefix.every(o => o.capital === 500)).toBe(true);
+    expect(funded.result.points.filter(p => +p.timestamp < +flow.at)).toEqual(base.result.points.filter(p => +p.timestamp < +flow.at));
+    const create: PortfolioPolicyDecision = { action: "create_band", reason: "Earlier funding check",
+      nextLowPrice: null, nextHighPrice: null, nextLevelCount: null, nextSpacing: null,
+      protectedLowPrice: null, protectedHighPrice: null,
+      candidate: { lowPrice: 50, highPrice: 60, levelCount: 2, spacing: 10, requestedCapitalUsd: 5 } };
+    for (const cashflows of [[], [flow]]) expect(() => new PortfolioPolicyReplayService().replay(request({
+      allocations: [allocation], totalStartingCapitalUsd: 500, adaptive: false, cashflows,
+      timedIntervention: { availableAt: new Date(start + 3_600_000), grid: { bandId: "band", decision: create } },
+    }))).toThrow(/cannot fund or admit/);
   });
 
   it("rejects unaccounted initial capital and future warmup instead of silently dropping them", () => {

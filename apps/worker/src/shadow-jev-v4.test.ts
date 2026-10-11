@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildShadowGridCandidates, DEFAULT_PORTFOLIO_POLICY, type PortfolioPolicyInput, type ShadowDecisionCandidateSet } from "@grid-bot/core";
+import { buildShadowDecisionCandidates, buildShadowGridCandidates, DEFAULT_PORTFOLIO_POLICY, type PortfolioPolicyInput, type ShadowDecisionCandidateSet } from "@grid-bot/core";
 import { buildJevV4Request } from "./shadow-jev-v4-questions";
 import { evaluateJevV4 } from "./shadow-jev-v4-client";
 import { ShadowJevConsumer } from "./shadow-jev-consumer";
 
 const at = new Date("2026-09-30T20:00:00Z");
-function fixture() {
+function fixture(versions: { decisions: "shadow-decisions-v4" | "shadow-decisions-v4.1";
+  grid: "shadow-grid-candidates-v3.1" | "shadow-grid-candidates-v3.2" } = {
+  decisions: "shadow-decisions-v4.1", grid: "shadow-grid-candidates-v3.2"
+}) {
   const policyInput: PortfolioPolicyInput = { now: at, price: 100, assetSymbol: "SOL", candleIntervalMs: 3_600_000,
     maxCandleAgeMs: 7_200_000, bandCount: 1, availableCashUsd: 200, assetAttributedCapitalUsd: 400,
     totalPortfolioCapitalUsd: 1_000, parameters: DEFAULT_PORTFOLIO_POLICY,
@@ -15,8 +18,8 @@ function fixture() {
       closedAt: new Date(+at - (79 - i) * 3_600_000), open: 100, high: 101, low: 99, close: 100 })) };
   const decision = { action: "wait" as const, reason: "wait", nextLowPrice: null, nextHighPrice: null,
     nextLevelCount: null, nextSpacing: null, protectedLowPrice: null, protectedHighPrice: null };
-  const candidateSet: ShadowDecisionCandidateSet = { version: "shadow-decisions-v4",
-    grid: buildShadowGridCandidates(policyInput, decision), costProfile: null,
+  const candidateSet: ShadowDecisionCandidateSet = { version: versions.decisions,
+    grid: { ...buildShadowGridCandidates(policyInput, decision), version: versions.grid }, costProfile: null,
     exit: { version: "shadow-exits-v1", rejected: [], candidates: [{ id: "keep", kind: "keep", updates: [], strategyParameters: {} },
       { id: "closer", kind: "closer", strategyParameters: {}, updates: [{ sourceLotId: "lot", bandId: "band", oldTargetPrice: 110,
         newTargetPrice: 105, costQuote: 100, remainingBaseAmount: 1, economicRule: "accumulate_usdc",
@@ -32,6 +35,35 @@ function response(request: ReturnType<typeof buildJevV4Request>["request"]) {
     })) };
 }
 describe("V4 shadow questions and consumer", () => {
+  it("defaults to V4.1 candidates and preserves the V4 legacy exit shuffle", () => {
+    const input = fixture();
+    const defaultSet = buildShadowDecisionCandidates({ policyInput: input.policyInput,
+      proposedDecision: { action: "wait", reason: "wait", nextLowPrice: null, nextHighPrice: null,
+        nextLevelCount: null, nextSpacing: null, protectedLowPrice: null, protectedHighPrice: null },
+      replaySnapshot: {}, costProfile: null });
+    expect(defaultSet.version).toBe("shadow-decisions-v4.1");
+    expect(defaultSet.grid.version).toBe("shadow-grid-candidates-v3.2");
+
+    const legacy = buildJevV4Request(fixture({ decisions: "shadow-decisions-v4", grid: "shadow-grid-candidates-v3.1" }));
+    expect(legacy.request.questions.grid_candidate.criteria).toBeDefined();
+    expect(legacy.request.state.experiment_version).toBe("shadow-decisions-v4");
+    // Frozen V4 seed: sha256("shadow-jev-v4|observedAt|band|exits")[1] % 2 = 1, so no swap occurs.
+    expect(legacy.request.state.exit_candidates.map(candidate => candidate.family))
+      .toEqual(["keep", "closer"]);
+  });
+
+  it("describes a V4.1 grid baseline with its economic rejection reasons", () => {
+    const input = fixture();
+    input.candidateSet.grid.candidates[0] = { ...input.candidateSet.grid.candidates[0]!,
+      validation: "baseline", economicallyValid: false,
+      economicValidationReasons: ["Spacing below current policy/cost floor"] };
+    const { request, gridOptionToCandidateId } = buildJevV4Request(input);
+    const option = Object.entries(gridOptionToCandidateId).find(([, id]) => id === "keep")?.[0];
+    expect(option).toBeDefined();
+    expect(request.questions.grid_candidate.criteria[option!]).toContain("Baseline retained for comparison");
+    expect(request.questions.grid_candidate.criteria[option!]).toContain("Spacing below current policy/cost floor");
+  });
+
   it("freezes two neutral, bounded choices without exposing the policy winner", () => {
     const input = fixture(), original = structuredClone(input), prepared = buildJevV4Request(input);
     expect(input).toEqual(original);
@@ -60,7 +92,7 @@ describe("V4 shadow questions and consumer", () => {
   it("persists both mapped distributions in the existing leased outbox", async () => {
     const input = fixture();
     const store = { claim: vi.fn(async () => [{ jobId: "job", attemptCount: 1, leaseExpiresAt: new Date(+at + 60_000),
-      questionSetVersion: "shadow-jev-v4", modelRequested: "jev-1.13.0", observation: {
+      questionSetVersion: "shadow-jev-v4.1", modelRequested: "jev-1.13.0", observation: {
         id: "obs", portfolioId: "p", strategyId: "s", bandId: "band", botId: "bot", observedAt: at,
         policyInput: input.policyInput, candidateSet: input.candidateSet, context: { strategy: { objective: "accumulate_usdc" },
           shadowTiming: { stateReadAt: input.stateReadAt.toISOString() } }, botState: {}, marketMeta: {}, proposedDecision: {},

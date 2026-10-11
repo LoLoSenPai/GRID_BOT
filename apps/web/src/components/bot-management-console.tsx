@@ -1,7 +1,7 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
 import { ArrowUpRight, FlaskConical, MoreHorizontal, Pause, PencilLine, Play, Plus, Square, Trash2 } from "lucide-react";
 import { BotMode, EntryMode, type StrategyMode } from "@grid-bot/core/enums";
@@ -32,6 +32,7 @@ import {
   type BotBehaviorPresetId,
   type BotPairPresetId
 } from "@/lib/bot-management";
+import { aggregateZoneMetrics, groupBotsByStrategy, type BotZone } from "@/lib/bot-zone-groups";
 import { calculateBudgetRoiPct } from "@/lib/bot-metrics";
 import { calculateGridLevels, getNextGridTriggers, parsePendingSignal } from "@/lib/bot-runtime";
 import {
@@ -43,6 +44,7 @@ import { formatGoalLabel, formatTradeDisplay } from "@/lib/trade-display";
 import { cn, formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/utils";
 
 type ManagedBot = {
+  zone: BotZone | null;
   id: string;
   key: string;
   name: string;
@@ -246,6 +248,7 @@ export function BotManagementConsole({
   const router = useRouter();
   const initialEditBot = bots.find((bot) => bot.id === (initialSelectedBotId ?? null)) ?? bots[0] ?? null;
   const [isPending, startTransition] = useTransition();
+  const [collapsedStrategies, setCollapsedStrategies] = useState<Set<string>>(() => new Set());
   const [selectedBotId, setSelectedBotId] = useState<string | null>(initialSelectedBotId ?? bots[0]?.id ?? null);
   const [panelKind, setPanelKind] = useState<PanelKind>(null);
   const [panelTab, setPanelTab] = useState<PanelTab>("setup");
@@ -331,6 +334,7 @@ export function BotManagementConsole({
       }),
     [sharedSpotByPair, telemetryBots]
   );
+  const strategyGroups = useMemo(() => groupBotsByStrategy(runtimeBots), [runtimeBots]);
   const hasBots = runtimeBots.length > 0;
 
   const selectedBot = useMemo(() => runtimeBots.find((bot) => bot.id === selectedBotId) ?? runtimeBots[0] ?? null, [runtimeBots, selectedBotId]);
@@ -1500,7 +1504,28 @@ export function BotManagementConsole({
                   </tr>
                 </thead>
                 <tbody>
-                  {runtimeBots.map((bot) => {
+                  {strategyGroups.map((group) => {
+                    const first = group.bots[0]!;
+                    const totals = aggregateZoneMetrics(group.bots.map((bot) => ({
+                      status: bot.status, budget: bot.config.totalBudgetUsd, deployable: bot.config.maxDeployableUsd,
+                      deployed: bot.metrics.deployedQuoteAmount, equity: bot.metrics.equity, pnl: bot.metrics.pnl,
+                      inventory: bot.exposure.retainedBaseAmount + bot.exposure.tradingBaseAmount, zone: bot.zone,
+                    })));
+                    const expanded = !collapsedStrategies.has(group.id);
+                    return <Fragment key={group.id}>
+                      {group.isStrategy ? <tr className="border-b border-[var(--line)] bg-white/[0.03]">
+                        <td colSpan={11} className="px-4 py-3">
+                          <button type="button" className="w-full text-left" aria-expanded={expanded} onClick={() => setCollapsedStrategies((previous) => {
+                            const next = new Set(previous); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next;
+                          })}>
+                            <span className="font-medium text-white">{first.pairLabel} · {formatGoalLabel(first.strategyMode)} · {group.bots.length} zones {expanded ? "−" : "+"}</span>
+                            <span className="ml-3" title={totals.statusDetails}><StatusBadge status={totals.status} /></span>
+                            <span className="mt-1 block text-xs text-[var(--muted)]">Budget {formatCurrency(totals.budget)} · Equity {formatCurrency(totals.equity)} · PnL {formatCurrency(totals.pnl)} · Used {formatPercent(totals.usage, 1)} · Inventaire {formatNumber(totals.inventory, 8)} {first.pairLabel.split("/")[0]}</span>
+                            <span className="mt-1 block text-xs text-[var(--muted)]">Libre {formatCurrency(totals.availableQuote!)} · Réservé {formatCurrency(totals.reservedQuote!)} · Coût engagé {formatCurrency(totals.deployedCostQuote!)} · {totals.activeExits} sorties engagées · {totals.statusDetails}</span>
+                          </button>
+                        </td>
+                      </tr> : null}
+                      {expanded ? group.bots.map((bot) => {
                     const isSelected = selectedBotId === bot.id;
                     const menuOpen = actionMenuBotId === bot.id;
                     const pnlValue = bot.metrics.pnl;
@@ -1517,7 +1542,8 @@ export function BotManagementConsole({
                         )}
                       >
                           <td className="px-4 py-3">
-                            <div className="font-medium text-white">{bot.name}</div>
+                            <div className="font-medium text-white">{bot.zone ? "Zone · " : ""}{bot.name}</div>
+                            {bot.zone ? <div className="mt-1 text-xs text-[var(--muted)]">{bot.zone.status} · {bot.zone.activeExits} sorties engagées (anciens lots inclus)</div> : null}
                             <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--muted)]">
                               <span>{BOT_BEHAVIOR_PRESETS[inferBehaviorPresetId(bot.config)].label}</span>
                               <span>{formatGoalLabel(bot.strategyMode)}</span>
@@ -1587,6 +1613,8 @@ export function BotManagementConsole({
                           </td>
                       </tr>
                     );
+                  }) : null}
+                    </Fragment>;
                   })}
                 </tbody>
               </table>

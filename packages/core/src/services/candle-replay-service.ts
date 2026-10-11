@@ -27,13 +27,14 @@ export class CandleReplayService {
     return deltas[Math.floor(deltas.length / 2)]!;
   }
 
-  buildIntrabougiePath(candle: HistoricalCandle, intervalMs: number): CandleReplayPoint[] {
+  buildIntrabougiePath(candle: HistoricalCandle, intervalMs: number,
+    order: "legacy" | "high_low" | "low_high" = "legacy"): CandleReplayPoint[] {
     const normalizedIntervalMs = Math.max(Math.floor(intervalMs), 1);
     const start = candle.timestamp.getTime();
     const lowHighSplit = Math.max(1, Math.floor(normalizedIntervalMs / 3));
     const midSplit = Math.max(lowHighSplit + 1, Math.floor((normalizedIntervalMs * 2) / 3));
     const end = start + normalizedIntervalMs;
-    const bullish = candle.close >= candle.open;
+    const bullish = order === "low_high" || (order === "legacy" && candle.close >= candle.open);
     const orderedPrices = bullish
       ? [candle.open, candle.low, candle.high, candle.close]
       : [candle.open, candle.high, candle.low, candle.close];

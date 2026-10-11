@@ -6,7 +6,7 @@ import { gridCostFloorPct } from "../utils/grid-cost-floor";
 
 export interface ShadowExitCandidate { id: string; kind: "keep" | "closer" | "farther";
   updates: ShadowReplayExitUpdate[]; strategyParameters: Record<string, number | string>; }
-export interface ShadowDecisionCandidateSet { version: "shadow-decisions-v4"; grid: ShadowGridCandidateSet;
+export interface ShadowDecisionCandidateSet { version: "shadow-decisions-v4" | "shadow-decisions-v4.1" | "shadow-decisions-v4.2"; grid: ShadowGridCandidateSet;
   exit: { version: "shadow-exits-v1"; candidates: ShadowExitCandidate[]; rejected: Array<{ id: string; reasons: string[] }> };
   costProfile: ShadowObservedCostProfile | null; }
 type RecordValue = Record<string, any>;
@@ -14,13 +14,14 @@ type RecordValue = Record<string, any>;
 /** Pure counterfactual preparation; economic admission here never authorizes execution. */
 export function buildShadowDecisionCandidates(input: { policyInput: PortfolioPolicyInput;
   proposedDecision: PortfolioPolicyDecision; options?: ShadowGridCandidateOptions; replaySnapshot: unknown;
-  costProfile: ShadowObservedCostProfile | null }): ShadowDecisionCandidateSet {
+  costProfile: ShadowObservedCostProfile | null; decisionVersion?: ShadowDecisionCandidateSet["version"] }): ShadowDecisionCandidateSet {
+  const decisionVersion = input.decisionVersion ?? "shadow-decisions-v4.1";
   const policy = input.policyInput, profile = input.costProfile;
   const snapshot = object(input.replaySnapshot);
   const target = targetBand(snapshot, policy.band.id);
   const usable = isShadowCostProfileUsable(profile, policy, target);
   const legacy = buildShadowGridCandidates(policy, input.proposedDecision, input.options);
-  if (input.proposedDecision.action !== "wait" && !legacy.candidates.some(c => c.kind === "policy")) {
+  if (decisionVersion !== "shadow-decisions-v4.2" && input.proposedDecision.action !== "wait" && !legacy.candidates.some(c => c.kind === "policy")) {
     const decision = structuredClone(input.proposedDecision), band = policy.band;
     const geometry = decision.action === "create_band" && decision.candidate ? decision.candidate : decision.action === "revise"
       ? { lowPrice: decision.nextLowPrice!, highPrice: decision.nextHighPrice!, levelCount: decision.nextLevelCount!,
@@ -33,6 +34,7 @@ export function buildShadowDecisionCandidates(input: { policyInput: PortfolioPol
     legacy.candidates = legacy.candidates.slice(0, 6); legacy.policyCandidateId = "policy";
   }
   let grid = structuredClone(legacy);
+  if (decisionVersion === "shadow-decisions-v4.2") grid.version = "shadow-grid-candidates-v3.3";
   if (usable && profile) {
     const minimumOrder = Math.max(policy.parameters.minUsefulOrderUsd, profile.notionalBucket.minUsd, 0.01);
     const fee = profile.feeBps! + profile.p90NativeFeeUsd! / minimumOrder * 10_000;
@@ -88,7 +90,7 @@ export function buildShadowDecisionCandidates(input: { policyInput: PortfolioPol
   if (!usable || !profile || !target) {
     exit.rejected.push({ id: "closer", reasons: ["Missing usable cost profile or exact captured lot state; retain fixed exits."] },
       { id: "farther", reasons: ["Missing usable cost profile or exact captured lot state; retain fixed exits."] });
-    return { version: "shadow-decisions-v4", grid, exit, costProfile: profile };
+    return { version: decisionVersion, grid, exit, costProfile: profile };
   }
   const closed = policy.candles.filter(c => c.closedAt <= policy.now).slice(-20);
   const amplitude = closed.length >= 14 ? (Math.max(...closed.map(c => c.high)) - Math.min(...closed.map(c => c.low))) /
@@ -99,7 +101,7 @@ export function buildShadowDecisionCandidates(input: { policyInput: PortfolioPol
   if (!Number.isFinite(clampPct) || clampPct <= 0) {
     exit.rejected.push({ id: "closer", reasons: ["Insufficient closed volatility/amplitude data."] },
       { id: "farther", reasons: ["Insufficient closed volatility/amplitude data."] });
-    return { version: "shadow-decisions-v4", grid, exit, costProfile: profile };
+    return { version: decisionVersion, grid, exit, costProfile: profile };
   }
   const lots = target.bot.positionLots as RecordValue[], commitments = target.exitCommitments as RecordValue[];
   for (const kind of ["closer", "farther"] as const) {
@@ -134,7 +136,7 @@ export function buildShadowDecisionCandidates(input: { policyInput: PortfolioPol
       clamp_pct: clampPct, min_net_gain_usd: 0.05, min_retained_value_usd: 0.05, cost_profile_as_of: profile.asOf,
       live_validity: "unvalidated" } });
   }
-  return { version: "shadow-decisions-v4", grid, exit, costProfile: profile };
+  return { version: decisionVersion, grid, exit, costProfile: profile };
 }
 
 function object(value: unknown): RecordValue | null { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : null; }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
+import { logger } from "@grid-bot/common";
 import { DEFAULT_PORTFOLIO_POLICY, buildShadowGridCandidates, type PortfolioPolicyInput,
   type PortfolioPolicyDecision, type ShadowObservedCostProfile } from "@grid-bot/core";
 import { canonicalShadowHash, shadowMarketContentHash, PrismaShadowObservationRepository } from "../repositories/shadow-observation-repository";
@@ -53,8 +54,8 @@ describe("V2 candidate capture", () => {
         statements.push(query); return 1;
       }),
       shadowMarketSnapshot: { findUniqueOrThrow: vi.fn(async () => ({ id: "market" })) },
-      shadowJevObservation: { findUniqueOrThrow: vi.fn(async (args: { where: { observationHash: string } }) =>
-        ({ id: "observation", observationHash: args.where.observationHash })) },
+      shadowJevObservation: { findUnique: vi.fn(async () => null), findUniqueOrThrow: vi.fn(async (args: { where: { observationHash: string } }) =>
+        ({ id: "observation", snapshotId: "market", observationHash: args.where.observationHash })) },
       shadowJevOutbox: { findUniqueOrThrow: vi.fn(async () => ({ observationId: "observation" })) },
     };
     const client = { $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)) };
@@ -81,9 +82,9 @@ describe("V3 portfolio replay capture", () => {
       })) },
       $executeRaw: vi.fn(async () => 1),
       shadowMarketSnapshot: { findUniqueOrThrow: vi.fn(async () => ({ id: "market" })) },
-      shadowJevObservation: { findUniqueOrThrow: vi.fn(async (args: { where: { observationHash: string } }) => {
+      shadowJevObservation: { findUnique: vi.fn(async () => null), findUniqueOrThrow: vi.fn(async (args: { where: { observationHash: string } }) => {
         hashes.push(args.where.observationHash);
-        return { id: "first-observation", observationHash: args.where.observationHash };
+        return { id: "first-observation", snapshotId: "market", observationHash: args.where.observationHash };
       }) },
       shadowJevOutbox: { findUniqueOrThrow: vi.fn(async () => ({ observationId: "first-observation" })) },
     };
@@ -126,8 +127,8 @@ describe("V3 portfolio replay capture", () => {
         statements.push(query); return 1;
       }),
       shadowMarketSnapshot: { findUniqueOrThrow: vi.fn(async () => ({ id: "market" })) },
-      shadowJevObservation: { findUniqueOrThrow: vi.fn(async (args: { where: { observationHash: string } }) =>
-        ({ id: "observation", observationHash: args.where.observationHash })) },
+      shadowJevObservation: { findUnique: vi.fn(async () => null), findUniqueOrThrow: vi.fn(async (args: { where: { observationHash: string } }) =>
+        ({ id: "observation", snapshotId: "market", observationHash: args.where.observationHash })) },
       shadowJevOutbox: { findUniqueOrThrow: vi.fn(async () => ({ observationId: "observation" })) },
     };
     const client = { $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)) };
@@ -154,6 +155,90 @@ describe("V3 portfolio replay capture", () => {
     });
     expect(Number.isFinite(Date.parse(stored.shadowReplayV3.capturedAt))).toBe(true);
     expect(statements).toHaveLength(3);
+  });
+});
+
+describe("shadow capture transaction retries", () => {
+  const input = {
+    portfolioId: "portfolio", strategyId: "strategy", bandId: "band", botId: "bot",
+    observedAt: new Date("2026-09-28T12:00:00Z"), questionSetVersion: "shadow-jev-v3",
+    modelRequested: "jev-1.13.0", policyInput: { candles: [{ close: 100 }] },
+    context: {}, botState: {}, proposedDecision: { action: "wait" }, candidateSet: { candidates: [] },
+    marketMeta: { provider: "gecko", symbol: "BTC", quoteSymbol: "USDC", resolution: "1h" },
+  };
+  function fixture() {
+    const tx = {
+      portfolio: { findUniqueOrThrow: vi.fn(async () => ({
+        id: "portfolio", version: 1, capitalReservations: [],
+        assetStrategies: [{ id: "strategy", bands: [{ id: "band", botId: "bot" }] }],
+      })) },
+      $executeRaw: vi.fn(async (_query: { strings: readonly string[]; values: readonly unknown[] }) => 1),
+      shadowMarketSnapshot: { findUniqueOrThrow: vi.fn(async () => ({ id: "new-market" })) },
+      shadowJevObservation: { findUnique: vi.fn(async () => null), findUniqueOrThrow: vi.fn(async (args: { where: { observationHash: string } }) =>
+        ({ id: "first-observation", snapshotId: "first-market", observationHash: args.where.observationHash })) },
+      shadowJevOutbox: { findUniqueOrThrow: vi.fn(async () => ({ observationId: "first-observation" })) },
+    };
+    const client = { $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)) };
+    return { tx, client, repository: new PrismaShadowObservationRepository(client as never) };
+  }
+  it.each([
+    { code: "40001" }, { code: "40P01" }, { code: "P2034" },
+    { code: "P2010", meta: { driverAdapterError: { cause: { originalCode: "40001" } } } },
+    { code: "P2010", meta: { code: "40P01" } },
+  ])("restarts the complete transaction after conflict $code", async error => {
+    const f = fixture(), warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    f.tx.$executeRaw.mockRejectedValueOnce(error);
+    const result = await f.repository.capture(input);
+    expect(f.client.$transaction).toHaveBeenCalledTimes(2);
+    expect(f.tx.portfolio.findUniqueOrThrow).toHaveBeenCalledTimes(2);
+    // An existing observation's snapshot wins even if newer input hashes differ.
+    expect(result).toEqual({ observationId: "first-observation", snapshotId: "first-market" });
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ attempt: 1, exhausted: false }),
+      "Shadow capture transaction conflict");
+  });
+  it("stops after four conflicts and logs only structured safe metadata", async () => {
+    const f = fixture(), warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const error = { code: "P2010", message: "secret SQL payload", meta: {
+      driverAdapterError: { cause: { originalCode: "40001" } },
+    } };
+    f.tx.$executeRaw.mockRejectedValue(error);
+    await expect(f.repository.capture(input)).rejects.toBe(error);
+    expect(f.client.$transaction).toHaveBeenCalledTimes(4);
+    expect(warn).toHaveBeenLastCalledWith({ botId: "bot", code: "40001", attempt: 4, maxAttempts: 4, exhausted: true },
+      "Shadow capture transaction conflict");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("secret SQL payload");
+  });
+  it("returns a previously committed observation without rereading a now closed band", async () => {
+    const f = fixture();
+    f.tx.shadowJevObservation.findUnique.mockResolvedValueOnce({ id: "first-observation", snapshotId: "first-market" } as never);
+    f.tx.portfolio.findUniqueOrThrow.mockRejectedValue(new Error("original band closed"));
+    await expect(f.repository.capture(input)).resolves.toEqual({ observationId: "first-observation", snapshotId: "first-market" });
+    expect(f.tx.portfolio.findUniqueOrThrow).not.toHaveBeenCalled();
+    expect(f.tx.$executeRaw).not.toHaveBeenCalled();
+  });
+  it("can succeed on the final attempt and keeps the capture time of its successful MVCC view", async () => {
+    const f = fixture(); vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    f.tx.$executeRaw.mockRejectedValueOnce({ code: "40001" }).mockRejectedValueOnce({ code: "40P01" })
+      .mockRejectedValueOnce({ code: "P2034" });
+    const start = Date.now();
+    await expect(f.repository.capture(input)).resolves.toEqual({ observationId: "first-observation", snapshotId: "first-market" });
+    expect(f.client.$transaction).toHaveBeenCalledTimes(4);
+    const observationWrite = f.tx.$executeRaw.mock.calls.find(([query]) =>
+      query.strings.join(" ").includes('INSERT INTO "shadow_jev_observations"'));
+    const context = JSON.parse(observationWrite![0].values[11] as string);
+    expect(Date.parse(context.shadowReplayV3.capturedAt)).toBeGreaterThanOrEqual(start + 300);
+    expect(Date.parse(context.shadowReplayV3.capturedAt)).toBeLessThanOrEqual(Date.now());
+    expect(context.shadowReplayV3.capturedAt).not.toBe(input.observedAt.toISOString());
+  });
+  it.each([
+    new Error("40001 appears only in text"), { code: "P2010", meta: { code: "23505" } },
+    { code: "P2002" }, { code: "ECONNREFUSED" },
+  ])("does not retry unrelated errors", async error => {
+    const f = fixture(), warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    f.tx.$executeRaw.mockRejectedValueOnce(error);
+    await expect(f.repository.capture(input)).rejects.toBe(error);
+    expect(f.client.$transaction).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 
@@ -200,8 +285,8 @@ describe("V4 transaction capture", () => {
       }),
       shadowMarketSnapshot: { findUniqueOrThrow: vi.fn(async (args: { where: { contentHash: string } }) =>
         ({ id: fineHashes.has(args.where.contentHash) ? "immutable-fine" : "immutable-hourly" })) },
-      shadowJevObservation: { findUniqueOrThrow: vi.fn(async (args: { where: { observationHash: string } }) =>
-        ({ id: "immutable-observation", observationHash: args.where.observationHash })) },
+      shadowJevObservation: { findUnique: vi.fn(async () => null), findUniqueOrThrow: vi.fn(async (args: { where: { observationHash: string } }) =>
+        ({ id: "immutable-observation", snapshotId: "immutable-hourly", observationHash: args.where.observationHash })) },
       shadowJevOutbox: { findUniqueOrThrow: vi.fn(async () => ({ observationId: "immutable-observation" })) },
     };
     const client = { $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)) };
@@ -246,6 +331,15 @@ describe("V4 transaction capture", () => {
       { assetAllocations: [{ assetSymbol: "SOL", allocatedCapitalUsd: 500 }] }));
     expect(f.candidates().exit.candidates.map((c: { id: string }) => c.id)).toEqual(["keep"]);
     expect(f.tx.shadowJevOutbox.findUniqueOrThrow).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ["shadow-jev-v4", "shadow-decisions-v4"], ["shadow-jev-v4.1", "shadow-decisions-v4.1"],
+  ])("preserves the question and decision version contract for %s", async (questionSetVersion, decisionVersion) => {
+    const f = fixture(); vi.spyOn(PrismaShadowCostRepository.prototype, "readProfile").mockResolvedValue(f.costProfile);
+    await new PrismaShadowObservationRepository(f.client as never).capture({ ...f.input, questionSetVersion });
+    expect(f.candidates().version).toBe(decisionVersion);
+    expect(f.context().shadowFineMarket.status).toBe("captured");
+    expect(f.context().shadowReplayV3.source.portfolioVersion).toBe(7);
   });
 
   it("references one immutable 5m snapshot and deduplicates it on retry without copying its candles into context", async () => {

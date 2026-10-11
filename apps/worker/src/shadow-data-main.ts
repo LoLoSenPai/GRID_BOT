@@ -3,10 +3,15 @@ import { GeckoTerminalHistoryProvider } from "@grid-bot/core";
 import { createShadowObservationClient, PrismaShadowCostRepository, type ShadowObservationClientHandle } from "@grid-bot/db";
 import { ShadowDataCollector, verifyShadowPool, type ShadowCollectionTarget } from "./shadow-data-collector";
 import { createPacedShadowFetch, ShadowExecutionQuoteClient } from "./shadow-execution-quote-client";
+import { ShadowCaptureSpool } from "./shadow-capture-spool";
+import { CoinbaseBtcReferenceProvider } from "./shadow-btc-reference";
+import { createShadowReferenceObserver } from "./shadow-reference-observation";
 
 export function createShadowDataCollector(handle: ShadowObservationClientHandle) {
+  const spool = new ShadowCaptureSpool(process.env.SHADOW_CAPTURE_SPOOL_DIR ?? ".shadow-capture-spool");
   const client = handle.client, costs = new PrismaShadowCostRepository(client);
   const shadowFetch = createPacedShadowFetch();
+  const observeReference = createShadowReferenceObserver(handle, undefined, (input, outcome) => spool.enqueue(input, outcome));
   const verified = new Map<string, number>();
   return new ShadowDataCollector({
     targets: async () => {
@@ -39,8 +44,11 @@ export function createShadowDataCollector(handle: ShadowObservationClientHandle)
     },
     quote: async (target, payload) => { await costs.captureQuoteComparison({ portfolioId: target.portfolioId,
       botId: target.botId, capturedAt: new Date(payload.completedAt), payload }); },
+    // Read time follows HTTP collection, so freshly received bars are available causally to this snapshot.
+    observeReference: () => observeReference(new Date()),
   }, {
     history: new GeckoTerminalHistoryProvider({ maxPages: 1, retryDelaysMs: [] }),
+    btcReference: new CoinbaseBtcReferenceProvider(),
     verifyPool: async target => {
       if (Date.now() - (verified.get(target.symbol) ?? 0) < 86_400_000) return;
       await verifyShadowPool(target); verified.set(target.symbol, Date.now());

@@ -2,6 +2,8 @@ import { BotMode } from "@grid-bot/core/enums";
 import { removeIsolatedPortfolioSpikes } from "@grid-bot/core";
 import { findLatestBotStateSnapshot, findLatestBotStateSnapshots, prisma } from "@grid-bot/db";
 
+import { serializeBotZone } from "@/lib/bot-zone-groups";
+
 const BOT_DETAIL_EXECUTION_HISTORY_LIMIT = 500;
 const PORTFOLIO_HISTORY_LOOKBACK_DAYS = 180;
 const PORTFOLIO_HISTORY_MAX_POINTS = 360;
@@ -183,6 +185,8 @@ export async function getDashboardData(mode?: BotMode) {
       where: buildVisibleBotWhere(mode),
       include: {
         config: true,
+        gridBand: { include: { assetStrategy: true, exitCommitments: { where: { fulfilledAt: null }, select: { id: true } } } },
+        positionLots: { where: { remainingBaseAmount: { gt: 0 } } },
       },
       orderBy: { createdAt: "asc" }
     }),
@@ -226,6 +230,9 @@ export async function getDashboardData(mode?: BotMode) {
 
     return {
       id: bot.id,
+      zone: serializeBotZone(bot.gridBand),
+      totalBudgetUsd: Number(bot.config?.totalBudgetUsd ?? 0),
+      baseInventory: bot.positionLots.reduce((sum, lot) => sum + Number(lot.remainingBaseAmount), 0),
       name: bot.name,
       pair: `${bot.baseSymbol}/${bot.quoteSymbol}`,
       strategy: bot.strategyMode,
@@ -328,6 +335,7 @@ export async function getBotsOverview(mode?: BotMode) {
     where: buildVisibleBotWhere(mode),
     include: {
       config: true,
+      gridBand: { include: { assetStrategy: true, exitCommitments: { where: { fulfilledAt: null }, select: { id: true } } } },
       orders: {
         orderBy: { createdAt: "desc" },
         take: 1,

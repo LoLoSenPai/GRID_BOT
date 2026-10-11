@@ -122,6 +122,7 @@ describe("ShadowJevConsumer", () => {
   for (const [questionVersion, candidateVersion] of [
     ["shadow-jev-v3", "shadow-grid-candidates-v3"],
     ["shadow-jev-v3.1", "shadow-grid-candidates-v3.1"],
+    ["shadow-jev-v3.2", "shadow-grid-candidates-v3.2"],
   ] as const) it(`keeps ${questionVersion} strategy families shadow only and persists the complete choice distribution`, async () => {
     const original = job();
     const v3 = job({ questionSetVersion: questionVersion, observation: {
@@ -154,5 +155,49 @@ describe("ShadowJevConsumer", () => {
         option_probabilities: raw.answers.grid_candidate.probabilities },
     } }));
     expect(outbox.fail).not.toHaveBeenCalled();
+  });
+
+  it("accepts only matching legacy V4 and current V4.1 question/candidate version pairs", async () => {
+    const base = job();
+    const candidateSet = (decisionVersion: "shadow-decisions-v4" | "shadow-decisions-v4.1",
+      gridVersion: "shadow-grid-candidates-v3.1" | "shadow-grid-candidates-v3.2") => ({
+      version: decisionVersion, costProfile: null, grid: { version: gridVersion, policyCandidateId: null,
+        rejected: [], candidates: [{ id: "keep", kind: "keep", action: "keep", lowPrice: 90, highPrice: 110,
+          levelCount: 10, spacing: 20 / 9, requestedCapitalUsd: 0, validation: "validated",
+          economicallyValid: true, economicValidationReasons: [], currentlyPolicyEligible: true,
+          policyEligibilityReasons: [], decision: { reason: "Keep the existing band." } }] },
+      exit: { version: "shadow-exits-v1", rejected: [], candidates: [{ id: "keep", kind: "keep",
+        updates: [], strategyParameters: {} }] },
+    });
+    const pairs = [
+      ["shadow-jev-v4", "shadow-decisions-v4", "shadow-grid-candidates-v3.1", true],
+      ["shadow-jev-v4.1", "shadow-decisions-v4.1", "shadow-grid-candidates-v3.2", true],
+      ["shadow-jev-v4", "shadow-decisions-v4.1", "shadow-grid-candidates-v3.2", false],
+      ["shadow-jev-v4.1", "shadow-decisions-v4", "shadow-grid-candidates-v3.1", false],
+    ] as const;
+
+    for (const [questionSetVersion, decisionVersion, gridVersion, accepted] of pairs) {
+      const claim = job({ questionSetVersion, observation: { ...base.observation,
+        candidateSet: candidateSet(decisionVersion, gridVersion) } });
+      const outbox = { claim: vi.fn(async () => [claim]), complete: vi.fn(async () => {}),
+        fail: vi.fn(async () => {}) };
+      const client = { evaluate: vi.fn(async (request: any) => ({ model: "jev-1.13.0", usage: { input_tokens: 1, output_tokens: 1 },
+        answers: Object.fromEntries(Object.entries(request.questions).map(([id, question]: [string, any]) => {
+          const options = Object.keys(question.criteria);
+          return [id, { type: "choice", choice: options[0], confidence: 1,
+            probabilities: Object.fromEntries(options.map((option, index) => [option, index === 0 ? 1 : 0])) }];
+        })) })) };
+      await new ShadowJevConsumer(outbox, client, "worker-1").processOne();
+      if (accepted) {
+        expect(client.evaluate, `${questionSetVersion} should evaluate`).toHaveBeenCalledTimes(1);
+        expect(outbox.complete).toHaveBeenCalledTimes(1);
+        expect(outbox.fail).not.toHaveBeenCalled();
+      } else {
+        expect(client.evaluate, `${questionSetVersion} should reject a mixed version pair`).not.toHaveBeenCalled();
+        expect(outbox.complete).not.toHaveBeenCalled();
+        expect(outbox.fail).toHaveBeenCalledWith(expect.objectContaining({ terminal: true,
+          error: expect.objectContaining({ message: "V4 shadow question and candidate-set versions do not match." }) }));
+      }
+    }
   });
 });

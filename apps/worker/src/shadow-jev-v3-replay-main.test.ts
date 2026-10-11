@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GECKOTERMINAL_POOLS, MINTS } from "@grid-bot/common";
-import { evaluateStoredShadowV3, parseReplayArgs } from "./shadow-jev-v3-replay-main";
+import { evaluateStoredShadowV3, loadShadowInventoryEvidence, loadShadowCapitalEvidence, parseReplayArgs } from "./shadow-jev-v3-replay-main";
 
 const observedAt = new Date("2026-09-28T12:00:00.000Z");
 const provenance = { provider: "gecko-terminal", symbol: "BTC", quoteSymbol: "USDC",
@@ -30,6 +30,34 @@ function observation() {
 }
 
 describe("read-only V3 replay runner", () => {
+  it("loads every ledger type up to t0, including zero-delta reconciliation information", async () => {
+    const zero = { toString: () => "0.0000000000" }, findMany = vi.fn(async () => [{ id: "transition", portfolioId: "p",
+      bandId: "b", entryType: "RECONCILIATION", createdAt: observedAt, executionId: "execution",
+      bandAllocatedQuoteDelta: zero, bandAvailableQuoteDelta: zero, bandDeployedCostDelta: zero,
+      bandReservedQuoteDelta: zero, externalFeeQuoteDelta: zero, metadata: { transition: "RESERVED_TO_UNKNOWN" } }]);
+    const evidence = await loadShadowCapitalEvidence({ capitalLedgerEntry: { findMany } } as never,
+      [{ bands: [{ id: "b" }] }], "p", observedAt);
+    expect(findMany).toHaveBeenCalledWith({ where: { bandId: "b", createdAt: { lte: observedAt } },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
+    expect(evidence[0]).toMatchObject({ scope: "all_band_entries_through_state", stateAt: observedAt.toISOString(),
+      rows: [{ entryType: "RECONCILIATION", metadata: { transition: "RESERVED_TO_UNKNOWN" } }] });
+  });
+  it("extracts full histories without dropping unknown statuses or decimal precision", async () => {
+    const bot = { id: "bot", mode: "live", baseMint: MINTS.SOL, quoteMint: MINTS.USDC,
+      createdAt: "2026-09-22T00:00:00Z", position: { updatedAt: "2026-09-28T11:00:00Z" } };
+    const findMany = vi.fn(async () => [{ id: "receipt", botId: bot.id, mode: "live", status: "submitted",
+      order: { side: "buy", botId: bot.id }, createdAt: new Date(bot.createdAt), completedAt: null,
+      executedInputAmount: { toString: () => "100.0000000000" }, executedOutputAmount: { toString: () => "0.1234567891" } }]);
+    const evidence = await loadShadowInventoryEvidence({ execution: { findMany } } as never, [{ bands: [{ bot }] }]);
+    expect(findMany).toHaveBeenCalledWith({ where: { botId: bot.id, createdAt: { lte: new Date(bot.position.updatedAt) } },
+      include: { order: { select: { side: true, botId: true } } }, orderBy: [{ completedAt: "asc" }, { id: "asc" }] });
+    expect(evidence[0]).toMatchObject({ version: "ordered-receipts-v1", scope: "all_bot_executions_through_position_state",
+      stateAt: bot.position.updatedAt, rows: [{ status: "submitted", executedOutputAmount: "0.1234567891", completedAt: null }] });
+    expect(evidence[0]!.rows[0]!.createdAt).toMatch(/Z$/);
+    const invalid = { ...bot, position: { updatedAt: "invalid" } };
+    await expect(loadShadowInventoryEvidence({ execution: { findMany } } as never, [{ bands: [{ bot: invalid }] }]))
+      .rejects.toThrow(/boundary/);
+  });
   it("accepts both pnpm and direct script argument forms", () => {
     const flags = ["--observation-id", "observation-1", "--native-fee-usd", "0.02"];
     const parsed = { observationId: "observation-1", nativeFeeUsd: 0.02 };

@@ -10,6 +10,7 @@ packages/db/src/generated
 *.log
 .vscode
 *.tsbuildinfo
+.shadow-capture-spool/
 
 # Local research exports and observation histories may contain private account data.
 /audits/

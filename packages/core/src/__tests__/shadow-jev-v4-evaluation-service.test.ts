@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ShadowJevV4EvaluationService } from "../services/shadow-jev-v4-evaluation-service";
+import { PortfolioPolicyReplayService } from "../services/portfolio-policy-replay-service";
 import { DEFAULT_PORTFOLIO_POLICY } from "../services/portfolio-policy-service";
 import type { ShadowJevV4EvaluationRequest } from "../services/shadow-jev-v4-evaluation-service";
 
@@ -68,6 +69,147 @@ function v4Fixture(): ShadowJevV4EvaluationRequest {
 }
 
 describe("ShadowJevV4EvaluationService", () => {
+  it("adds a causal denseRule baseline independently of Jev, with two frozen OHLC scenarios", () => {
+    const input = v4Fixture(), set = input.observation.candidateSet as any;
+    input.executionFidelity = { model: "rail_one_intent_v1", compareOhlcPaths: true };
+    set.grid.candidates.push({ id: "v4_vol_cost_density", validation: "validated", economicallyValid: true,
+      economicValidationReasons: [], lowPrice: 90, highPrice: 110, levelCount: 9,
+      decision: { ...input.observation.proposedDecision as any, action: "revise", nextLowPrice: 90,
+        nextHighPrice: 110, nextLevelCount: 9, nextSpacing: 2.5, reason: "Frozen dense rule" } });
+    const before = structuredClone(input), result = new ShadowJevV4EvaluationService().evaluate(input);
+    expect(result.version).toBe("shadow-jev-v4-evaluation-v3");
+    expect(result.status).toBe("evaluated"); expect(result.reasons).toEqual([]);
+    expect(result.executionFidelity!.denseRuleCandidateId).toBe("v4_vol_cost_density");
+    expect(result.executionFidelity!.denseRuleSource).toBe("captured_valid_density");
+    const hour = result.horizons[0]!;
+    expect(hour.branches!.denseRule!.gridRevisions).toBe(1);
+    expect(hour.branches!.gridOnly.gridRevisions).toBe(0); // Jev selected PARK.
+    expect(hour.branches!.denseRule!.exitRevisions).toBe(0);
+    expect(hour.ohlcPathSensitivity!.alternativePath).toBe("low_high");
+    expect(Object.keys(hour.ohlcPathSensitivity!.alternativeBranches)).toHaveLength(6);
+    expect(hour.ohlcPathSensitivity!.equityRangeUsd.denseRule!.min).toBeLessThanOrEqual(hour.branches!.denseRule!.equityUsd);
+    for (const branch of Object.values(hour.branches!)) {
+      expect(branch.initialEquityUsd).toBe(1000);
+      expect(branch.executionDiagnostics.model).toBe("rail_one_intent_v1");
+    }
+    expect(input).toEqual(before);
+  });
+  it("falls back exactly to the recorded current policy when density is absent or economically invalid", () => {
+    const input = v4Fixture(), set = input.observation.candidateSet as any;
+    input.executionFidelity = { model: "rail_one_intent_v1" };
+    input.observation.initialEngineDecision = { ...input.observation.proposedDecision as any, action: "park" };
+    set.grid.candidates.push({ id: "v4_vol_cost_density", validation: "baseline", economicallyValid: false,
+      economicValidationReasons: ["Costs exceed spacing"], decision: { action: "revise" } });
+    const result = new ShadowJevV4EvaluationService().evaluate(input);
+    expect(result.executionFidelity!.denseRuleCandidateId).toBeNull();
+    expect(result.executionFidelity!.denseRuleSource).toBe("recorded_engine_outcome");
+    expect(result.horizons[0]!.branches!.denseRule).toEqual(result.horizons[0]!.branches!.currentPolicy);
+    expect(result.horizons[0]!.branches!.keep.closedCycles).toBe(0);
+  });
+  it("reports latency and optionally matches both causal choices to the first full candle after the response", () => {
+    const input = v4Fixture(); input.executionFidelity = { model: "rail_one_intent_v1" };
+    input.decisionAvailableAt = new Date(t0 + 600_001);
+    const recorded = new ShadowJevV4EvaluationService().evaluate(input);
+    expect(recorded.horizons[0]!.interventionTiming).toEqual({
+      jevFirstFullCandleAt: new Date(t0 + 900_000).toISOString(),
+      denseRuleFirstFullCandleAt: new Date(t0 + 300_000).toISOString(), matched: false });
+    input.comparisonClock = "matched_next_candle";
+    const matched = new ShadowJevV4EvaluationService().evaluate(input);
+    expect(matched.horizons[0]!.interventionTiming!.denseRuleFirstFullCandleAt).toBe(new Date(t0 + 900_000).toISOString());
+    expect(matched.horizons[0]!.interventionTiming!.matched).toBe(true);
+  });
+  it("defers denseRule until the captured state is available even when candle t0 is eleven minutes earlier", () => {
+    const input = v4Fixture(), context = input.observation.context as any, set = input.observation.candidateSet as any;
+    context.shadowReplayV3.capturedAt = new Date(t0 + 11 * 60_000).toISOString();
+    context.shadowTiming.stateReadAt = new Date(t0 + 10 * 60_000).toISOString();
+    input.decisionAvailableAt = new Date(t0 + 12 * 60_000);
+    input.executionFidelity = { model: "rail_one_intent_v1" };
+    set.grid.candidates.push({ id: "v4_vol_cost_density", validation: "validated", economicallyValid: true,
+      economicValidationReasons: [], lowPrice: 90, highPrice: 110, levelCount: 9,
+      decision: { ...input.observation.proposedDecision as any, action: "revise", nextLowPrice: 90,
+        nextHighPrice: 110, nextLevelCount: 9, nextSpacing: 2.5, reason: "Frozen dense rule" } });
+    const replay = new PortfolioPolicyReplayService(), spy = vi.spyOn(replay, "replay");
+    const service = new ShadowJevV4EvaluationService(replay), result = service.evaluate(input);
+    expect(result.status).toBe("evaluated");
+    expect(result.horizons[0]!.interventionTiming).toEqual({
+      jevFirstFullCandleAt: new Date(t0 + 15 * 60_000).toISOString(),
+      denseRuleFirstFullCandleAt: new Date(t0 + 15 * 60_000).toISOString(), matched: true });
+    const denseRequests = spy.mock.calls.map(([request]) => request)
+      .filter(request => request.timedIntervention?.grid?.candidateId === "v4_vol_cost_density");
+    expect(denseRequests).toHaveLength(4);
+    for (const request of denseRequests) expect(+request.timedIntervention!.availableAt).toBe(t0 + 15 * 60_000);
+    input.comparisonClock = "matched_next_candle";
+    expect(service.evaluate(input).horizons[0]!.interventionTiming!.denseRuleFirstFullCandleAt)
+      .toBe(new Date(t0 + 15 * 60_000).toISOString());
+    input.decisionAvailableAt = new Date(t0 + 10 * 60_000);
+    expect(service.evaluate(input).reasons).toContain("DECISION_AVAILABILITY_PRECEDES_CAPTURE");
+  });
+  it("shares state availability across all six branches and skips an overlapping five-minute wick in full", () => {
+    const input = v4Fixture(), context = input.observation.context as any;
+    context.shadowReplayV3.capturedAt = new Date(t0 + 60_000).toISOString();
+    context.shadowTiming.stateReadAt = new Date(t0 + 59_000).toISOString();
+    input.executionFidelity = { model: "rail_one_intent_v1" };
+    input.selectedGridCandidateId = "keep";
+    const btc = input.markets[0]!;
+    btc.futureExecutionCandles!.forEach(c => { c.open = c.high = c.low = c.close = 100; });
+    btc.futureExecutionCandles![0]!.low = 95; // Early wick would buy before the state was captured.
+    const replay = new PortfolioPolicyReplayService(), spy = vi.spyOn(replay, "replay");
+    const service = new ShadowJevV4EvaluationService(replay), noLaterCrossing = service.evaluate(input);
+    expect(noLaterCrossing.status).toBe("evaluated");
+    for (const branch of Object.values(noLaterCrossing.horizons[0]!.branches!)) {
+      expect(branch.openTradingLots).toBe(0); expect(branch.feesUsd).toBe(0);
+      expect(branch.executionDiagnostics.blocked.state_unavailable).toBeGreaterThan(0);
+    }
+    for (const [request] of spy.mock.calls) expect(+request.executionFidelity!.stateAvailableAt!).toBe(t0 + 60_000);
+    btc.futureExecutionCandles![1]!.low = 95; // The fresh 5–10 minute candle is eligible.
+    btc.futureExecutionCandles![1]!.high = 102;
+    spy.mockClear();
+    const eligible = service.evaluate(input);
+    for (const branch of Object.values(eligible.horizons[0]!.branches!)) expect(branch.openTradingLots).toBe(1);
+    for (const result of spy.mock.results.filter(result => result.type === "return")) {
+      for (const trade of result.value.trades) expect(+trade.timestamp).toBeGreaterThanOrEqual(t0 + 300_000);
+    }
+    const seeded = structuredClone(spy.mock.calls[0]![0]), band = seeded.allocations[0]!;
+    band.initialIdleQuoteUsd = 400;
+    band.initialLots = [{ kind: "trading", entryPrice: 90, remainingBaseAmount: 1.2,
+      costQuote: 100, exitPrice: 101, entrySpacing: 5 }];
+    band.executionSeries!.candles[0]!.high = 102;
+    const sale = replay.replay(seeded).trades.find(trade => trade.side === "sell")!;
+    expect(+sale.timestamp).toBeGreaterThanOrEqual(t0 + 300_000);
+    // Direct portfolio callers retain their historical behavior without a captured availability gate.
+    const first = spy.mock.calls[0]![0];
+    first.executionFidelity = undefined;
+    expect(replay.replay(first).trades.some(trade => +trade.timestamp < t0 + 300_000)).toBe(true);
+  });
+  it("keeps fixed geometry distinct from policy adaptation, with abstention exactly following policy", () => {
+    const input = v4Fixture(); input.selectedGridCandidateId = "abstain";
+    const p = input.observation.policyInput as any;
+    p.parameters.cooldownMs = 0; p.parameters.persistenceClosedBars = 1;
+    p.parameters.maxDailyRevisions = 20;
+    input.markets[0]!.futureCandles.forEach(c => { c.open = 130; c.high = 130; c.low = 130; c.close = 130; });
+    input.markets[0]!.futureExecutionCandles!.forEach(c => { c.open = 130; c.high = 130; c.low = 130; c.close = 130; });
+    const result = new ShadowJevV4EvaluationService().evaluate(input);
+    expect(result.status).toBe("evaluated");
+    const last = result.horizons.at(-1)!.branches!;
+    expect(last.keep.gridRevisions).toBe(0);
+    expect(last.currentPolicy.gridRevisions).toBeGreaterThan(0);
+    expect(last.gridOnly).toEqual(last.currentPolicy); expect(last.exitOnly).toEqual(last.currentPolicy);
+  });
+  it("uses the recorded rejection at t0 rather than delaying the unapplied proposal", () => {
+    const input = v4Fixture(); input.selectedGridCandidateId = "abstain";
+    input.observation.proposedDecision = { ...(input.observation.proposedDecision as any), action: "park" };
+    input.observation.initialEngineDecision = { ...(input.observation.proposedDecision as any), action: "wait", reason: "Engine rejected" };
+    const result = new ShadowJevV4EvaluationService().evaluate(input);
+    expect(result.status).toBe("evaluated"); expect(result.policyBaselineSource).toBe("recorded_engine_outcome");
+    expect(result.horizons[0]!.branches!.currentPolicy.closedCycles).toBeGreaterThan(0);
+    expect(result.horizons[0]!.branches!.gridOnly).toEqual(result.horizons[0]!.branches!.currentPolicy);
+  });
+  it("explicitly uses hourly fills for empty fine inputs while censoring partial fine inputs", () => {
+    const input = v4Fixture(); input.markets.forEach(m => { m.futureExecutionCandles = []; });
+    const result = new ShadowJevV4EvaluationService().evaluate(input);
+    expect(result.horizons[0]!.reasons).toContain("DECISION_DEFERRED_BEYOND_HORIZON");
+    expect(result.horizons[1]!.executionResolution).toBe("1h");
+  });
   it("compares five branches with delayed five-minute execution and unchanged hourly policy cadence", () => {
     const input = v4Fixture(), before = structuredClone(input);
     const result = new ShadowJevV4EvaluationService().evaluate(input);

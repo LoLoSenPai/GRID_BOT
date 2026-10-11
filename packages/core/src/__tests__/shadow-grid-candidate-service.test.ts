@@ -58,6 +58,25 @@ describe("shadow grid candidate generator", () => {
     expect(set.candidates.find(candidate => candidate.id === "policy")?.highPrice).toBe(112);
   });
 
+  it("accepts a 6% boundary despite floating-point noise and rejects a truly narrow policy range", () => {
+    const policyInput = input({ price: 100, parameters: { ...parameters, minWidthPct: 6 } });
+    const boundary = buildShadowGridCandidates(policyInput, { action: "revise", reason: "boundary",
+      nextLowPrice: 97.00000000000001, nextHighPrice: 103, nextLevelCount: 12,
+      nextSpacing: (103 - 97.00000000000001) / 11,
+      protectedLowPrice: null, protectedHighPrice: null });
+    expect((103 - 97.00000000000001) / 100 * 100).toBeLessThan(6);
+    expect(boundary.candidates.find(candidate => candidate.id === "policy"))
+      .toMatchObject({ validation: "baseline", economicallyValid: false });
+
+    const tooNarrow = buildShadowGridCandidates(policyInput, { action: "revise", reason: "below minimum",
+      nextLowPrice: 97.00001, nextHighPrice: 102.99999, nextLevelCount: 12,
+      nextSpacing: (102.99999 - 97.00001) / 11,
+      protectedLowPrice: null, protectedHighPrice: null });
+    expect(tooNarrow.candidates.some(candidate => candidate.id === "policy")).toBe(false);
+    expect(tooNarrow.rejected.find(candidate => candidate.id === "policy")?.reasons.join(" "))
+      .toContain("Width must stay");
+  });
+
   it("rejects a lower band when another asset has funding priority or exits are unknown", () => {
     const policyInput = input();
     const proposal = { action: "create_band" as const, reason: "fallback", nextLowPrice: null,

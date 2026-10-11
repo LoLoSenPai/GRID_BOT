@@ -2,18 +2,22 @@ import { createHash } from "node:crypto";
 import type { ShadowDecisionCandidateSet } from "@grid-bot/core";
 import { buildJevV3Request, type ShadowJevV3Input, type ShadowJevV3Request } from "./shadow-jev-v3-questions";
 
-export const v4QuestionSetVersion = "shadow-jev-v4" as const;
+export const v4QuestionSetVersion = "shadow-jev-v4.1" as const;
+export const v4ReferenceQuestionSetVersion = "shadow-jev-v4.2" as const;
 export const v4ModelRequested = "jev-1.13.0" as const;
 type ChoiceQuestion = ShadowJevV3Request["questions"]["grid_candidate"];
 export interface ShadowJevV4Request {
   model: typeof v4ModelRequested;
   state: ShadowJevV3Request["state"] & {
-    experiment_version: "shadow-decisions-v4";
+    experiment_version: ShadowDecisionCandidateSet["version"];
     observed_cost_profile: ShadowDecisionCandidateSet["costProfile"];
     exit_candidates: Array<{ option: string; family: string; parameters: Record<string, number | string>;
       updates: ShadowDecisionCandidateSet["exit"]["candidates"][number]["updates"] }>;
     recent_5m_candles: Array<{ closed_at: string; open: number; high: number; low: number; close: number }>;
     fine_market_status: string;
+    market_reference?: unknown;
+    unavailable_policy_reasons?: string[];
+    spacing_constraints?: { live_minimum_width_pct: number; live_minimum_spacing_pct: number; live_modeled_roundtrip_cost_floor_pct: number };
   };
   questions: { grid_candidate: ChoiceQuestion; exit_candidate: ChoiceQuestion };
 }
@@ -21,14 +25,17 @@ export interface ShadowJevV4Request {
 /** Frozen inputs only. All model options refer to a separately recorded deterministic plan. */
 export function buildJevV4Request(input: Omit<ShadowJevV3Input, "candidateSet"> & {
   candidateSet: ShadowDecisionCandidateSet; fineMarketSnapshot?: { candles: unknown; candleCount: number; provenance: unknown };
+  marketReference?: unknown;
 }) {
   const set = input.candidateSet;
-  if (set?.version !== "shadow-decisions-v4" || set.exit?.version !== "shadow-exits-v1" ||
+  if (!["shadow-decisions-v4", "shadow-decisions-v4.1", "shadow-decisions-v4.2"].includes(set?.version) || set.exit?.version !== "shadow-exits-v1" ||
     !Array.isArray(set.exit.candidates) || set.exit.candidates.length < 1 || set.exit.candidates.length > 3 ||
     set.exit.candidates[0]?.id !== "keep") throw new TypeError("Invalid V4 decision set.");
   const grid = buildJevV3Request({ ...input, candidateSet: set.grid });
   const ordered = [...set.exit.candidates];
-  const seed = createHash("sha256").update([v4QuestionSetVersion, grid.request.state.observed_at,
+  const questionVersion = set.version === "shadow-decisions-v4" ? "shadow-jev-v4"
+    : set.version === "shadow-decisions-v4.2" ? v4ReferenceQuestionSetVersion : v4QuestionSetVersion;
+  const seed = createHash("sha256").update([questionVersion, grid.request.state.observed_at,
     input.policyInput.band.id, "exits"].join("|")).digest();
   for (let i = ordered.length - 1; i > 0; i--) {
     const j = seed[i]! % (i + 1);
@@ -53,10 +60,16 @@ export function buildJevV4Request(input: Omit<ShadowJevV3Input, "candidateSet"> 
   });
   exitCriteria.abstain = "Evidence does not justify changing existing exits; retain the current commitments.";
   const fine = projectFineMarket(input.fineMarketSnapshot, +new Date(grid.request.state.observed_at),
-    grid.request.state.asset_symbol);
+    grid.request.state.asset_symbol, set.version === "shadow-decisions-v4.2");
   const request: ShadowJevV4Request = { model: v4ModelRequested,
     state: { ...grid.request.state, experiment_version: set.version, observed_cost_profile: set.costProfile,
-      exit_candidates: exitCandidates, recent_5m_candles: fine.candles, fine_market_status: fine.status },
+      exit_candidates: exitCandidates, recent_5m_candles: fine.candles, fine_market_status: fine.status,
+      ...(set.version === "shadow-decisions-v4.2" ? { market_reference: input.marketReference ?? null,
+        unavailable_policy_reasons: set.grid.rejected.filter(r => r.id === "policy").flatMap(r => r.reasons),
+        spacing_constraints: { live_minimum_width_pct: input.policyInput.parameters.minWidthPct,
+          live_minimum_spacing_pct: input.policyInput.parameters.minimumSpacingPct,
+          live_modeled_roundtrip_cost_floor_pct: roundtripFloor(input.policyInput.parameters.estimatedSlippageBps ?? 0,
+            input.policyInput.parameters.estimatedExecutionFeeBps ?? 0) } } : {}) },
     questions: {
       grid_candidate: { ...grid.request.questions.grid_candidate,
         instructions: { ...grid.request.questions.grid_candidate.instructions,
@@ -73,11 +86,19 @@ export function buildJevV4Request(input: Omit<ShadowJevV3Input, "candidateSet"> 
   return { request, gridOptionToCandidateId, exitOptionToCandidateId };
 }
 
+function roundtripFloor(slippageBps: number, feeBps: number) {
+  const slip = slippageBps / 10_000, fee = feeBps / 10_000;
+  return (((1 + slip) * (1 + fee)) / ((1 - slip) * (1 - fee)) - 1) * 100;
+}
+
 function projectFineMarket(snapshot: Parameters<typeof buildJevV4Request>[0]["fineMarketSnapshot"],
-  observedAt: number, symbol: string) {
+  observedAt: number, symbol: string, reference = false) {
   if (!snapshot) return { candles: [], status: "missing_at_capture" };
   const meta = snapshot.provenance as Record<string, unknown>;
-  if (!meta || meta.resolution !== "5m" || meta.symbol !== symbol || meta.quoteSymbol !== "USDC" ||
+  const identityMatches = reference && symbol === "BTC" && meta?.symbol === "BTC_REF" ? meta?.provider === "coinbase-reference" &&
+    meta.symbol === "BTC_REF" && meta.quoteSymbol === "USD" && meta.sourceMarket === "BTC-USD"
+    : meta?.symbol === symbol && meta.quoteSymbol === "USDC";
+  if (!meta || meta.resolution !== "5m" || !identityMatches ||
     !Array.isArray(snapshot.candles) || snapshot.candleCount !== snapshot.candles.length) throw new TypeError("Invalid fine market snapshot.");
   const candles = snapshot.candles.slice(-24).map((raw: unknown) => {
     const c = raw as Record<string, unknown>;

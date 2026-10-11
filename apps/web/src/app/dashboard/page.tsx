@@ -1,17 +1,17 @@
 import { cookies } from "next/headers";
 import Link from "next/link";
-import { AlertTriangle, ArrowUpRight, Clock3, Zap } from "lucide-react";
+import { AlertTriangle, Clock3, Zap } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
 import { ManualRefresh } from "@/components/manual-refresh";
 import { PortfolioPnlChart } from "@/components/portfolio-pnl-chart";
-import { StatusBadge } from "@/components/status-badge";
+import { DashboardBotRoster } from "@/components/dashboard-bot-roster";
 import { SurfaceCard } from "@/components/surface-card";
 import { requireSession } from "@/lib/auth";
 import { formatLevelLabel } from "@/lib/bot-runtime";
 import { DESK_MODE_COOKIE, parseDeskMode } from "@/lib/desk-mode";
 import { getDashboardData } from "@/lib/data";
-import { formatCurrency, formatDateTime, formatNumber, formatPercent } from "@/lib/utils";
+import { formatCurrency, formatDateTime } from "@/lib/utils";
 
 function StripMetric({ label, value, hint, tone = "default" }: { label: string; value: string; hint: string; tone?: "default" | "green" | "red" | "amber" }) {
   const toneClass =
@@ -74,50 +74,7 @@ export default async function DashboardPage({
               <div className="mt-2 text-sm text-[var(--muted)]">Quick overview only. Open the terminal page to trade, edit, or inspect the live chart.</div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="min-w-full border-collapse">
-                <thead>
-                  <tr className="border-b border-[var(--line)] text-left">
-                    {["Bot", "Status", "Spot", "Range", "Pnl", "Used", "Updated", ""].map((label) => (
-                      <th key={label} className="px-4 py-3 font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">
-                        {label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.botCards.map((bot) => (
-                    <tr key={bot.id} className="border-b border-[var(--line)] transition hover:bg-white/[0.03]">
-                      <td className="px-4 py-4">
-                        <div className="space-y-1">
-                          <div className="font-medium text-white">{bot.name}</div>
-                          <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--muted)]">
-                            {bot.pair} | {bot.strategy.replaceAll("_", " ")} | {bot.mode}
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-4"><StatusBadge status={bot.status} /></td>
-                      <td className="px-4 py-4 text-sm text-white">{bot.price ? formatNumber(bot.price, bot.price >= 1000 ? 0 : 2) : "--"}</td>
-                      <td className="px-4 py-4 text-sm text-[var(--muted)]">
-                        {formatNumber(bot.range[0], bot.range[0] >= 1000 ? 0 : 2)} {"->"} {formatNumber(bot.range[1], bot.range[1] >= 1000 ? 0 : 2)}
-                      </td>
-                      <td className={`px-4 py-4 text-sm ${bot.pnl >= 0 ? "text-[var(--green)]" : "text-[var(--red)]"}`}>{formatCurrency(bot.pnl)}</td>
-                      <td className="px-4 py-4 text-sm text-[var(--amber)]">{formatPercent(bot.deployableUsage, 1)}</td>
-                      <td className="px-4 py-4 text-sm text-[var(--muted)]">{bot.latestTickAt ? formatDateTime(bot.latestTickAt) : "--"}</td>
-                      <td className="px-4 py-4">
-                      <Link
-                          href={`/bots?deskMode=${deskMode}&botId=${bot.id}`}
-                          className="inline-flex items-center gap-2 border border-[var(--line)] px-3 py-2 font-mono text-[11px] uppercase tracking-[0.16em] text-white transition hover:bg-white/[0.04]"
-                        >
-                          Open terminal
-                          <ArrowUpRight className="h-3.5 w-3.5" />
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DashboardBotRoster bots={data.botCards} deskMode={deskMode} />
           </SurfaceCard>
 
           <div className="space-y-4">

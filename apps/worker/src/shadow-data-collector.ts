@@ -1,6 +1,7 @@
 import { GECKOTERMINAL_POOLS, MINTS } from "@grid-bot/common";
 import { GeckoTerminalHistoryProvider, type NormalizedCandle } from "@grid-bot/core";
 import type { ShadowQuoteComparison } from "./shadow-execution-quote-client";
+import type { CoinbaseBtcReferenceProvider } from "./shadow-btc-reference";
 
 export interface ShadowCollectionTarget { portfolioId: string; botId: string; symbol: "BTC" | "SOL";
   baseMint: string; quoteMint: string; orderQuoteUsd: number; publicTaker?: string }
@@ -8,9 +9,11 @@ export interface ShadowDataStore {
   targets(): Promise<ShadowCollectionTarget[]>;
   candles(rows: NormalizedCandle[]): Promise<void>;
   quote(target: ShadowCollectionTarget, payload: ShadowQuoteComparison): Promise<void>;
+  observeReference?(now: Date): Promise<void>;
 }
 export interface ShadowCollectorDependencies {
   history: Pick<GeckoTerminalHistoryProvider, "getHistory">;
+  btcReference?: Pick<CoinbaseBtcReferenceProvider, "getClosedHistory">;
   verifyPool(target: ShadowCollectionTarget): Promise<void>;
   compare(target: ShadowCollectionTarget, quoteUsd: number): Promise<ShadowQuoteComparison>;
   onError(error: unknown, task: string): void;
@@ -25,6 +28,20 @@ export class ShadowDataCollector {
     try { targets = await this.store.targets(); }
     catch (error) { this.deps.onError(error, "targets"); return; }
     const markets = new Set<string>();
+    if (targets.some(target => target.symbol === "BTC") && this.deps.btcReference) {
+      for (const resolution of ["5m", "1h"] as const) {
+        try {
+          const result = await this.deps.btcReference.getClosedHistory(resolution, now);
+          await this.store.candles(result.candles);
+          if (result.quality.stale || result.quality.missingIntervals) {
+            this.deps.onError(new Error(`BTC reference quality: ${JSON.stringify(result.quality)}; no missing candles are fabricated.`),
+              `quality_BTC_REF_${resolution}`);
+          }
+        } catch (error) { this.deps.onError(error, `candles_BTC_REF_${resolution}`); }
+      }
+      try { await this.store.observeReference?.(now); }
+      catch (error) { this.deps.onError(error, "reference_observation_BTC"); }
+    }
     for (const target of targets) {
       if (target.baseMint !== MINTS[target.symbol] || target.quoteMint !== MINTS.USDC) {
         this.deps.onError(new Error("Configured mint differs from the collection market."), "market_identity"); continue;

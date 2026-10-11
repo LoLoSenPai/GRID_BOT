@@ -7,6 +7,8 @@ import { calculateGridLevels, getNextGridTriggers, parsePendingSignal } from "@/
 import { buildCandlesFromSnapshots } from "@/lib/charting";
 import type { getBotDetail, getBotsOverview } from "@/lib/data";
 
+import { serializeBotZone } from "@/lib/bot-zone-groups";
+
 const PREVIEW_SYMBOLS = ["SOL", "BTC", "HYPE"] as const;
 export type PreviewSymbol = (typeof PREVIEW_SYMBOLS)[number];
 
@@ -248,6 +250,7 @@ export function serializeBotOverview(bot: OverviewBot) {
   return {
     id: bot.id,
     key: bot.key,
+    zone: serializeBotZone(bot.gridBand),
     name: bot.name,
     createdAt: bot.createdAt.toISOString(),
     pairLabel: `${bot.baseSymbol}/${bot.quoteSymbol}`,
