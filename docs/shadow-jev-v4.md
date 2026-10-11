@@ -117,6 +117,8 @@ Le replay teste **une intervention Jev**, suivie de la policy déterministe dans
 
 ## Exploitation
 
+Les images de production sont construites hors du VPS, une à la fois, avec des limites de mémoire/CPU et de concurrence. Le contexte Docker exclut aussi les dépendances, caches, environnements et clients générés imbriqués : les paquets et le client Prisma sont régénérés dans l'image Linux. Les valeurs de build web peuvent être fictives ; les valeurs effectives restent fournies par `.env.production` au démarrage des conteneurs. Le remplacement des services utilise les images déjà importées, sans compilation ni migration pendant la reprise.
+
 Service de collecte : `docker compose --env-file .env.production -f docker-compose.prod.yml --profile shadow up -d shadow-data`.
 
 Capture et Jev : `docker compose --env-file .env.production -f docker-compose.prod.yml --profile shadow up -d shadow-capture shadow-jev`.

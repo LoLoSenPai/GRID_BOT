@@ -1,11 +1,18 @@
 node_modules
+**/node_modules
 .next
+**/.next
 .turbo
+**/.turbo
 .git
 .github
 .vscode
 coverage
+**/coverage
 dist
+**/dist
+**/*.tsbuildinfo
+packages/db/src/generated
 tmp-*.html
 tmp-*.json
 tmp-*.txt
@@ -13,8 +20,11 @@ web-dev.out.log
 web-dev.err.log
 pnpm-debug.log
 .env
+**/.env
 .env.production
+**/.env.production
 .env.local
+**/.env.local
 **/*.env
 audits
 output
@@ -24,3 +34,4 @@ deploy/paper-pilot/secrets
 postgres_data
 backups
 .shadow-capture-spool
+**/.shadow-capture-spool
